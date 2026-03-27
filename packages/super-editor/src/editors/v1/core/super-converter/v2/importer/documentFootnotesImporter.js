@@ -1,7 +1,7 @@
 import { defaultNodeListHandler } from './docxImporter';
 import { carbonCopy } from '../../../utilities/carbonCopy.js';
-import { buildSourceIndex } from '../../analysis/source-index.js';
-import { createProvenanceHooks } from '../../analysis/provenance-hooks.js';
+import { buildSourceIndex } from '../../../../../../core/super-converter/analysis/source-index.js';
+import { createProvenanceHooks } from '../../../../../../core/super-converter/analysis/provenance-hooks.js';
 
 /**
  * Remove w:footnoteRef placeholders from converted footnote content.

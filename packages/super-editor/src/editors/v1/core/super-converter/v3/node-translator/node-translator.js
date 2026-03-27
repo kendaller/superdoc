@@ -1,5 +1,8 @@
 // @ts-check
-import { getFeatureBindingForNodeTranslation, getFeatureKeyForPropertyTranslation } from '../../analysis/feature-key-map.js';
+import {
+  getFeatureBindingForNodeTranslation,
+  getFeatureKeyForPropertyTranslation,
+} from '../../../../../../core/super-converter/analysis/feature-key-map.js';
 
 /**
  * @enum {string}

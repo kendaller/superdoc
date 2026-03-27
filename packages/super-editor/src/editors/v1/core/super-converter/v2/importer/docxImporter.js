@@ -44,9 +44,9 @@ import { translator as wNumberingTranslator } from '@converter/v3/handlers/w/num
 import { baseNumbering } from '@converter/v2/exporter/helpers/base-list.definitions.js';
 import { patchNumberingDefinitions } from './patchNumberingDefinitions.js';
 import { startCollection, drainDiagnostics } from '@converter/v3/handlers/import-diagnostics.js';
-import { buildSourceIndex } from '../../analysis/source-index.js';
-import { createProvenanceCollector } from '../../analysis/provenance-collector.js';
-import { createProvenanceHooks } from '../../analysis/provenance-hooks.js';
+import { buildSourceIndex } from '../../../../../../core/super-converter/analysis/source-index.js';
+import { createProvenanceCollector } from '../../../../../../core/super-converter/analysis/provenance-collector.js';
+import { createProvenanceHooks } from '../../../../../../core/super-converter/analysis/provenance-hooks.js';
 
 /**
  * @typedef {import()} XmlNode

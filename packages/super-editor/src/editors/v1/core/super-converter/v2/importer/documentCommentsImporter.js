@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { defaultNodeListHandler } from './docxImporter';
-import { buildSourceIndex } from '../../analysis/source-index.js';
-import { createProvenanceHooks } from '../../analysis/provenance-hooks.js';
+import { buildSourceIndex } from '../../../../../../core/super-converter/analysis/source-index.js';
+import { createProvenanceHooks } from '../../../../../../core/super-converter/analysis/provenance-hooks.js';
 
 /**
  * Parse comments.xml into SuperDoc-ready comments
