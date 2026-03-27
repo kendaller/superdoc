@@ -36,6 +36,14 @@ import {
   createTableDocx,
 } from "./helpers/create-rich-docx.js";
 
+function twipsToLayoutPx(value: number): number {
+  return (value / 1440) * 96;
+}
+
+function halfPointsToLayoutPx(value: number): number {
+  return ((value / 2) / 72) * 96;
+}
+
 async function buildModel(bytes: Uint8Array): Promise<SemanticModel> {
   const session = createSession({ kind: "memory", bytes });
   await advanceToStage(session, "structure");
@@ -136,13 +144,14 @@ describe("layout projection: formatting", () => {
 
     expect(heading.attrs?.styleId).toBe("Heading1");
     expect(heading.attrs?.alignment).toBe("center");
-    expect(heading.attrs?.spacing?.before).toBe(240);
-    expect(heading.attrs?.indent?.left).toBe(720);
+    expect(heading.attrs?.spacing?.before).toBe(twipsToLayoutPx(240));
+    expect(heading.attrs?.indent?.left).toBe(twipsToLayoutPx(720));
     expect(heading.attrs?.keepNext).toBe(true);
 
     expect(runs[0].text).toBe("Bold Red Title");
     expect(runs[0].bold).toBe(true);
     expect(runs[0].fontFamily).toBe("Arial");
+    expect(runs[0].fontSize).toBeCloseTo(halfPointsToLayoutPx(28), 5);
     expect(runs[0].color).toBe("#FF0000");
 
     expect(runs[1].italic).toBe(true);
@@ -183,7 +192,10 @@ describe("layout projection: tables", () => {
     expect(table.rows[0].cells).toHaveLength(1);
     expect(table.rows[1].cells).toHaveLength(2);
     expect(table.rows[0].cells[0].colSpan).toBe(2);
-    expect(table.columnWidths).toEqual([2500, 2500]);
+    expect(table.columnWidths).toEqual([
+      twipsToLayoutPx(2500),
+      twipsToLayoutPx(2500),
+    ]);
 
     const secondRowFirstCell = table.rows[1].cells[0];
     expect(
@@ -282,7 +294,10 @@ describe("layout projection: sections", () => {
     const sections = sectionBreaks(projectToFlowBlocks(model).blocks);
 
     expect(sections.length).toBeGreaterThanOrEqual(1);
-    expect(sections[0].pageSize).toEqual({ w: 12240, h: 15840 });
+    expect(sections[0].pageSize).toEqual({
+      w: twipsToLayoutPx(12240),
+      h: twipsToLayoutPx(15840),
+    });
     expect(sections[0].margins).toBeDefined();
   });
 
@@ -291,8 +306,11 @@ describe("layout projection: sections", () => {
     const sections = sectionBreaks(projectToFlowBlocks(model).blocks);
 
     expect(sections).toHaveLength(2);
-    expect(sections[0].margins.top).toBe(1440);
+    expect(sections[0].margins.top).toBe(twipsToLayoutPx(1440));
     expect(sections[1].orientation).toBe("landscape");
-    expect(sections[1].pageSize).toEqual({ w: 15840, h: 12240 });
+    expect(sections[1].pageSize).toEqual({
+      w: twipsToLayoutPx(15840),
+      h: twipsToLayoutPx(12240),
+    });
   });
 });

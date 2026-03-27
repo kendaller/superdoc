@@ -112,6 +112,69 @@ export function createMinimalDocx(text = "Hello, World!"): Uint8Array {
   ]);
 }
 
+/** Create a minimal .docx whose numbering levels intentionally omit optional children. */
+export function createSparseNumberingDocx(text = "Hello, World!"): Uint8Array {
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="0"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r>
+        <w:t>${escapeXml(text)}</w:t>
+      </w:r>
+    </w:p>
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+  </w:style>
+</w:styles>`;
+
+  const settingsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:defaultTabStop w:val="720"/>
+</w:settings>`;
+
+  const numberingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0"/>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>`;
+
+  const fontTableXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:font w:name="Calibri"/>
+</w:fonts>`;
+
+  return buildZipArchive([
+    entry("[Content_Types].xml", CONTENT_TYPES_XML),
+    entry("_rels/.rels", ROOT_RELS),
+    entry("word/_rels/document.xml.rels", WORD_RELS),
+    entry("word/document.xml", documentXml),
+    entry("word/styles.xml", stylesXml),
+    entry("word/settings.xml", settingsXml),
+    entry("word/numbering.xml", numberingXml),
+    entry("word/fontTable.xml", fontTableXml),
+  ]);
+}
+
 /** Create a .docx with multiple paragraphs. */
 export function createMultiParagraphDocx(paragraphs: string[]): Uint8Array {
   const pElements = paragraphs

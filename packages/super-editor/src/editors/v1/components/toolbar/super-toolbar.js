@@ -1379,10 +1379,20 @@ export class SuperToolbar extends EventEmitter {
    * @returns {void}
    */
   destroy() {
+    this.setActiveEditor(null);
+
     if (this._restoreFocusTimeoutId !== null) {
       clearTimeout(this._restoreFocusTimeoutId);
       this._restoreFocusTimeoutId = null;
     }
+
+    if (this.app) {
+      this.app.unmount();
+      this.app = null;
+      this.toolbar = null;
+    }
+
+    this.removeAllListeners();
   }
 }
 

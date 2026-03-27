@@ -450,6 +450,26 @@ export interface LayoutUpdatePayload {
   metrics?: LayoutMetrics;
 }
 
+export interface V2StaticRenderHostOptions {
+  element: HTMLElement;
+  documentId?: string;
+  layoutEngineOptions?: LayoutEngineOptions;
+  documentMode?: 'editing' | 'viewing' | 'suggesting';
+  disableContextMenu?: boolean;
+}
+
+export interface V2StaticLayoutSnapshot {
+  blocks: FlowBlock[];
+  measures: Measure[];
+  layout: Layout | null;
+}
+
+export interface V2StaticLayoutPayload {
+  blocks: FlowBlock[];
+  measures: Measure[];
+  layout: Layout;
+}
+
 // ============================================
 // EDITOR CLASS
 // ============================================
@@ -636,6 +656,36 @@ export declare class DocxZipper {
 export declare class SuperToolbar {
   [key: string]: any;
 }
+
+export declare class V2StaticRenderHost {
+  constructor(options: V2StaticRenderHostOptions);
+  readonly element: HTMLElement;
+  readonly options: { documentId?: string };
+  load(source: Uint8Array | Blob): Promise<void>;
+  render(): Promise<void>;
+  updateLayoutEngineOptions(nextOptions?: LayoutEngineOptions): void;
+  getSemanticModel(): unknown | null;
+  getSemanticJson(): unknown | undefined;
+  getSemanticDocumentApiAdapter(): unknown | undefined;
+  getLayoutSnapshot(): V2StaticLayoutSnapshot;
+  getPages(): LayoutPage[];
+  onLayoutUpdated(handler: (payload: V2StaticLayoutPayload) => void): () => void;
+  onLayoutError(
+    handler: (error: { phase: 'initialization' | 'render'; error: Error; timestamp: number }) => void,
+  ): () => void;
+  setZoom(zoom: number): void;
+  setDocumentMode(mode: 'editing' | 'viewing' | 'suggesting'): void;
+  setTrackedChangesOverrides(overrides?: TrackedChangesOverrides): void;
+  setViewingCommentOptions(options?: {
+    emitCommentPositionsInViewing?: boolean;
+    enableCommentsInViewing?: boolean;
+  }): void;
+  setContextMenuDisabled(disabled: boolean): void;
+  focus(): void;
+  destroy(): void;
+}
+
+export declare const V2StaticRenderer: any;
 
 /**
  * PresentationEditor provides a paginated, layout-engine-powered editing experience.

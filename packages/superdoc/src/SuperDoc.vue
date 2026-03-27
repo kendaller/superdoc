@@ -30,7 +30,7 @@ import { useSuperdocStore } from '@superdoc/stores/superdoc-store';
 import { useCommentsStore } from '@superdoc/stores/comments-store';
 
 import { DOCX, PDF, HTML } from '@superdoc/common';
-import { SuperEditor, AIWriter, PresentationEditor } from '@superdoc/super-editor';
+import { SuperEditor, AIWriter, PresentationEditor, V2StaticRenderer } from '@superdoc/super-editor';
 import HtmlViewer from './components/HtmlViewer/HtmlViewer.vue';
 import useComment from './components/CommentsLayer/use-comment';
 import AiLayer from './components/AiLayer/AiLayer.vue';
@@ -390,6 +390,37 @@ const onEditorReady = ({ editor, presentationEditor }) => {
   });
 };
 
+const onV2StaticRendererReady = ({ renderer, documentId, container }) => {
+  if (!renderer || !documentId) return;
+
+  const doc = getDocument(documentId);
+  if (!doc) return;
+
+  passwordPrompt.handleEditorReady(doc);
+  doc.setPresentationEditor(renderer);
+  if (doc.password) doc.password = undefined;
+
+  renderer.setContextMenuDisabled?.(proxy.$superdoc.config.disableContextMenu);
+
+  renderer.on('paginationUpdate', ({ layout }) => {
+    const totalPages = layout.pages.length;
+    proxy.$superdoc.emit('pagination-update', { totalPages, superdoc: proxy.$superdoc });
+  });
+
+  handleDocumentReady(documentId, container);
+  proxy.$superdoc.broadcastRenderSurfaceReady(renderer);
+};
+
+const onV2StaticRendererError = (doc, payload = {}) => {
+  const error = payload.error instanceof Error ? payload.error : new Error(String(payload.error ?? 'Unknown render error'));
+  proxy.$superdoc.emit('exception', {
+    error,
+    editor: null,
+    code: 'v2-static-renderer-error',
+    documentId: doc?.id,
+  });
+};
+
 const onEditorDestroy = () => {
   proxy.$superdoc.broadcastEditorDestroy();
 };
@@ -739,6 +770,26 @@ const editorOptions = (doc) => {
   };
 
   return options;
+};
+
+const staticRendererOptions = (doc) => ({
+  layoutEngineOptions: {
+    ...(proxy.$superdoc.config.layoutEngineOptions || {}),
+    debugLabel: proxy.$superdoc.config.layoutEngineOptions?.debugLabel ?? doc.name ?? doc.id,
+    zoom: (activeZoom.value ?? 100) / 100,
+    virtualization: {
+      ...(proxy.$superdoc.config.layoutEngineOptions?.virtualization || {}),
+      enabled: false,
+    },
+  },
+  documentMode: proxy.$superdoc.config.documentMode,
+  disableContextMenu: proxy.$superdoc.config.disableContextMenu,
+});
+
+const shouldUseV2StaticRenderer = (doc) => {
+  if (!doc || doc.type !== DOCX) return false;
+  if (proxy.$superdoc.config.useLayoutEngine === false) return false;
+  return proxy.$superdoc.config.renderPipeline === 'v2-static';
 };
 
 /**
@@ -1537,8 +1588,17 @@ const getPDFViewer = () => {
             ref="pdfViewerRef"
           />
 
+          <V2StaticRenderer
+            v-if="shouldUseV2StaticRenderer(doc)"
+            :file-source="doc.data"
+            :document-id="doc.id"
+            :options="staticRendererOptions(doc)"
+            @renderer-ready="onV2StaticRendererReady"
+            @renderer-error="onV2StaticRendererError(doc, $event)"
+          />
+
           <SuperEditor
-            v-if="doc.type === DOCX"
+            v-else-if="doc.type === DOCX"
             :file-source="doc.data"
             :state="doc.state"
             :document-id="doc.id"

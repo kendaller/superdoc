@@ -12,13 +12,23 @@ import { fastOpen, fastOpenAsync } from "../opc/package-loader.js";
 import { inflateEntryAsync } from "../opc/zip-reader.js";
 import { nextRevision } from "./revision.js";
 import { indexXmlParts } from "../xml/index-integration.js";
+import {
+  startFastOpenSpan,
+  startAdvanceToStructureSpan,
+  startMaterializeXmlSpan,
+  startIndexXmlPartsSpan,
+  markStructureReady,
+  recordXmlPartsMaterialized,
+} from "../perf.js";
 
 let sessionCounter = 0;
 
 /** Create a PackageSession from an in-memory archive byte source. */
 export function createSession(source: ArchiveByteSource): PackageSession {
+  const endFastOpen = startFastOpenSpan();
   const { zip, parts, contentTypes, relationships, mainDocumentUri, diagnostics } =
     fastOpen(source);
+  endFastOpen();
 
   return {
     sessionId: `session-${sessionCounter++}`,
@@ -43,8 +53,10 @@ export async function createSessionAsync(
   reader: AsyncArchiveReader,
   originalSource: ArchiveByteSource,
 ): Promise<PackageSession> {
+  const endFastOpen = startFastOpenSpan();
   const { zip, parts, contentTypes, relationships, mainDocumentUri, diagnostics } =
     await fastOpenAsync(reader);
+  endFastOpen();
 
   return {
     sessionId: `session-${sessionCounter++}`,
@@ -80,13 +92,20 @@ export async function advanceToStage(
 
 /** Build XML lexical indexes for package-critical and major typed-view parts. */
 async function advanceToStructure(session: PackageSession): Promise<void> {
+  const endStructure = startAdvanceToStructureSpan();
+
   // For lazy sessions, pre-materialize XML part bytes before indexing
   if (session.asyncReader) {
     await materializeXmlParts(session);
   }
 
+  const endIndex = startIndexXmlPartsSpan();
   indexXmlParts(session);
+  endIndex();
+
   session.currentStage = "structure";
+  markStructureReady();
+  endStructure();
 }
 
 /**
@@ -98,7 +117,9 @@ async function materializeXmlParts(session: PackageSession): Promise<void> {
   const reader = session.asyncReader;
   if (!reader) return;
 
+  const endMaterialize = startMaterializeXmlSpan();
   const zip = session.originalZip;
+  let materializedCount = 0;
 
   for (const part of session.parts.values()) {
     if (part.kind !== "xml") continue;
@@ -110,9 +131,13 @@ async function materializeXmlParts(session: PackageSession): Promise<void> {
       if (entry) {
         part.originalBytes = await inflateEntryAsync(reader, entry);
         part.source = { kind: "materialized", bytes: part.originalBytes };
+        materializedCount++;
       }
     }
   }
+
+  recordXmlPartsMaterialized(materializedCount);
+  endMaterialize();
 }
 
 /** Compute current session status. */

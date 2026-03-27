@@ -16,6 +16,7 @@ import { projectParagraph } from "./paragraph-projector.js";
 import { projectTable } from "./table-projector.js";
 import { projectSection } from "./section-projector.js";
 import type { StyleResolver } from "../../resolve/style-resolver.js";
+import { startProjectionSpan, recordBlocksProjected } from "../../perf.js";
 
 /** Options for the layout projection. */
 export type ProjectOptions = {
@@ -49,11 +50,15 @@ export function projectToFlowBlocks(
   model: SemanticModel,
   options?: ProjectOptions,
 ): ProjectionResult {
+  const endProjection = startProjectionSpan();
+
   const prefix = options?.prefix ?? "v2-";
   const ids = createProjectionIdAllocator(prefix);
 
   const mainStory = model.mainStory();
   if (!mainStory) {
+    endProjection();
+    recordBlocksProjected(0);
     return { blocks: [], blockToEntityRef: ids.blockToEntityRef };
   }
 
@@ -83,6 +88,9 @@ export function projectToFlowBlocks(
       blocks.push(projectSection(section, ids));
     }
   }
+
+  endProjection();
+  recordBlocksProjected(blocks.length);
 
   return { blocks, blockToEntityRef: ids.blockToEntityRef };
 }

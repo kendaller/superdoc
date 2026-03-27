@@ -25,12 +25,16 @@ import type {
   BreakRun,
 } from "./types.js";
 import { createSourceRef } from "../../identity/types.js";
+import {
+  halfPointsToLayoutPx,
+  twipsToLayoutPx,
+} from "./measurement-conversions.js";
 
 /** Default font family when none is specified. */
 const DEFAULT_FONT_FAMILY = "Calibri";
 
-/** Default font size (in points) when none is specified. */
-const DEFAULT_FONT_SIZE = 11;
+/** Default font size in layout pixels when no DOCX size is resolved. */
+const DEFAULT_FONT_SIZE = 12;
 
 /** OOXML EMUs per CSS pixel at 96dpi. */
 const EMUS_PER_PIXEL = 9525;
@@ -57,7 +61,9 @@ export function projectRuns(
   const formatting = resolved ?? raw.formatting;
   const marks = buildRunMarks(formatting);
   const fontFamily = formatting.fontFamily ?? DEFAULT_FONT_FAMILY;
-  const fontSize = formatting.fontSize ?? DEFAULT_FONT_SIZE;
+  const fontSize = formatting.fontSize !== undefined
+    ? halfPointsToLayoutPx(formatting.fontSize)
+    : DEFAULT_FONT_SIZE;
 
   const runs: Run[] = [];
 
@@ -251,7 +257,10 @@ function buildRunMarks(formatting: Partial<RunFormatting>): RunMarks {
     marks.highlight = formatting.highlight;
   }
   if (formatting.spacing !== undefined) {
-    marks.letterSpacing = formatting.spacing;
+    marks.letterSpacing = twipsToLayoutPx(formatting.spacing);
+  }
+  if (formatting.position !== undefined) {
+    marks.baselineShift = formatting.position / 2;
   }
   if (formatting.vertAlign) {
     marks.vertAlign = mapVertAlign(formatting.vertAlign);

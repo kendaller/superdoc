@@ -8,6 +8,7 @@ import { advanceToStage } from "../src/session/session.js";
 import {
   createMinimalDocx,
   createComplexDocx,
+  createSparseNumberingDocx,
 } from "./helpers/create-test-docx.js";
 import { createDocumentView } from "../src/word/document-view.js";
 import { createStylesView } from "../src/word/styles-view.js";
@@ -123,6 +124,22 @@ describe("numberingView", () => {
 
     const abstractNumId = view!.resolveAbstractNumId("1");
     expect(abstractNumId).toBe("0");
+  });
+
+  it("tolerates sparse numbering levels without crashing", () => {
+    const { session } = setupSession(createSparseNumberingDocx());
+    const view = createNumberingView(session);
+
+    const abstracts = view!.abstractNums();
+    expect(abstracts.length).toBe(1);
+    expect(abstracts[0].levels).toEqual([
+      expect.objectContaining({
+        ilvl: "0",
+        numFmt: undefined,
+        lvlText: undefined,
+        start: undefined,
+      }),
+    ]);
   });
 });
 

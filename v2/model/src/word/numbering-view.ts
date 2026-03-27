@@ -38,6 +38,17 @@ export type NumberingView = {
   rootElement(): XmlElementNode | undefined;
 };
 
+function getChildAttr(
+  parent: XmlElementNode,
+  childLocalName: string,
+  attrLocalName: string,
+  prefix = "w",
+): string | undefined {
+  const child = findChildElement(parent, childLocalName, prefix);
+  if (!child) return undefined;
+  return getAttr(child, attrLocalName, prefix);
+}
+
 export function createNumberingView(
   session: PackageSession,
 ): NumberingView | undefined {
@@ -61,9 +72,9 @@ export function createNumberingView(
         const abstractNumId = getAttr(el, "abstractNumId", "w") ?? "";
         const levels = findChildElements(el, "lvl", "w").map((lvl) => ({
           ilvl: getAttr(lvl, "ilvl", "w") ?? "0",
-          numFmt: getAttr(findChildElement(lvl, "numFmt", "w")!, "val", "w"),
-          lvlText: getAttr(findChildElement(lvl, "lvlText", "w")!, "val", "w"),
-          start: getAttr(findChildElement(lvl, "start", "w")!, "val", "w"),
+          numFmt: getChildAttr(lvl, "numFmt", "val"),
+          lvlText: getChildAttr(lvl, "lvlText", "val"),
+          start: getChildAttr(lvl, "start", "val"),
           element: lvl,
         }));
         return { abstractNumId, levels, element: el };

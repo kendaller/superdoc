@@ -1,0 +1,19 @@
+{
+  "name": "@superdoc-testing/v2-perf-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark harness for v2 fast-first-paint pipeline.",
+  "scripts": {
+    "bench": "vitest run --config vitest.config.ts",
+    "bench:watch": "vitest --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@superdoc/v2-model": "workspace:*",
+    "@superdoc/v2-perf": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

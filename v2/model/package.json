@@ -22,6 +22,7 @@
     "fflate": "catalog:",
     "saxes": "catalog:",
     "@superdoc/style-engine": "workspace:*",
-    "@superdoc/contracts": "workspace:*"
+    "@superdoc/contracts": "workspace:*",
+    "@superdoc/v2-perf": "workspace:*"
   }
 }

@@ -164,9 +164,10 @@ function mergeTableCell(v2Cell: TableCell, shadowPmCell: TableCell): TableCell {
   }
 
   if (v2Cell.blocks) {
+    const nextBlocks = mergedBlocks as unknown as NonNullable<typeof v2Cell.blocks>;
     return {
       ...v2Cell,
-      blocks: mergedBlocks as typeof v2Cell.blocks,
+      blocks: nextBlocks,
       ...(mergedBlocks.length === 1 && mergedBlocks[0].kind === 'paragraph'
         ? { paragraph: mergedBlocks[0] as TableCell['paragraph'] }
         : {}),
@@ -182,7 +183,7 @@ function mergeTableCell(v2Cell: TableCell, shadowPmCell: TableCell): TableCell {
 
   return {
     ...v2Cell,
-    blocks: mergedBlocks as typeof v2Cell.blocks,
+    blocks: mergedBlocks as unknown as NonNullable<typeof v2Cell.blocks>,
   };
 }
 

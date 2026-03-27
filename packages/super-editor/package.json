@@ -104,6 +104,7 @@
     "@superdoc/style-engine": "workspace:*",
     "@superdoc/url-validation": "workspace:*",
     "@superdoc/v2-model": "workspace:*",
+    "@superdoc/v2-perf": "workspace:*",
     "@superdoc/word-layout": "workspace:*",
     "buffer-crc32": "catalog:",
     "color2k": "catalog:",

@@ -7,6 +7,7 @@ import { open } from "../src/session/open.js";
 import {
   createMinimalDocx,
   createMultiParagraphDocx,
+  createSparseNumberingDocx,
 } from "./helpers/create-test-docx.js";
 import type { XmlElementNode } from "../src/types/xml.js";
 
@@ -134,6 +135,18 @@ describe("public API: handle.semanticModel()", () => {
     expect(model1).toBe(model2);
     expect(model1!.mainStory()).toBeDefined();
     expect(model1!.allEntities("paragraph").length).toBe(2);
+
+    await handle.close();
+  });
+
+  it("builds a semantic model for sparse numbering definitions", async () => {
+    const handle = await open(createSparseNumberingDocx());
+    await handle.ready("structure");
+
+    const model = handle.semanticModel();
+
+    expect(model).toBeDefined();
+    expect(model!.allEntities("abstractNum").length).toBe(1);
 
     await handle.close();
   });

@@ -8,6 +8,7 @@
 import type { SectionEntity } from "../../entities/types.js";
 import type { SectionBreakBlock } from "./types.js";
 import type { ProjectionIdAllocator } from "./block-id.js";
+import { twipsToLayoutPx } from "./measurement-conversions.js";
 
 /**
  * Project a section entity to a layout-compatible SectionBreakBlock.
@@ -26,18 +27,18 @@ export function projectSection(
     kind: "sectionBreak",
     id: ids.nextBlockId("sectionBreak", entity.ref),
     margins: {
-      ...(raw.marginTop !== undefined ? { top: raw.marginTop } : {}),
-      ...(raw.marginRight !== undefined ? { right: raw.marginRight } : {}),
-      ...(raw.marginBottom !== undefined ? { bottom: raw.marginBottom } : {}),
-      ...(raw.marginLeft !== undefined ? { left: raw.marginLeft } : {}),
+      ...(raw.marginTop !== undefined ? { top: twipsToLayoutPx(raw.marginTop) } : {}),
+      ...(raw.marginRight !== undefined ? { right: twipsToLayoutPx(raw.marginRight) } : {}),
+      ...(raw.marginBottom !== undefined ? { bottom: twipsToLayoutPx(raw.marginBottom) } : {}),
+      ...(raw.marginLeft !== undefined ? { left: twipsToLayoutPx(raw.marginLeft) } : {}),
     },
   };
 
   // Page size
   if (raw.pageWidth !== undefined && raw.pageHeight !== undefined) {
     block.pageSize = {
-      w: raw.pageWidth,
-      h: raw.pageHeight,
+      w: twipsToLayoutPx(raw.pageWidth),
+      h: twipsToLayoutPx(raw.pageHeight),
     };
   }
 
@@ -65,7 +66,7 @@ export function projectSection(
   if (raw.cols !== undefined && raw.cols > 1) {
     block.columns = {
       count: raw.cols,
-      gap: 720, // Default column gap in twips (0.5 inch)
+      gap: twipsToLayoutPx(720),
     };
   }
 

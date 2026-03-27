@@ -95,6 +95,15 @@ const SuperEditorStub = defineComponent({
   },
 });
 
+const V2StaticRendererStub = defineComponent({
+  name: 'V2StaticRendererStub',
+  props: ['fileSource', 'documentId', 'options'],
+  emits: ['renderer-ready', 'renderer-error'],
+  setup(props) {
+    return () => h('div', { class: 'v2-static-renderer-stub' }, [JSON.stringify(props.documentId)]);
+  },
+});
+
 const AIWriterStub = stubComponent('AIWriter');
 const CommentDialogStub = stubComponent('CommentDialog');
 const FloatingCommentsStub = stubComponent('FloatingComments');
@@ -106,6 +115,7 @@ const HtmlViewerStub = stubComponent('HtmlViewer');
 // Mock @superdoc/super-editor with stubs and PresentationEditor class
 vi.mock('@superdoc/super-editor', () => ({
   SuperEditor: SuperEditorStub,
+  V2StaticRenderer: V2StaticRendererStub,
   AIWriter: AIWriterStub,
   PresentationEditor: class PresentationEditorMock {
     static getInstance(documentId) {
@@ -158,6 +168,8 @@ const buildSuperdocStore = () => {
       editorMountNonce: ref(0),
       setEditor: vi.fn(),
       getEditor: vi.fn(() => null),
+      setPresentationEditor: vi.fn(),
+      getPresentationEditor: vi.fn(() => null),
     },
   ]);
 
@@ -295,6 +307,7 @@ const createSuperdocStub = () => {
       modules: { comments: {}, ai: {}, toolbar: {}, pdf: {} },
       isDebug: false,
       documentMode: 'editing',
+      renderPipeline: 'legacy',
       role: 'editor',
       suppressDefaultDocxStyles: false,
       disableContextMenu: false,
@@ -305,6 +318,7 @@ const createSuperdocStub = () => {
     colors: ['#111'],
     broadcastEditorBeforeCreate: vi.fn(),
     broadcastEditorCreate: vi.fn(),
+    broadcastRenderSurfaceReady: vi.fn(),
     broadcastEditorDestroy: vi.fn(),
     broadcastPdfDocumentReady: vi.fn(),
     broadcastSidebarToggle: vi.fn(),
@@ -1150,6 +1164,60 @@ describe('SuperDoc.vue', () => {
     expect(doc.setPresentationEditor).toHaveBeenCalledWith(presentationEditor);
     expect(presentationEditor.setContextMenuDisabled).toHaveBeenCalledWith(true);
     expect(presentationEditor.on).toHaveBeenCalledWith('commentPositions', expect.any(Function));
+  });
+
+  it('renders the v2 static DOCX branch when renderPipeline is v2-static', async () => {
+    const superdocStub = createSuperdocStub();
+    superdocStub.config.renderPipeline = 'v2-static';
+
+    const wrapper = await mountComponent(superdocStub);
+    await nextTick();
+
+    expect(wrapper.find('.v2-static-renderer-stub').exists()).toBe(true);
+    expect(wrapper.find('.super-editor-stub').exists()).toBe(false);
+  });
+
+  it('forces virtualization off for the v2 static renderer branch', async () => {
+    const superdocStub = createSuperdocStub();
+    superdocStub.config.renderPipeline = 'v2-static';
+    superdocStub.config.layoutEngineOptions = {
+      virtualization: { enabled: true, window: 5, overscan: 1 },
+    };
+
+    const wrapper = await mountComponent(superdocStub);
+    await nextTick();
+
+    const renderer = wrapper.findComponent(V2StaticRendererStub);
+    expect(renderer.props('options').layoutEngineOptions.virtualization).toEqual({
+      enabled: false,
+      window: 5,
+      overscan: 1,
+    });
+  });
+
+  it('handles v2 static renderer ready by storing the render surface and marking the document ready', async () => {
+    const superdocStub = createSuperdocStub();
+    superdocStub.config.renderPipeline = 'v2-static';
+
+    const wrapper = await mountComponent(superdocStub);
+    await nextTick();
+
+    const doc = superdocStoreStub.documents.value[0];
+    const renderer = {
+      setContextMenuDisabled: vi.fn(),
+      on: vi.fn(),
+    };
+
+    wrapper.findComponent(V2StaticRendererStub).vm.$emit('renderer-ready', {
+      renderer,
+      documentId: 'doc-1',
+      container: document.createElement('div'),
+    });
+    await nextTick();
+
+    expect(doc.setPresentationEditor).toHaveBeenCalledWith(renderer);
+    expect(doc.isReady).toBe(true);
+    expect(superdocStub.broadcastRenderSurfaceReady).toHaveBeenCalledWith(renderer);
   });
 
   it('forwards header/footer presentation events through the public update callbacks', async () => {

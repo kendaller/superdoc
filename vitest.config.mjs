@@ -16,6 +16,7 @@ export default defineConfig({
     projects: [
       './v2/model',
       './v2/analysis',
+      './v2/perf',
       './packages/super-editor',
       './packages/superdoc',
       './packages/ai',

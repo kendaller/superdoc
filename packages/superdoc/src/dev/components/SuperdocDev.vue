@@ -45,6 +45,7 @@ const userRole = urlParams.get('role') || 'editor';
 const useLayoutEngine = ref(urlParams.get('layout') !== '0');
 const useWebLayout = ref(urlParams.get('view') === 'web');
 const useCollaboration = urlParams.get('collab') === '1';
+const useV2StaticRender = ref(urlParams.get('pipeline') === 'v2-static');
 const collabRoom = urlParams.get('room') || 'superdoc-dev-room';
 const collabUrl = 'ws://localhost:8081/v1/collaboration';
 const useWordOverlay = ref(urlParams.get('wordOverlay') !== '0');
@@ -75,6 +76,19 @@ let closeActivityStream = null;
 const superdocLogo = SuperdocLogo;
 const uploadedFileName = ref('');
 const uploadDisplayName = computed(() => uploadedFileName.value || 'No file chosen');
+const currentDocumentSourceKind = ref('blank');
+const isV2StaticSupported = computed(() => currentDocumentSourceKind.value === 'docx' && !useCollaboration);
+const effectiveRenderPipeline = computed(() =>
+  useV2StaticRender.value && isV2StaticSupported.value ? 'v2-static' : 'legacy',
+);
+const renderPipelineBadge = computed(() =>
+  effectiveRenderPipeline.value === 'v2-static' ? 'Pipeline: V2 STATIC' : 'Pipeline: LEGACY',
+);
+const v2StaticToggleLabel = computed(() => {
+  if (useCollaboration) return 'V2 static unavailable in collaboration';
+  if (!isV2StaticSupported.value) return 'V2 static render (DOCX only)';
+  return useV2StaticRender.value ? 'Switch to legacy render' : 'Switch to v2 static render';
+});
 
 const DEV_THEME_CLASSES = ['sd-theme-docs', 'sd-theme-word', 'sd-theme-blueprint', 'sd-theme-neon-night'];
 
@@ -217,6 +231,15 @@ const handleNewFile = async (file) => {
   const fileExtension = file.name.split('.').pop()?.toLowerCase();
   const isMarkdown = fileExtension === 'md';
   const isHtml = fileExtension === 'html' || fileExtension === 'htm';
+  currentDocumentSourceKind.value = isMarkdown
+    ? 'markdown'
+    : isHtml
+      ? 'html'
+      : fileExtension === 'pdf'
+        ? 'pdf'
+        : fileExtension === 'docx'
+          ? 'docx'
+          : 'other';
 
   if (isMarkdown || isHtml) {
     // For text-based files, read the content and use a blank DOCX as base
@@ -232,6 +255,10 @@ const handleNewFile = async (file) => {
   } else {
     // For binary files (DOCX, PDF), use as-is
     currentFile.value = await getFileObject(url, file.name, file.type);
+  }
+
+  if (!isV2StaticSupported.value) {
+    useV2StaticRender.value = false;
   }
 
   // In collab mode, use replaceFile() on the existing editor instead of
@@ -683,6 +710,7 @@ const init = async () => {
     viewOptions: { layout: useWebLayout.value ? 'web' : 'print' },
     // Web layout + layout engine now uses semantic flow mode.
     useLayoutEngine: useLayoutEngine.value,
+    renderPipeline: effectiveRenderPipeline.value,
     layoutEngineOptions: {
       flowMode: useWebLayout.value ? 'semantic' : 'paginated',
       ...(useWebLayout.value ? { semanticOptions: { marginsMode: 'none' } } : {}),
@@ -1199,6 +1227,23 @@ const toggleLayoutEngine = () => {
   window.location.href = url.toString();
 };
 
+const syncRenderPipelineUrlParam = () => {
+  const url = new URL(window.location.href);
+  if (useV2StaticRender.value) {
+    url.searchParams.set('pipeline', 'v2-static');
+  } else {
+    url.searchParams.delete('pipeline');
+  }
+  window.history.replaceState({}, '', url.toString());
+};
+
+const toggleV2StaticRender = async () => {
+  if (!isV2StaticSupported.value) return;
+  useV2StaticRender.value = !useV2StaticRender.value;
+  syncRenderPipelineUrlParam();
+  await init();
+};
+
 const toggleViewLayout = () => {
   const nextValue = !useWebLayout.value;
   const url = new URL(window.location.href);
@@ -1333,6 +1378,7 @@ if (scrollTestMode.value) {
               <span class="dev-app__pill">SUPERDOC LABS</span>
               <span class="badge">Layout Engine: {{ useLayoutEngine ? 'ON' : 'OFF' }}</span>
               <span v-if="useLayoutEngine" class="badge">Flow: {{ useWebLayout ? 'SEMANTIC' : 'PAGINATED' }}</span>
+              <span class="badge">{{ renderPipelineBadge }}</span>
               <span v-if="useWebLayout" class="badge">Web Layout: ON</span>
               <span v-if="scrollTestMode" class="badge badge--warning">Scroll Test: ON</span>
               <span v-if="useCollaboration" class="badge badge--collab">Collab: ON</span>
@@ -1471,6 +1517,14 @@ if (scrollTestMode.value) {
             </div>
             <button class="dev-app__header-export-btn" @click="toggleLayoutEngine">
               Turn Layout Engine {{ useLayoutEngine ? 'off' : 'on' }} (reloads)
+            </button>
+            <button
+              class="dev-app__header-export-btn"
+              :disabled="!isV2StaticSupported"
+              :title="v2StaticToggleLabel"
+              @click="toggleV2StaticRender"
+            >
+              {{ v2StaticToggleLabel }}
             </button>
           </div>
         </div>

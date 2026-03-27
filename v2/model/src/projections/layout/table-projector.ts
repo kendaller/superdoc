@@ -37,6 +37,10 @@ import {
   rawTableCellToStyleEngine,
   rawTableToStyleEngine,
 } from "./style-engine-adapters.js";
+import {
+  measurementToLayoutPx,
+  twipsToLayoutPx,
+} from "./measurement-conversions.js";
 
 type BorderLike = {
   readonly val?: string;
@@ -70,7 +74,7 @@ export function projectTable(
   }
 
   if (raw.gridCols.length > 0) {
-    block.columnWidths = raw.gridCols;
+    block.columnWidths = raw.gridCols.map((width) => twipsToLayoutPx(width));
   }
 
   return block;
@@ -232,11 +236,14 @@ function buildRowAttrs(
   }
 
   if (raw.height) {
-    attrs.rowHeight = {
-      value: raw.height.w,
-      ...(raw.heightRule ? { rule: raw.heightRule } : {}),
-    };
-    hasContent = true;
+    const normalizedHeight = measurementToLayoutPx(raw.height.w, raw.height.type);
+    if (normalizedHeight !== undefined) {
+      attrs.rowHeight = {
+        value: normalizedHeight,
+        ...(raw.heightRule ? { rule: raw.heightRule } : {}),
+      };
+      hasContent = true;
+    }
   }
 
   return hasContent
@@ -357,20 +364,32 @@ function buildCellPadding(
   let hasValue = false;
 
   if (margins.marginTop?.value !== undefined) {
-    padding.top = margins.marginTop.value;
-    hasValue = true;
+    const top = measurementToLayoutPx(margins.marginTop.value, margins.marginTop.type);
+    if (top !== undefined) {
+      padding.top = top;
+      hasValue = true;
+    }
   }
   if (margins.marginRight?.value !== undefined) {
-    padding.right = margins.marginRight.value;
-    hasValue = true;
+    const right = measurementToLayoutPx(margins.marginRight.value, margins.marginRight.type);
+    if (right !== undefined) {
+      padding.right = right;
+      hasValue = true;
+    }
   }
   if (margins.marginBottom?.value !== undefined) {
-    padding.bottom = margins.marginBottom.value;
-    hasValue = true;
+    const bottom = measurementToLayoutPx(margins.marginBottom.value, margins.marginBottom.type);
+    if (bottom !== undefined) {
+      padding.bottom = bottom;
+      hasValue = true;
+    }
   }
   if (margins.marginLeft?.value !== undefined) {
-    padding.left = margins.marginLeft.value;
-    hasValue = true;
+    const left = measurementToLayoutPx(margins.marginLeft.value, margins.marginLeft.type);
+    if (left !== undefined) {
+      padding.left = left;
+      hasValue = true;
+    }
   }
 
   return hasValue

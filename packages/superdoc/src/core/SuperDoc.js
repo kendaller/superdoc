@@ -189,6 +189,9 @@ export class SuperDoc extends EventEmitter {
 
     // Internal: toggle layout-engine-powered PresentationEditor in dev shells
     useLayoutEngine: true,
+    // Exploratory product-side render switch. `legacy` keeps the PM-backed editor path.
+    // `v2-static` uses the v2 model pipeline for static DOCX rendering only.
+    renderPipeline: 'legacy',
   };
 
   /**
@@ -1042,6 +1045,20 @@ export class SuperDoc extends EventEmitter {
   }
 
   /**
+   * Triggered when a non-editor render surface becomes ready.
+   * Used by temporary static render hosts that still need to participate
+   * in SuperDoc's ready counting without pretending to be full editors.
+   *
+   * @param {unknown} surface
+   * @returns {void}
+   */
+  broadcastRenderSurfaceReady(surface) {
+    this.readyEditors++;
+    this.broadcastReady();
+    this.emit('renderSurfaceReady', { surface });
+  }
+
+  /**
    * Triggered when an editor is destroyed
    * @returns {void}
    */
@@ -1128,6 +1145,10 @@ export class SuperDoc extends EventEmitter {
   }
 
   #addToolbar() {
+    if (this.toolbar?.destroy) {
+      this.toolbar.destroy();
+    }
+
     const moduleConfig = this.config.modules?.toolbar || {};
     this.toolbarElement = this.config.modules?.toolbar?.selector || this.config.toolbar;
     this.toolbar = null;
@@ -1708,6 +1729,12 @@ export class SuperDoc extends EventEmitter {
     if (this.#surfaceManager) {
       this.#surfaceManager.destroy();
     }
+
+    if (this.toolbar?.destroy) {
+      this.toolbar.destroy();
+      this.toolbar = null;
+    }
+
     // Unmount the app FIRST so editors are destroyed — this triggers each
     // extension's onDestroy() which cancels debounced Y.js writes and
     // unobserves Y.js maps. Only then is it safe to destroy the ydoc/provider.

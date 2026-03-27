@@ -187,3 +187,6 @@ export {
   allocateParagraphId,
   allocateMediaFilename,
 } from "./mutations/id-allocation.js";
+
+// Performance instrumentation (re-export shared timeline for consumer access)
+export { v2PerfTimeline } from "@superdoc/v2-perf";

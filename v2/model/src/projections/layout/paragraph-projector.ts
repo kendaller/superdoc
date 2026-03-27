@@ -36,6 +36,10 @@ import {
   rawRunToStyleEngine,
   styleEngineRunToFormatting,
 } from "./style-engine-adapters.js";
+import {
+  paragraphLineToLayoutSpacing,
+  twipsToLayoutPx,
+} from "./measurement-conversions.js";
 
 type BorderLike = {
   readonly val?: string;
@@ -195,15 +199,20 @@ function buildSpacing(
   let hasValue = false;
 
   if (spacing.before !== undefined) {
-    result.before = spacing.before;
+    result.before = twipsToLayoutPx(spacing.before);
     hasValue = true;
   }
   if (spacing.after !== undefined) {
-    result.after = spacing.after;
+    result.after = twipsToLayoutPx(spacing.after);
     hasValue = true;
   }
-  if (spacing.line !== undefined) {
-    result.line = spacing.line;
+  const normalizedLineSpacing = paragraphLineToLayoutSpacing(
+    spacing.line,
+    spacing.lineRule,
+  );
+  if (normalizedLineSpacing) {
+    result.line = normalizedLineSpacing.value;
+    result.lineUnit = normalizedLineSpacing.unit;
     hasValue = true;
   }
   if (spacing.lineRule) {
@@ -235,19 +244,19 @@ function buildIndent(
   let hasValue = false;
 
   if (indent.left !== undefined) {
-    result.left = indent.left;
+    result.left = twipsToLayoutPx(indent.left);
     hasValue = true;
   }
   if (indent.right !== undefined) {
-    result.right = indent.right;
+    result.right = twipsToLayoutPx(indent.right);
     hasValue = true;
   }
   if (indent.firstLine !== undefined) {
-    result.firstLine = indent.firstLine;
+    result.firstLine = twipsToLayoutPx(indent.firstLine);
     hasValue = true;
   }
   if (indent.hanging !== undefined) {
-    result.hanging = indent.hanging;
+    result.hanging = twipsToLayoutPx(indent.hanging);
     hasValue = true;
   }
 
