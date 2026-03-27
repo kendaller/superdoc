@@ -74,7 +74,7 @@ import {
 import { DragDropManager } from './input/DragDropManager.js';
 import { processAndInsertImageFile } from '@extensions/image/imageHelpers/processAndInsertImageFile.js';
 import { HeaderFooterSessionManager } from './header-footer/HeaderFooterSessionManager.js';
-import { toFlowBlocks, hydrateImageBlocks, ConverterContext, FlowBlockCache } from '@superdoc/pm-adapter';
+import { toFlowBlocks, ConverterContext, FlowBlockCache } from '@superdoc/pm-adapter';
 import { readSettingsRoot, readDefaultTableStyle } from '../../document-api-adapters/document-settings.js';
 import {
   incrementalLayout,
@@ -95,17 +95,6 @@ import type {
   PositionHit,
   TableHitResult,
 } from '@superdoc/layout-bridge';
-
-// V2 model integration — only used when SD_V2_MODEL_ADAPTER flag is on
-import {
-  open as openV2Model,
-  projectToFlowBlocks as projectToFlowBlocksV2,
-  projectToSemanticJson,
-  DocumentApiAdapter as V2DocumentApiAdapter,
-  SemanticModel,
-  StyleResolver,
-} from '@superdoc/v2-model';
-import type { DocumentHandle as V2DocumentHandle, SemanticDocument } from '@superdoc/v2-model';
 
 import { measureBlock } from '@superdoc/measuring-dom';
 import type {
@@ -128,10 +117,15 @@ import type * as Y from 'yjs';
 import type { HeaderFooterDescriptor } from '../header-footer/HeaderFooterRegistry.js';
 import { isHeaderFooterPartId } from '../parts/adapters/header-footer-part-descriptor.js';
 import type { PartChangedEvent } from '../parts/types.js';
+import {
+  PresentationV2Bridge,
+  type PresentationV2DocumentApiAdapter,
+  type PresentationV2SemanticDocument,
+  type PresentationV2SemanticModel,
+} from '../../../v2/presentation/index.js';
 import { isInRegisteredSurface } from './utils/uiSurfaceRegistry.js';
 import { buildSemanticFootnoteBlocks } from './semantic-flow-footnotes.js';
 import { splitRunsAtDecorationBoundaries } from './layout/SplitRunsAtDecorationBoundaries.js';
-import { mergePmMetadataIntoV2Blocks } from './layout/V2ShadowParity.js';
 
 import type { ResolveRangeOutput, DocumentApi } from '@superdoc/document-api';
 import type { SelectionHandle } from '../selection-state.js';
@@ -317,11 +311,8 @@ export class PresentationEditor extends EventEmitter {
   #flowBlockCache: FlowBlockCache = new FlowBlockCache();
   #footnoteNumberSignature: string | null = null;
   #endnoteNumberSignature: string | null = null;
-  /** V2 semantic model — created when V2_MODEL_ADAPTER flag is on. */
-  #v2DocumentHandle: V2DocumentHandle | null = null;
-  #v2SemanticModel: SemanticModel | null = null;
-  #v2StyleResolver: StyleResolver | undefined = undefined;
-  #v2DocumentApiAdapter: V2DocumentApiAdapter | null = null;
+  /** Product-side bridge into the new v2 semantic pipeline. */
+  #v2Bridge = new PresentationV2Bridge();
   #domPainter: ReturnType<typeof createDomPainter> | null = null;
   #pageGeometryHelper: PageGeometryHelper | null = null;
   #dragDropManager: DragDropManager | null = null;
@@ -872,8 +863,8 @@ export class PresentationEditor extends EventEmitter {
    *
    * Returns `null` when the v2 model was not initialized for this document.
    */
-  getSemanticModel(): SemanticModel | null {
-    return this.#v2SemanticModel;
+  getSemanticModel(): PresentationV2SemanticModel | null {
+    return this.#v2Bridge.getSemanticModel();
   }
 
   /**
@@ -882,8 +873,8 @@ export class PresentationEditor extends EventEmitter {
    * Returns `undefined` when the v2 model is not active for this editor.
    * This is a read-only diagnostic/export surface, not a persistence format.
    */
-  getSemanticJson(): SemanticDocument | undefined {
-    return this.#v2SemanticModel ? projectToSemanticJson(this.#v2SemanticModel) : undefined;
+  getSemanticJson(): PresentationV2SemanticDocument | undefined {
+    return this.#v2Bridge.getSemanticJson();
   }
 
   /**
@@ -891,8 +882,8 @@ export class PresentationEditor extends EventEmitter {
    *
    * Returns `undefined` when the v2 model is not active for this editor.
    */
-  getSemanticDocumentApiAdapter(): V2DocumentApiAdapter | undefined {
-    return this.#v2DocumentApiAdapter ?? undefined;
+  getSemanticDocumentApiAdapter(): PresentationV2DocumentApiAdapter | undefined {
+    return this.#v2Bridge.getSemanticDocumentApiAdapter();
   }
 
   /**
@@ -2925,11 +2916,7 @@ export class PresentationEditor extends EventEmitter {
 
     // Clear flow block cache to free memory
     this.#flowBlockCache.clear();
-    void this.#v2DocumentHandle?.close();
-    this.#v2DocumentHandle = null;
-    this.#v2SemanticModel = null;
-    this.#v2StyleResolver = undefined;
-    this.#v2DocumentApiAdapter = null;
+    void this.#v2Bridge.close();
 
     this.#domPainter = null;
     this.#pageGeometryHelper = null;
@@ -2987,25 +2974,13 @@ export class PresentationEditor extends EventEmitter {
    */
   async #initV2Model(docxBytes: Uint8Array): Promise<void> {
     try {
-      const handle = await openV2Model({ kind: 'memory', bytes: docxBytes });
-      await handle.ready('structure');
-      const model = handle.semanticModel();
-      if (model) {
-        this.#v2DocumentHandle = handle;
-        this.#v2SemanticModel = model;
-        this.#v2DocumentApiAdapter = new V2DocumentApiAdapter(model);
-        const views = handle.views();
-        this.#v2StyleResolver = new StyleResolver(views.styles?.rootElement(), views.numbering?.rootElement());
-        this.#pendingDocChange = true;
-        this.#scheduleRerender();
-      }
+      await this.#v2Bridge.initialize(docxBytes);
+      this.#pendingDocChange = true;
+      this.#scheduleRerender();
     } catch (e) {
       // V2 model init failed — fall back to PM path silently
       console.warn('[PresentationEditor] V2 model initialization failed, falling back to PM path:', e);
-      this.#v2DocumentHandle = null;
-      this.#v2SemanticModel = null;
-      this.#v2StyleResolver = undefined;
-      this.#v2DocumentApiAdapter = null;
+      await this.#v2Bridge.close();
     }
   }
 
@@ -4203,24 +4178,15 @@ export class PresentationEditor extends EventEmitter {
         let result: { blocks: FlowBlock[]; bookmarks?: Map<string, number> };
 
         const useV2Adapter = this.#isV2ModelAdapterEnabled();
-        if (useV2Adapter && this.#v2SemanticModel) {
+        if (useV2Adapter && this.#v2Bridge.isActive()) {
           // Shadow PM projection remains active in v2 mode so bookmark and PM-range
           // metadata can be carried forward while the v2 blocks drive rendering.
           const shadowPmResult = toFlowBlocks(docJson, pmAdapterOptions);
-          const v2Result = projectToFlowBlocksV2(this.#v2SemanticModel, {
-            resolver: this.#v2StyleResolver,
+          result = this.#v2Bridge.projectFlowBlocks({
+            shadowBlocks: shadowPmResult.blocks as FlowBlock[],
+            shadowBookmarks: shadowPmResult.bookmarks,
+            mediaFiles,
           });
-
-          const v2BlocksWithPmMetadata = mergePmMetadataIntoV2Blocks(
-            v2Result.blocks as FlowBlock[],
-            shadowPmResult.blocks as FlowBlock[],
-          );
-          const hydratedBlocks = hydrateImageBlocks(v2BlocksWithPmMetadata, mediaFiles);
-
-          result = {
-            blocks: hydratedBlocks,
-            bookmarks: shadowPmResult.bookmarks ?? new Map(),
-          };
         } else {
           result = toFlowBlocks(docJson, pmAdapterOptions);
         }

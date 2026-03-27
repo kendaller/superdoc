@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { PresentationEditor } from '../PresentationEditor.js';
-import type { Editor as EditorInstance } from '../../Editor.js';
+import { PresentationEditor } from '../../v1/core/presentation-editor/PresentationEditor.js';
+import type { Editor as EditorInstance } from '../../v1/core/Editor.js';
 
 type MockedEditor = Mock<(...args: unknown[]) => EditorInstance> & {
   mock: {
@@ -144,7 +144,7 @@ const {
   };
 });
 
-vi.mock('../../Editor', () => ({
+vi.mock('../../v1/core/Editor', () => ({
   Editor: vi.fn().mockImplementation(() => ({
     setDocumentMode: vi.fn(),
     setOptions: vi.fn(),
@@ -246,7 +246,7 @@ vi.mock('@extensions/pagination/pagination-helpers.js', () => ({
   onHeaderFooterDataUpdate: mockOnHeaderFooterDataUpdate,
 }));
 
-vi.mock('../../header-footer/EditorOverlayManager', () => ({
+vi.mock('../../v1/core/header-footer/EditorOverlayManager', () => ({
   EditorOverlayManager: mockEditorOverlayManager,
 }));
 
