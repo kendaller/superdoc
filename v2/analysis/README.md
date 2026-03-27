@@ -170,6 +170,9 @@ Use these docs together:
   Cross-workstream entry point and decision summary.
 - `plans/semantic-model.md`
   Canonical architecture plan for the future model stack.
+- `plans/analysis-universe.md`
+  Canonical plan for the corpus-bounded analysis universe, its artifacts, and
+  the separation between raw-surface, universe, and support-matrix layers.
 - `plans/corpus-discussion.md`
   Earlier discussion of corpus analysis goals, occurrence modeling, and why
   analysis should come from the same model stack.

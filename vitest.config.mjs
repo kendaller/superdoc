@@ -14,6 +14,8 @@ export default defineConfig({
     // word-layout, shared/{common,font-utils,locale-utils,url-validation}
     // Run them via: pnpm -r --filter '!@superdoc/super-editor' test
     projects: [
+      './v2/model',
+      './v2/analysis',
       './packages/super-editor',
       './packages/superdoc',
       './packages/ai',

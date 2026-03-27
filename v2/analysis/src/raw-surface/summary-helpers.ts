@@ -1,16 +1,14 @@
 // ---------------------------------------------------------------------------
 // Summary Helpers
 // ---------------------------------------------------------------------------
-// Shared counting and sorting utilities used by both per-document and
-// corpus-level summarization.
+// Counting and sorting utilities for raw-surface summarization.
+// Core helpers (increment, sortRecord) live in shared/ and are re-exported
+// here for backward compatibility within the raw-surface layer.
 // ---------------------------------------------------------------------------
 
 import type { SignatureCount } from './types.js';
 
-/** Increment a count in a string-keyed record. */
-export function increment(counts: Record<string, number>, key: string): void {
-  counts[key] = (counts[key] ?? 0) + 1;
-}
+export { increment, sortRecord } from '../shared/sort-helpers.js';
 
 /** Merge source counts into target counts. */
 export function mergeRecordCounts(target: Record<string, number>, source: Record<string, number>): void {
@@ -25,13 +23,4 @@ export function buildTopSignatures(counts: Record<string, number>, limit: number
     .map(([pathSignature, count]) => ({ pathSignature, count }))
     .sort((a, b) => b.count - a.count || a.pathSignature.localeCompare(b.pathSignature))
     .slice(0, limit);
-}
-
-/** Sort a record's keys alphabetically for deterministic JSON output. */
-export function sortRecord(record: Record<string, number>): Record<string, number> {
-  const sorted: Record<string, number> = {};
-  for (const key of Object.keys(record).sort()) {
-    sorted[key] = record[key];
-  }
-  return sorted;
 }

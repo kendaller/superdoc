@@ -164,6 +164,12 @@ export type LayoutEngineOptions = {
   ruler?: RulerOptions;
   /** Proofing / spellcheck configuration. */
   proofing?: ProofingConfig;
+  /**
+   * Original .docx bytes for v2/model initialization.
+   * When provided AND the SD_V2_MODEL_ADAPTER feature flag is enabled,
+   * PresentationEditor uses v2/model for FlowBlock[] generation instead of pm-adapter.
+   */
+  v2ModelBytes?: Uint8Array;
 };
 
 export type PresentationEditorOptions = ConstructorParameters<typeof Editor>[0] & {

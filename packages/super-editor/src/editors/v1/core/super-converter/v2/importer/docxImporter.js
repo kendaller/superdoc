@@ -44,6 +44,9 @@ import { translator as wNumberingTranslator } from '@converter/v3/handlers/w/num
 import { baseNumbering } from '@converter/v2/exporter/helpers/base-list.definitions.js';
 import { patchNumberingDefinitions } from './patchNumberingDefinitions.js';
 import { startCollection, drainDiagnostics } from '@converter/v3/handlers/import-diagnostics.js';
+import { buildSourceIndex } from '../../analysis/source-index.js';
+import { createProvenanceCollector } from '../../analysis/provenance-collector.js';
+import { createProvenanceHooks } from '../../analysis/provenance-hooks.js';
 
 /**
  * @typedef {import()} XmlNode
@@ -131,9 +134,28 @@ export const createDocumentJson = (docx, converter, editor) => {
     ensureSectionProperties(bodyNode);
     const node = bodyNode;
 
+    // --- Provenance: build source index BEFORE preprocessing mutates the tree ---
+    const enableProvenance = converter?._enableProvenance === true;
+    let provenanceCollector = null;
+    let mainSourceIndex = null;
+    let provenanceHooks = null;
+
+    if (enableProvenance) {
+      provenanceCollector = createProvenanceCollector();
+      provenanceCollector.setStoryContext({ storyKind: 'main', storyKey: 'main' });
+
+      // Index the full XML tree (json.elements) before any mutation
+      mainSourceIndex = buildSourceIndex(json.elements, 'word/document.xml', 'main');
+    }
+
     // Pre-processing step for replacing fldChar sequences with SD-specific elements
     const { processedNodes } = preProcessNodesForFldChar(node.elements ?? [], docx);
     node.elements = processedNodes;
+
+    // --- Provenance: create hooks for handler traversal ---
+    if (enableProvenance && mainSourceIndex && provenanceCollector) {
+      provenanceHooks = createProvenanceHooks(mainSourceIndex, provenanceCollector);
+    }
 
     // Extract body-level sectPr before filtering it out from content
     const bodySectPr = node.elements?.find((n) => n.name === 'w:sectPr');
@@ -173,7 +195,10 @@ export const createDocumentJson = (docx, converter, editor) => {
       inlineDocumentFonts,
       lists,
       path: [],
-      extraParams: { importDiagnosticsCollectionId },
+      extraParams: {
+        importDiagnosticsCollectionId,
+        ...(provenanceHooks ? { provenanceHooks } : {}),
+      },
     });
     const importDiagnostics = drainDiagnostics(importDiagnosticsCollectionId);
 
@@ -204,6 +229,7 @@ export const createDocumentJson = (docx, converter, editor) => {
         numbering,
         translatedNumbering,
         translatedLinkedStyles,
+        provenanceCollector,
       ),
       comments,
       footnotes,
@@ -215,6 +241,8 @@ export const createDocumentJson = (docx, converter, editor) => {
       translatedNumbering,
       themeColors: getThemeColorPalette(docx),
       importDiagnostics,
+      // Provenance: collector for post-import resolution (null if disabled)
+      _provenanceCollector: provenanceCollector,
     };
   }
   return null;
@@ -467,7 +495,16 @@ function importViewSettingFromSettings(docx, converter) {
  * @param {Editor} editor instance.
  * @returns {Object} The document styles object
  */
-function getDocumentStyles(node, docx, converter, editor, numbering, translatedNumbering, translatedLinkedStyles) {
+function getDocumentStyles(
+  node,
+  docx,
+  converter,
+  editor,
+  numbering,
+  translatedNumbering,
+  translatedLinkedStyles,
+  provenanceCollector = null,
+) {
   const sectPr = node.elements?.find((n) => n.name === 'w:sectPr');
   const styles = {};
 
@@ -516,7 +553,15 @@ function getDocumentStyles(node, docx, converter, editor, numbering, translatedN
   });
 
   // Import headers and footers. Stores them in converter.headers and converter.footers
-  importHeadersFooters(docx, converter, editor, numbering, translatedNumbering, translatedLinkedStyles);
+  importHeadersFooters(
+    docx,
+    converter,
+    editor,
+    numbering,
+    translatedNumbering,
+    translatedLinkedStyles,
+    provenanceCollector,
+  );
   styles.alternateHeaders = isAlternatingHeadersOddEven(docx);
   return styles;
 }
@@ -670,7 +715,15 @@ export function addDefaultStylesIfMissing(styles) {
  * @param {Object} converter The converter instance
  * @param {Editor} mainEditor The editor instance
  */
-const importHeadersFooters = (docx, converter, mainEditor, numbering, translatedNumbering, translatedLinkedStyles) => {
+const importHeadersFooters = (
+  docx,
+  converter,
+  mainEditor,
+  numbering,
+  translatedNumbering,
+  translatedLinkedStyles,
+  provenanceCollector = null,
+) => {
   const rels = docx['word/_rels/document.xml.rels'];
   const relationships = rels?.elements.find((el) => el.name === 'Relationships');
   const { elements } = relationships || { elements: [] };
@@ -687,6 +740,8 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
   // Copy class instance(private fields and inherited methods won't work)
   const editor = { ...mainEditor };
   editor.options.annotations = true;
+  converter._headerPartUris = {};
+  converter._footerPartUris = {};
 
   headers.forEach((header) => {
     const { rId, referenceFile, currentFileName } = getHeaderFooterSectionData(header, docx);
@@ -694,6 +749,17 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
     // Pre-process PAGE and NUMPAGES field codes in headers
     // Uses the targeted version that preserves other field types (DOCPROPERTY, etc.)
     const headerNodes = carbonCopy(referenceFile.elements[0].elements ?? []);
+
+    // --- Provenance: index header part before preprocessing ---
+    let headerProvenanceHooks = null;
+    if (provenanceCollector) {
+      const partUri = `word/${currentFileName}`;
+      const storyRef = { storyKind: 'header', storyKey: `header:${rId}` };
+      provenanceCollector.setStoryContext(storyRef);
+      const headerIndex = buildSourceIndex(referenceFile.elements ?? [], partUri, 'header');
+      headerProvenanceHooks = createProvenanceHooks(headerIndex, provenanceCollector);
+    }
+
     const { processedNodes: headerProcessedNodes } = preProcessPageFieldsOnly(headerNodes);
 
     const sectPrHeader = allSectPrElements.find(
@@ -713,6 +779,9 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
       editor,
       filename: currentFileName,
       path: [],
+      extraParams: {
+        ...(headerProvenanceHooks ? { provenanceHooks: headerProvenanceHooks } : {}),
+      },
     });
 
     // Safety: drop inline-only nodes at the root of header docs
@@ -721,6 +790,7 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
 
     if (!converter.headerIds.ids) converter.headerIds.ids = [];
     converter.headerIds.ids.push(rId);
+    converter._headerPartUris[rId] = `word/${currentFileName}`;
     converter.headers[rId] = { type: 'doc', content: [...schema] };
     if (sectionType) {
       converter.headerIds[sectionType] = rId;
@@ -736,6 +806,17 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
     // Pre-process PAGE and NUMPAGES field codes in footers
     // Uses the targeted version that preserves other field types (DOCPROPERTY, etc.)
     const footerNodes = carbonCopy(referenceFile.elements[0].elements ?? []);
+
+    // --- Provenance: index footer part before preprocessing ---
+    let footerProvenanceHooks = null;
+    if (provenanceCollector) {
+      const partUri = `word/${currentFileName}`;
+      const storyRef = { storyKind: 'footer', storyKey: `footer:${rId}` };
+      provenanceCollector.setStoryContext(storyRef);
+      const footerIndex = buildSourceIndex(referenceFile.elements ?? [], partUri, 'footer');
+      footerProvenanceHooks = createProvenanceHooks(footerIndex, provenanceCollector);
+    }
+
     const { processedNodes: footerProcessedNodes } = preProcessPageFieldsOnly(footerNodes);
 
     const sectPrFooter = allSectPrElements.find(
@@ -753,6 +834,9 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
       editor,
       filename: currentFileName,
       path: [],
+      extraParams: {
+        ...(footerProvenanceHooks ? { provenanceHooks: footerProvenanceHooks } : {}),
+      },
     });
 
     // Safety: drop inline-only nodes at the root of footer docs
@@ -761,6 +845,7 @@ const importHeadersFooters = (docx, converter, mainEditor, numbering, translated
 
     if (!converter.footerIds.ids) converter.footerIds.ids = [];
     converter.footerIds.ids.push(rId);
+    converter._footerPartUris[rId] = `word/${currentFileName}`;
     converter.footers[rId] = { type: 'doc', content: [...schema] };
     if (sectionType) {
       converter.footerIds[sectionType] = rId;

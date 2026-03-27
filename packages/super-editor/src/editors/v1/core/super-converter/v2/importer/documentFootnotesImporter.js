@@ -1,5 +1,7 @@
 import { defaultNodeListHandler } from './docxImporter';
 import { carbonCopy } from '../../../utilities/carbonCopy.js';
+import { buildSourceIndex } from '../../analysis/source-index.js';
+import { createProvenanceHooks } from '../../analysis/provenance-hooks.js';
 
 /**
  * Remove w:footnoteRef placeholders from converted footnote content.
@@ -60,6 +62,13 @@ function importNoteEntries({
 }) {
   const handler = nodeListHandler || defaultNodeListHandler();
   if (!partXml?.elements?.length) return [];
+  const provenanceCollector = converter?._provenanceCollector ?? null;
+  const storyKind = childElementName === 'w:footnote' ? 'footnote' : 'endnote';
+  const partUri = filename === 'footnotes.xml' ? 'word/footnotes.xml' : 'word/endnotes.xml';
+  const provenanceHooks =
+    provenanceCollector != null
+      ? createProvenanceHooks(buildSourceIndex(partXml.elements, partUri, storyKind), provenanceCollector)
+      : null;
 
   const root = partXml.elements[0];
   const elements = Array.isArray(root?.elements) ? root.elements : [];
@@ -94,6 +103,12 @@ function importNoteEntries({
     // Be permissive about ids: some producers emit footnotes starting at 0.
     // Only skip negative ids (Word uses -1 for separator).
     if (!Number.isFinite(idNumber) || idNumber < 0) return;
+    if (provenanceCollector) {
+      provenanceCollector.setStoryContext({
+        storyKind,
+        storyKey: `${storyKind}:${id}`,
+      });
+    }
 
     const childElements = Array.isArray(el.elements) ? el.elements : [];
     const converted = handler.handler({
@@ -107,6 +122,9 @@ function importNoteEntries({
       inlineDocumentFonts,
       filename,
       path: [el],
+      extraParams: {
+        ...(provenanceHooks ? { provenanceHooks } : {}),
+      },
     });
 
     const stripped = stripFootnoteMarkerNodes(converted);

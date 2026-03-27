@@ -4,6 +4,7 @@ packages:
   - tests/visual
   - tests/behavior
   - tests/doc-api-stories
+  - v2/*
   - apps/*
   - apps/cli/platforms/*
   - packages/**/*
@@ -57,6 +58,7 @@ catalog:
   eslint-plugin-react: ^7.37.5
   eslint-plugin-react-hooks: ^7.0.1
   eventemitter3: ^5.0.1
+  fflate: ^0.8.2
   fast-glob: ^3.3.3
   happy-dom: ^20.3.4
   he: ^1.2.0
@@ -101,6 +103,7 @@ catalog:
   rollup: ^4.31.0
   rollup-plugin-copy: ^3.5.0
   rollup-plugin-visualizer: ^5.12.0
+  saxes: ^6.0.0
   semantic-release: ^24.2.7
   semantic-release-ai-notes: ^0.2.3
   semantic-release-commit-filter: ^1.0.2

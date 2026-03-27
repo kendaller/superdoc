@@ -1109,6 +1109,10 @@ class SuperConverter {
       this.importDiagnostics = result.importDiagnostics ?? [];
       this.bibliographyPart = loadBibliographyPartFromPackage(this.convertedXml);
 
+      // Provenance: preserve the importer-emitted JSON for position-map resolution
+      this._importedPmDocJson = result.pmDoc;
+      this._provenanceCollector = result._provenanceCollector ?? null;
+
       return result.pmDoc;
     } else {
       return null;

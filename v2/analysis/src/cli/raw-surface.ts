@@ -6,10 +6,12 @@
 //
 // Usage:
 //   pnpm --filter @superdoc/v2-analysis scan --input <file-or-dir> [--out <dir>]
+//   pnpm --filter @superdoc/v2-analysis scan --manifest <path> [--out <dir>]
 //
 // Default output: v2/analysis/output/raw-surface/
 //
-// Accepts a single .docx file or a directory (recursed for .docx files).
+// Accepts a single .docx file, a directory (recursed for .docx files),
+// or a corpus manifest JSON file.
 // Emits per-document artifacts and, when scanning multiple docs, corpus
 // artifacts.
 // ---------------------------------------------------------------------------
@@ -25,36 +27,50 @@ import { scanDocument } from '../raw-surface/scan-document.js';
 import { summarizeCorpus } from '../raw-surface/summarize-corpus.js';
 import { writeDocumentArtifacts, writeCorpusArtifacts } from '../raw-surface/write-artifacts.js';
 import type { RawSurfaceDocumentResult } from '../raw-surface/types.js';
+import { loadCorpusManifest, resolveManifestInputs } from '../corpus-manifest/index.js';
 
 // ---------------------------------------------------------------------------
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-function parseArgs(argv: string[]): { input: string; out: string } {
+function parseArgs(argv: string[]): { input?: string; manifest?: string; out: string } {
   let input: string | undefined;
+  let manifest: string | undefined;
   let out: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--input' && argv[i + 1]) {
       input = argv[++i];
+    } else if (argv[i] === '--manifest' && argv[i + 1]) {
+      manifest = argv[++i];
     } else if (argv[i] === '--out' && argv[i + 1]) {
       out = argv[++i];
     }
   }
 
-  if (!input) {
+  if (!input && !manifest) {
     console.error('Usage: raw-surface --input <file-or-dir> [--out <output-dir>]');
+    console.error('       raw-surface --manifest <manifest.json> [--out <output-dir>]');
     process.exit(1);
   }
 
-  return { input: resolve(input), out: resolve(out ?? DEFAULT_OUT) };
+  if (input && manifest) {
+    console.error('Error: --input and --manifest are mutually exclusive.');
+    process.exit(1);
+  }
+
+  return {
+    input: input ? resolve(input) : undefined,
+    manifest: manifest ? resolve(manifest) : undefined,
+    out: resolve(out ?? DEFAULT_OUT),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // File discovery
 // ---------------------------------------------------------------------------
 
-type DocxInput = { filePath: string; docId: string; sourceRelativePath?: string };
+type DocxInput = { filePath: string; docId: string; sourceRelativePath?: string; bytes?: Uint8Array };
 
 function discoverInputs(inputPath: string): DocxInput[] {
   const stat = statSync(inputPath);
@@ -80,8 +96,23 @@ function discoverInputs(inputPath: string): DocxInput[] {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { input, out } = parseArgs(process.argv.slice(2));
-  const inputs = discoverInputs(input);
+  const { input, manifest, out } = parseArgs(process.argv.slice(2));
+
+  let inputs: DocxInput[];
+
+  if (manifest) {
+    const corpusManifest = loadCorpusManifest(manifest);
+    const resolved = resolveManifestInputs(corpusManifest, manifest);
+    inputs = resolved.map((r) => ({
+      filePath: '', // not used when bytes are already loaded
+      docId: r.docId,
+      sourceRelativePath: r.sourceRelativePath,
+      bytes: r.bytes,
+    }));
+    console.log(`Loaded manifest: ${corpusManifest.documents.length} document(s)`);
+  } else {
+    inputs = discoverInputs(input!);
+  }
 
   if (inputs.length === 0) {
     console.error('No .docx files found.');
@@ -95,15 +126,15 @@ async function main(): Promise<void> {
 
   const results: RawSurfaceDocumentResult[] = [];
 
-  for (const { filePath, docId, sourceRelativePath } of inputs) {
-    const bytes = new Uint8Array(readFileSync(filePath));
-    const result = await scanDocument(bytes, docId, { sourceRelativePath });
+  for (const entry of inputs) {
+    const bytes = entry.bytes ?? new Uint8Array(readFileSync(entry.filePath));
+    const result = await scanDocument(bytes, entry.docId, { sourceRelativePath: entry.sourceRelativePath });
     writeDocumentArtifacts(result, out);
     results.push(result);
 
     const diagCount = result.summary.scanDiagnostics.length;
     const diagLabel = diagCount > 0 ? ` (${diagCount} diagnostic(s))` : '';
-    console.log(`  ${docId}: ${result.summary.totalFacts} facts${diagLabel}`);
+    console.log(`  ${entry.docId}: ${result.summary.totalFacts} facts${diagLabel}`);
   }
 
   if (results.length > 1) {

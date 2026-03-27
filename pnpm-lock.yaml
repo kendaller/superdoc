@@ -123,6 +123,9 @@ catalogs:
     fast-glob:
       specifier: ^3.3.3
       version: 3.3.3
+    fflate:
+      specifier: ^0.8.2
+      version: 0.8.2
     he:
       specifier: ^1.2.0
       version: 1.2.0
@@ -231,6 +234,9 @@ catalogs:
     rollup-plugin-visualizer:
       specifier: ^5.12.0
       version: 5.14.0
+    saxes:
+      specifier: ^6.0.0
+      version: 6.0.0
     semantic-release:
       specifier: ^24.2.7
       version: 24.2.9
@@ -2419,6 +2425,9 @@ importers:
       '@superdoc/url-validation':
         specifier: workspace:*
         version: link:../../shared/url-validation
+      '@superdoc/v2-model':
+        specifier: workspace:*
+        version: link:../../v2/model
       '@superdoc/word-layout':
         specifier: workspace:*
         version: link:../word-layout
@@ -2845,6 +2854,34 @@ importers:
       vite:
         specifier: npm:rolldown-vite@7.3.1
         version: rolldown-vite@7.3.1(@types/node@25.5.0)(esbuild@0.27.4)(jiti@2.6.1)(less@4.4.2)(sass@1.97.3)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
+
+  v2/analysis:
+    dependencies:
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.2
+      saxes:
+        specifier: 'catalog:'
+        version: 6.0.0
+    devDependencies:
+      fast-glob:
+        specifier: 'catalog:'
+        version: 3.3.3
+
+  v2/model:
+    dependencies:
+      '@superdoc/contracts':
+        specifier: workspace:*
+        version: link:../../packages/layout-engine/contracts
+      '@superdoc/style-engine':
+        specifier: workspace:*
+        version: link:../../packages/layout-engine/style-engine
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.2
+      saxes:
+        specifier: 'catalog:'
+        version: 6.0.0
 
 packages:
 
@@ -36031,8 +36068,7 @@ snapshots:
   fetch-retry@5.0.6:
     optional: true
 
-  fflate@0.8.2:
-    optional: true
+  fflate@0.8.2: {}
 
   figures@2.0.0:
     dependencies:

@@ -33,6 +33,16 @@ export const handlePictNode = (params) => {
   if (resultNodes.some((n) => BLOCK_TYPES.has(n.type))) {
     return { nodes: [], consumed: 0 };
   }
+  const provenanceHooks = params?.extraParams?.provenanceHooks;
+  if (provenanceHooks) {
+    resultNodes.forEach((resultNode) => {
+      provenanceHooks.bindNode(pict, resultNode, {
+        featureKey: 'vml.pict',
+        nodeType: resultNode?.type,
+        traceability: 'occurrence',
+      });
+    });
+  }
   return {
     nodes: resultNodes,
     consumed: 1,

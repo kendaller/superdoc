@@ -39,6 +39,7 @@ export { SectionType } from './types.js';
 
 // Re-export public API functions from internal implementation
 export { toFlowBlocks, toFlowBlocksMap } from './internal.js';
+export { hydrateImageBlocks } from './utilities.js';
 
 // Re-export cache for incremental conversion
 export { FlowBlockCache } from './cache.js';

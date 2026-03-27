@@ -13,10 +13,10 @@
 //   <out>/corpus/raw-examples-by-signature.json
 // ---------------------------------------------------------------------------
 
-import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RawSurfaceDocumentResult, CorpusRawSummary, SignatureMatrixEntry, SignatureExample } from './types.js';
 import { buildDocumentExamplesBySignature } from './examples.js';
+import { writeJson, writeNdjson, ensureDir } from '../shared/write-helpers.js';
 
 /** Create a filesystem-safe slug from a docId. */
 function toBaseSlug(docId: string): string {
@@ -30,22 +30,9 @@ function toBaseSlug(docId: string): string {
 }
 
 /** Create a deterministic, collision-safe directory slug for a document. */
-function toSlug(docId: string, docFingerprint: string): string {
+export function toSlug(docId: string, docFingerprint: string): string {
   const base = toBaseSlug(docId);
   return `${base}__${docFingerprint.slice(0, 8)}`;
-}
-
-function writeJson(filePath: string, data: unknown): void {
-  writeFileSync(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
-}
-
-function writeNdjson(filePath: string, records: unknown[]): void {
-  const lines = records.map((r) => JSON.stringify(r));
-  writeFileSync(filePath, lines.join('\n') + '\n', 'utf-8');
-}
-
-function ensureDir(dirPath: string): void {
-  mkdirSync(dirPath, { recursive: true });
 }
 
 /** Write all per-document artifacts to the output directory. */

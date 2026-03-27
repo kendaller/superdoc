@@ -1,6 +1,8 @@
 {
   "files": [],
   "references": [
+    { "path": "v2/model/tsconfig.json" },
+    { "path": "v2/analysis/tsconfig.json" },
     { "path": "packages/word-layout/tsconfig.json" },
     { "path": "packages/layout-engine/contracts/tsconfig.json" },
     { "path": "packages/layout-engine/layout-resolved/tsconfig.json" },

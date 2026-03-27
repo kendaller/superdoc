@@ -12,6 +12,7 @@
  * - SD_DEBUG_PAGE_TOKENS: Enable debug logging for page token resolution
  * - SD_DEBUG_HF_CACHE: Enable debug logging for header/footer cache operations
  * - SD_DEBUG_LAYOUT_VERSION: Enable debug logging for layout version tracking
+ * - SD_V2_MODEL_ADAPTER: Use v2/model semantic model instead of pm-adapter (Phase 6)
  *
  * Each flag can be set to:
  * - "true" or "1": Explicitly enabled
@@ -97,6 +98,17 @@ export const FeatureFlags = {
    * Should be disabled in production (only enabled for debugging).
    */
   DEBUG_LAYOUT_VERSION: isEnabled('SD_DEBUG_LAYOUT_VERSION', false),
+
+  /**
+   * Use v2/model semantic model as the FlowBlock[] source instead of pm-adapter.
+   *
+   * When enabled, PresentationEditor uses v2/model's projectToFlowBlocks()
+   * instead of pm-adapter's toFlowBlocks(). This is the Phase 6 shadow-mode
+   * switch for validating v2/model parity before PM removal.
+   *
+   * Default: false (PM path remains active until parity is validated).
+   */
+  V2_MODEL_ADAPTER: isEnabled('SD_V2_MODEL_ADAPTER', false),
 } as const;
 
 /**

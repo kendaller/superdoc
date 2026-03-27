@@ -47,6 +47,7 @@ export function createSingleAttrPropertyHandler(
   if (!transformEncode) transformEncode = (v) => v;
   if (!transformDecode) transformDecode = (v) => v;
   return {
+    type: NodeTranslator.translatorTypes.ATTRIBUTE,
     xmlName,
     sdNodeOrKeyName: sdName,
     encode: ({ nodes }) => {
@@ -68,6 +69,7 @@ export function createSingleAttrPropertyHandler(
 export function createSingleBooleanPropertyHandler(xmlName, sdName = null) {
   if (!sdName) sdName = xmlName.split(':')[1];
   return {
+    type: NodeTranslator.translatorTypes.ATTRIBUTE,
     xmlName: xmlName,
     sdNodeOrKeyName: sdName,
     encode: ({ nodes }) => parseBoolean(nodes[0].attributes?.['w:val'] ?? '1'),
@@ -146,6 +148,7 @@ export function parseStrictStOnOff(val, property, xmlName, importDiagnosticsColl
 export function createStrictTogglePropertyHandler(xmlName, sdName = null) {
   if (!sdName) sdName = xmlName.split(':')[1];
   return {
+    type: NodeTranslator.translatorTypes.ATTRIBUTE,
     xmlName,
     sdNodeOrKeyName: sdName,
     encode: ({ nodes, extraParams }) => {
@@ -184,6 +187,7 @@ export const createSingleIntegerPropertyHandler = (xmlName, sdName = null) =>
 export function createTrackChangesPropertyHandler(xmlName, sdName = null, extraAttrs = []) {
   if (!sdName) sdName = xmlName.split(':')[1];
   return {
+    type: NodeTranslator.translatorTypes.ATTRIBUTE,
     xmlName,
     sdNodeOrKeyName: sdName,
     attributes: [
@@ -520,7 +524,7 @@ export function createNestedPropertiesTranslator(
   return {
     xmlName: xmlName,
     sdNodeOrKeyName: sdName,
-    type: NodeTranslator.translatorTypes.NODE,
+    type: NodeTranslator.translatorTypes.ATTRIBUTE,
     attributes: attributeHandlers,
     encode: (params, encodedAttrs) => {
       const { nodes } = params;
@@ -581,6 +585,7 @@ export function createNestedArrayPropertyHandler(
   });
 
   return {
+    type: NodeTranslator.translatorTypes.ATTRIBUTE,
     xmlName,
     sdNodeOrKeyName: sdName,
     attributes: [],

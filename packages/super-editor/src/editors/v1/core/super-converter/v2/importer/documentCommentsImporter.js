@@ -1,5 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { defaultNodeListHandler } from './docxImporter';
+import { buildSourceIndex } from '../../analysis/source-index.js';
+import { createProvenanceHooks } from '../../analysis/provenance-hooks.js';
 
 /**
  * Parse comments.xml into SuperDoc-ready comments
@@ -16,6 +18,7 @@ export function importCommentData({ docx, editor, converter }) {
   const nodeListHandler = defaultNodeListHandler();
   const comments = docx['word/comments.xml'];
   if (!comments) return;
+  const provenanceCollector = converter?._provenanceCollector ?? null;
 
   const commentThreadingProfile = converter?.commentThreadingProfile || {
     defaultStyle: docx['word/commentsExtended.xml'] ? 'commentsExtended' : 'range-based',
@@ -29,6 +32,10 @@ export function importCommentData({ docx, editor, converter }) {
 
   const { elements } = comments;
   if (!elements || !elements.length) return;
+  const provenanceHooks =
+    provenanceCollector != null
+      ? createProvenanceHooks(buildSourceIndex(elements, 'word/comments.xml', 'comment'), provenanceCollector)
+      : null;
 
   const { elements: allComments = [] } = elements[0];
   const extractedComments = allComments.map((el) => {
@@ -50,6 +57,12 @@ export function importCommentData({ docx, editor, converter }) {
 
     const date = new Date(createdDate);
     const unixTimestampMs = date.getTime();
+    if (provenanceCollector) {
+      provenanceCollector.setStoryContext({
+        storyKind: 'comment',
+        storyKey: `comment:${importedId}`,
+      });
+    }
 
     const parsedElements = nodeListHandler.handler({
       nodes: el.elements,
@@ -58,6 +71,9 @@ export function importCommentData({ docx, editor, converter }) {
       editor,
       converter,
       path: [el],
+      extraParams: {
+        ...(provenanceHooks ? { provenanceHooks } : {}),
+      },
     });
 
     // Per OOXML spec, commentsExtended.xml links via the LAST paragraph's paraId

@@ -17,7 +17,10 @@
     "build": "tsc --project tsconfig.json",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "test": "vitest run",
-    "scan": "tsx src/cli/raw-surface.ts"
+    "scan": "tsx src/cli/raw-surface.ts",
+    "universe": "tsx src/cli/universe.ts",
+    "support-matrix": "tsx src/cli/support-matrix.ts",
+    "v1-bridge": "tsx src/cli/v1-bridge.ts"
   },
   "dependencies": {
     "fflate": "catalog:",

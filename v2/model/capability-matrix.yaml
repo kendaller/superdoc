@@ -1,0 +1,368 @@
+# v2/model Capability Matrix
+# Machine-readable mapping of entity kinds to support dimensions.
+# Status: preserved | semantic-read | semantic-write | layout-projected | rendered | analysis-exposed | json-exposed
+# Updated through Phase 7 (March 2026).
+
+schemaVersion: 2
+generatedAt: "2026-03-26"
+lastUpdated: "2026-03-26"
+phases:
+  completed: [0, 1, 2, 3, "4A", "4B", 5, 6, 7]
+  notes: |
+    Phase 5: Semantic operations (insertText, splitParagraph, mergeParagraphs,
+    insertParagraph, setParagraphStyle, toggleBold) + package-level mutation steps +
+    semantic history/undo-redo + intent-preservation validation.
+    Phase 6: Semantic JSON projection (getJSON), document-api adapter for v2-model-backed
+    dispatch of first 6 operations.
+    Phase 7: Capability matrix refresh, coverage expansion documented.
+
+entityKinds:
+  # ---- Story entities --------------------------------------------------------
+  mainStory:
+    preserved: true
+    semantic-read: true
+    semantic-write: false    # Phase 5
+    layout-projected: true   # Phase 3
+    rendered: false           # Phase 6
+    analysis-exposed: true   # Phase 4B
+    json-exposed: false       # Phase 6
+    pmNodeType: doc
+    notes: "Primary story. Body children fully enumerated."
+
+  headerStory:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false   # Phase 4A (header/footer projection)
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    notes: "Populated with body children from header parts."
+
+  footerStory:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    notes: "Populated with body children from footer parts."
+
+  footnoteStory:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+
+  endnoteStory:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+
+  commentStory:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+
+  textboxStory:
+    preserved: true
+    semantic-read: false     # Phase 4A (AlternateContent)
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: false
+    json-exposed: false
+    pmNodeType: shapeTextbox
+    notes: "Deferred to Phase 4A. Requires mc:AlternateContent handling."
+
+  # ---- Structural entities ---------------------------------------------------
+  paragraph:
+    preserved: true
+    semantic-read: true
+    semantic-write: true     # Phase 5: insertParagraph, splitParagraph, mergeParagraphs, setParagraphStyle
+    layout-projected: true
+    rendered: false           # Phase 6 shadow-mode
+    analysis-exposed: true
+    json-exposed: true        # Phase 6: semantic JSON
+    pmNodeType: paragraph
+    extractorDepth: medium
+
+  run:
+    preserved: true
+    semantic-read: true
+    semantic-write: true     # Phase 5: insertText, toggleBold
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: true
+    pmNodeType: text
+    extractorDepth: medium
+
+  table:
+    preserved: true
+    semantic-read: true
+    semantic-write: false     # Phase 7: table operations
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: true        # Phase 6
+    pmNodeType: table
+    extractorDepth: medium
+
+  tableRow:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: tableRow
+    extractorDepth: medium
+
+  tableCell:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: tableCell
+    extractorDepth: medium
+
+  drawing:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: image
+    extractorDepth: medium
+
+  contentControl:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: structuredContent / structuredContentBlock
+    extractorDepth: medium
+    notes: "Both block and inline SDTs. Content accessible via expansion."
+
+  mathObject:
+    preserved: true
+    semantic-read: false     # Phase 4A
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: false
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+    notes: "Deferred. Office Math not yet modeled."
+
+  hyperlink:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: medium
+
+  # ---- Resource entities -----------------------------------------------------
+  style:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true    # Via style resolver
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: medium
+
+  numberingDefinition:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: medium
+
+  abstractNum:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: medium
+
+  theme:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+
+  mediaResource:
+    preserved: true
+    semantic-read: false      # Phase 4A
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: false
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: none
+    notes: "Deferred. Media resolution from relationships not implemented."
+
+  headerFooterDefinition:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+
+  commentThread:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+
+  footnoteBody:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+
+  endnoteBody:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+
+  # ---- Range entities --------------------------------------------------------
+  bookmark:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+    notes: "Start-marker only in Phase 2. End-pairing is Phase 4A."
+
+  commentRange:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+    notes: "Start-marker only in Phase 2."
+
+  permissionRange:
+    preserved: true
+    semantic-read: false
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: false
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: none
+    notes: "Deferred to Phase 4A."
+
+  # ---- Derived entities ------------------------------------------------------
+  section:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: true
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: medium
+
+  # ---- Preservation fallbacks ------------------------------------------------
+  preservedBlock:
+    preserved: true
+    semantic-read: true
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: true
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: thin
+
+  preservedRange:
+    preserved: true
+    semantic-read: false
+    semantic-write: false
+    layout-projected: false
+    rendered: false
+    analysis-exposed: false
+    json-exposed: false
+    pmNodeType: null
+    extractorDepth: none

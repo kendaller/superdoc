@@ -74,7 +74,7 @@ import {
 import { DragDropManager } from './input/DragDropManager.js';
 import { processAndInsertImageFile } from '@extensions/image/imageHelpers/processAndInsertImageFile.js';
 import { HeaderFooterSessionManager } from './header-footer/HeaderFooterSessionManager.js';
-import { toFlowBlocks, ConverterContext, FlowBlockCache } from '@superdoc/pm-adapter';
+import { toFlowBlocks, hydrateImageBlocks, ConverterContext, FlowBlockCache } from '@superdoc/pm-adapter';
 import { readSettingsRoot, readDefaultTableStyle } from '../../document-api-adapters/document-settings.js';
 import {
   incrementalLayout,
@@ -95,6 +95,17 @@ import type {
   PositionHit,
   TableHitResult,
 } from '@superdoc/layout-bridge';
+
+// V2 model integration — only used when SD_V2_MODEL_ADAPTER flag is on
+import {
+  open as openV2Model,
+  projectToFlowBlocks as projectToFlowBlocksV2,
+  projectToSemanticJson,
+  DocumentApiAdapter as V2DocumentApiAdapter,
+  SemanticModel,
+  StyleResolver,
+} from '@superdoc/v2-model';
+import type { DocumentHandle as V2DocumentHandle, SemanticDocument } from '@superdoc/v2-model';
 
 import { measureBlock } from '@superdoc/measuring-dom';
 import type {
@@ -120,6 +131,7 @@ import type { PartChangedEvent } from '../parts/types.js';
 import { isInRegisteredSurface } from './utils/uiSurfaceRegistry.js';
 import { buildSemanticFootnoteBlocks } from './semantic-flow-footnotes.js';
 import { splitRunsAtDecorationBoundaries } from './layout/SplitRunsAtDecorationBoundaries.js';
+import { mergePmMetadataIntoV2Blocks } from './layout/V2ShadowParity.js';
 
 import type { ResolveRangeOutput, DocumentApi } from '@superdoc/document-api';
 import type { SelectionHandle } from '../selection-state.js';
@@ -305,6 +317,11 @@ export class PresentationEditor extends EventEmitter {
   #flowBlockCache: FlowBlockCache = new FlowBlockCache();
   #footnoteNumberSignature: string | null = null;
   #endnoteNumberSignature: string | null = null;
+  /** V2 semantic model — created when V2_MODEL_ADAPTER flag is on. */
+  #v2DocumentHandle: V2DocumentHandle | null = null;
+  #v2SemanticModel: SemanticModel | null = null;
+  #v2StyleResolver: StyleResolver | undefined = undefined;
+  #v2DocumentApiAdapter: V2DocumentApiAdapter | null = null;
   #domPainter: ReturnType<typeof createDomPainter> | null = null;
   #pageGeometryHelper: PageGeometryHelper | null = null;
   #dragDropManager: DragDropManager | null = null;
@@ -677,6 +694,11 @@ export class PresentationEditor extends EventEmitter {
       this.#setupSemanticResizeObserver();
       this.#initializeProofing();
 
+      // V2 model initialization (when flag is on and bytes are available)
+      if (this.#isV2ModelAdapterEnabled() && options.layoutEngineOptions?.v2ModelBytes) {
+        this.#initV2Model(options.layoutEngineOptions.v2ModelBytes);
+      }
+
       // Register this instance in the static registry.
       // Use a separate field to avoid mutating the caller's options object and to keep
       // the registry key consistent with the overlay ID set earlier (line ~453).
@@ -843,6 +865,34 @@ export class PresentationEditor extends EventEmitter {
    */
   get editor(): Editor {
     return this.#editor;
+  }
+
+  /**
+   * Get the live v2 semantic model when the v2 adapter path is enabled.
+   *
+   * Returns `null` when the v2 model was not initialized for this document.
+   */
+  getSemanticModel(): SemanticModel | null {
+    return this.#v2SemanticModel;
+  }
+
+  /**
+   * Project the current v2 semantic model to semantic JSON.
+   *
+   * Returns `undefined` when the v2 model is not active for this editor.
+   * This is a read-only diagnostic/export surface, not a persistence format.
+   */
+  getSemanticJson(): SemanticDocument | undefined {
+    return this.#v2SemanticModel ? projectToSemanticJson(this.#v2SemanticModel) : undefined;
+  }
+
+  /**
+   * Get the v2-model document-api adapter for semantic operations.
+   *
+   * Returns `undefined` when the v2 model is not active for this editor.
+   */
+  getSemanticDocumentApiAdapter(): V2DocumentApiAdapter | undefined {
+    return this.#v2DocumentApiAdapter ?? undefined;
   }
 
   /**
@@ -2875,6 +2925,11 @@ export class PresentationEditor extends EventEmitter {
 
     // Clear flow block cache to free memory
     this.#flowBlockCache.clear();
+    void this.#v2DocumentHandle?.close();
+    this.#v2DocumentHandle = null;
+    this.#v2SemanticModel = null;
+    this.#v2StyleResolver = undefined;
+    this.#v2DocumentApiAdapter = null;
 
     this.#domPainter = null;
     this.#pageGeometryHelper = null;
@@ -2924,6 +2979,38 @@ export class PresentationEditor extends EventEmitter {
         this.#proofingManager?.runInitialCheck(this.#editor!.state.doc);
       }, 0);
     }
+  }
+
+  /**
+   * Initialize the v2/model semantic model from the original .docx bytes.
+   * Called when the V2_MODEL_ADAPTER feature flag is on.
+   */
+  async #initV2Model(docxBytes: Uint8Array): Promise<void> {
+    try {
+      const handle = await openV2Model({ kind: 'memory', bytes: docxBytes });
+      await handle.ready('structure');
+      const model = handle.semanticModel();
+      if (model) {
+        this.#v2DocumentHandle = handle;
+        this.#v2SemanticModel = model;
+        this.#v2DocumentApiAdapter = new V2DocumentApiAdapter(model);
+        const views = handle.views();
+        this.#v2StyleResolver = new StyleResolver(views.styles?.rootElement(), views.numbering?.rootElement());
+        this.#pendingDocChange = true;
+        this.#scheduleRerender();
+      }
+    } catch (e) {
+      // V2 model init failed — fall back to PM path silently
+      console.warn('[PresentationEditor] V2 model initialization failed, falling back to PM path:', e);
+      this.#v2DocumentHandle = null;
+      this.#v2SemanticModel = null;
+      this.#v2StyleResolver = undefined;
+      this.#v2DocumentApiAdapter = null;
+    }
+  }
+
+  #isV2ModelAdapterEnabled(): boolean {
+    return typeof process !== 'undefined' && process.env?.SD_V2_MODEL_ADAPTER === 'true';
   }
 
   /**
@@ -4097,8 +4184,9 @@ export class PresentationEditor extends EventEmitter {
         const commentsEnabled =
           this.#documentMode !== 'viewing' || this.#layoutOptions.enableCommentsInViewing === true;
         const toFlowBlocksStart = perfNow();
-        const result = toFlowBlocks(docJson, {
-          mediaFiles: (this.#editor?.storage?.image as { media?: Record<string, string> })?.media,
+        const mediaFiles = (this.#editor?.storage?.image as { media?: Record<string, string | Uint8Array> })?.media;
+        const pmAdapterOptions = {
+          mediaFiles,
           emitSectionBreaks: true,
           sectionMetadata,
           trackedChangesMode: this.#trackedChangesMode,
@@ -4110,7 +4198,33 @@ export class PresentationEditor extends EventEmitter {
           flowBlockCache: this.#flowBlockCache,
           ...(positionMap ? { positions: positionMap } : {}),
           ...(atomNodeTypes.length > 0 ? { atomNodeTypes } : {}),
-        });
+        };
+
+        let result: { blocks: FlowBlock[]; bookmarks?: Map<string, number> };
+
+        const useV2Adapter = this.#isV2ModelAdapterEnabled();
+        if (useV2Adapter && this.#v2SemanticModel) {
+          // Shadow PM projection remains active in v2 mode so bookmark and PM-range
+          // metadata can be carried forward while the v2 blocks drive rendering.
+          const shadowPmResult = toFlowBlocks(docJson, pmAdapterOptions);
+          const v2Result = projectToFlowBlocksV2(this.#v2SemanticModel, {
+            resolver: this.#v2StyleResolver,
+          });
+
+          const v2BlocksWithPmMetadata = mergePmMetadataIntoV2Blocks(
+            v2Result.blocks as FlowBlock[],
+            shadowPmResult.blocks as FlowBlock[],
+          );
+          const hydratedBlocks = hydrateImageBlocks(v2BlocksWithPmMetadata, mediaFiles);
+
+          result = {
+            blocks: hydratedBlocks,
+            bookmarks: shadowPmResult.bookmarks ?? new Map(),
+          };
+        } else {
+          result = toFlowBlocks(docJson, pmAdapterOptions);
+        }
+
         const toFlowBlocksEnd = perfNow();
         perfLog(
           `[Perf] toFlowBlocks: ${(toFlowBlocksEnd - toFlowBlocksStart).toFixed(2)}ms (blocks=${result.blocks.length})`,

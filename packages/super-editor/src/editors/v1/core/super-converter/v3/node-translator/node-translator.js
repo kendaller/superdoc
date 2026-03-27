@@ -1,4 +1,5 @@
 // @ts-check
+import { getFeatureBindingForNodeTranslation, getFeatureKeyForPropertyTranslation } from '../../analysis/feature-key-map.js';
 
 /**
  * @enum {string}
@@ -79,6 +80,9 @@ export const TranslatorTypes = Object.freeze({
  */
 
 export class NodeTranslator {
+  /** @type {TranslatorType} */
+  type;
+
   /** @type {string} */
   xmlName;
 
@@ -116,7 +120,8 @@ export class NodeTranslator {
    * @param {MatchesDecodeFn} [matchesDecode]
    * @param {AttrConfig[]} [attributes]
    */
-  constructor(xmlName, sdNodeOrKeyName, encode, decode, priority, matchesEncode, matchesDecode, attributes) {
+  constructor(type, xmlName, sdNodeOrKeyName, encode, decode, priority, matchesEncode, matchesDecode, attributes) {
+    this.type = type;
     this.xmlName = xmlName;
     this.sdNodeOrKeyName = sdNodeOrKeyName;
 
@@ -192,7 +197,46 @@ export class NodeTranslator {
    */
   encode(params) {
     const encodedAttrs = this.encodeAttributes(params);
-    return this.encodeFn ? this.encodeFn.call(this, params, encodedAttrs) : undefined;
+    const result = this.encodeFn ? this.encodeFn.call(this, params, encodedAttrs) : undefined;
+
+    this.bindProvenance(params, result);
+    return result;
+  }
+
+  /**
+   * Emit analysis provenance bindings when import-time provenance hooks are active.
+   * @param {SCEncoderConfig} params
+   * @param {unknown} result
+   * @returns {void}
+   */
+  bindProvenance(params, result) {
+    const xmlNode = params?.nodes?.[0];
+    const provenanceHooks = params?.extraParams?.provenanceHooks;
+    if (!provenanceHooks || !xmlNode || result == null) return;
+
+    if (this.type === TranslatorTypes.NODE) {
+      const descriptor = getFeatureBindingForNodeTranslation(this.xmlName, xmlNode, result);
+      if (!descriptor) return;
+
+      descriptor.runtimeNodes.forEach((runtimeNode) => {
+        provenanceHooks.bindNode(descriptor.sourceNode ?? xmlNode, runtimeNode, {
+          featureKey: descriptor.featureKey,
+          nodeType: runtimeNode?.type,
+          traceability: 'occurrence',
+        });
+      });
+      return;
+    }
+
+    if (this.type === TranslatorTypes.ATTRIBUTE) {
+      const featureKey = getFeatureKeyForPropertyTranslation(this.xmlName);
+      if (!featureKey) return;
+
+      provenanceHooks.bindFeature(xmlNode, featureKey, {
+        featureKey,
+        traceability: 'feature',
+      });
+    }
   }
 
   /**
@@ -201,11 +245,22 @@ export class NodeTranslator {
    * @returns {NodeTranslator} The created NodeTranslator instance.
    */
   static from(config) {
-    const { xmlName, sdNodeOrKeyName, encode, decode, priority = 0, matchesEncode, matchesDecode, attributes } = config;
+    const {
+      xmlName,
+      sdNodeOrKeyName,
+      type = TranslatorTypes.NODE,
+      encode,
+      decode,
+      priority = 0,
+      matchesEncode,
+      matchesDecode,
+      attributes,
+    } = config;
     if (typeof encode !== 'function' || (!!decode && typeof decode !== 'function')) {
       throw new TypeError(`${xmlName}: encode/decode must be functions`);
     }
     const inst = new NodeTranslator(
+      type,
       xmlName,
       sdNodeOrKeyName,
       encode,

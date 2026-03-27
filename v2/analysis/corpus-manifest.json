@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "description": "First agreed corpus for analysis universe. Curated from initial scan output, excluding temporary test artifacts.",
+  "documents": [
+    {
+      "docId": "comments-doc.docx",
+      "sourceRelativePath": "corpus/comments-doc.docx",
+      "tags": ["comments"]
+    },
+    {
+      "docId": "contract.docx",
+      "sourceRelativePath": "corpus/contract.docx",
+      "tags": ["legal"]
+    },
+    {
+      "docId": "document.docx",
+      "sourceRelativePath": "corpus/document.docx",
+      "tags": ["general"]
+    },
+    {
+      "docId": "employment-offer.docx",
+      "sourceRelativePath": "corpus/employment-offer.docx",
+      "tags": ["legal", "hr"]
+    },
+    {
+      "docId": "lease-agreement.docx",
+      "sourceRelativePath": "corpus/lease-agreement.docx",
+      "tags": ["legal"]
+    },
+    {
+      "docId": "memorandum.docx",
+      "sourceRelativePath": "corpus/memorandum.docx",
+      "tags": ["business"]
+    },
+    {
+      "docId": "nda.docx",
+      "sourceRelativePath": "corpus/nda.docx",
+      "tags": ["legal"]
+    },
+    {
+      "docId": "report-with-formatting.docx",
+      "sourceRelativePath": "corpus/report-with-formatting.docx",
+      "tags": ["formatting"]
+    },
+    {
+      "docId": "table-doc.docx",
+      "sourceRelativePath": "corpus/table-doc.docx",
+      "tags": ["tables"]
+    }
+  ]
+}

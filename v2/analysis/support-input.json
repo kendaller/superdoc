@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    { "featureKey": "alternate-content", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "comment.range-start", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "drawing.anchored", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "drawing.inline", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "endnote.reference", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "footnote.reference", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "format.bold.direct", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "format.color.direct", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "format.font-size.direct", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "format.italic.direct", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "format.underline.direct", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "inline.break", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "inline.tab", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "math.omath", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "numbering-reference", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "paragraph", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "run", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "style-reference.character", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "style-reference.paragraph", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "style-reference.table", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "table", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "table.cell", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "table.row", "import": "unknown", "layout": "unknown", "render": "unknown" },
+    { "featureKey": "vml.pict", "import": "unknown", "layout": "unknown", "render": "unknown" }
+  ]
+}
