@@ -23,6 +23,11 @@ import {
   PAINT_FIRST_PAGE_MOUNTED,
 } from '@superdoc/v2-perf';
 import { PageCompletenessTracker } from './page-completeness.js';
+import {
+  advanceStreamingBatchPolicy,
+  createInitialStreamingBatchPolicy,
+  type StreamingBatchPolicy,
+} from './streaming-batch-policy.js';
 import type {
   HostState,
   StateTransitionEntry,
@@ -45,7 +50,8 @@ const DEFAULT_HORIZONTAL_PAGE_GAP = 20;
 const DEFAULT_LAYOUT_MODE = 'vertical';
 const DEFAULT_WINDOW_SIZE = 50;
 const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 3;
-const PREFETCH_AHEAD_PAGES = 10;
+const DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE = 2;
+const BUFFER_AHEAD_PAGES = 10;
 const TWIPS_PER_INCH = 1440;
 const PX_PER_INCH = 96;
 
@@ -59,7 +65,7 @@ export type V2StreamingPaginatedRenderHostOptions = {
   disableContextMenu?: boolean;
   /** The DocumentRuntime to use (worker proxy or in-process). */
   runtime: DocumentRuntime;
-  /** Body children per projection window. Default: 50. */
+  /** Upper bound for how many body children one window may scan. Default: 50. */
   windowSize?: number;
   /** stopAfterPageEstimate for the first window. Default: 3. */
   firstWindowPageEstimate?: number;
@@ -99,12 +105,11 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
   #windowSize: number;
   #firstWindowPageEstimate: number;
+  #appendBatchPolicy: StreamingBatchPolicy;
 
   /** Incremented on each load() to invalidate stale async continuations. */
   #generation = 0;
   #appendInFlight = false;
-  #prefetchInFlight = false;
-  #prefetchedStartBodyChildIndex: number | null = null;
   #scrollRafPending = false;
   #scrollHandler: (() => void) | null = null;
   #degradedInfo: DegradedInfo | null = null;
@@ -120,6 +125,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#disableContextMenu = Boolean(options.disableContextMenu);
     this.#windowSize = options.windowSize ?? DEFAULT_WINDOW_SIZE;
     this.#firstWindowPageEstimate = options.firstWindowPageEstimate ?? DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE;
+    this.#appendBatchPolicy = createInitialStreamingBatchPolicy(this.#windowSize, DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE);
 
     this.#viewportHost = document.createElement('div');
     this.#viewportHost.className = 'presentation-editor__viewport v2-streaming-renderer__viewport';
@@ -172,7 +178,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
     this.#degradedInfo = null;
     this.#transition('streaming');
-    this.#scheduleAppendLoop();
+    this.#scheduleStreamingWork();
   }
 
   // ---- Public: Lifecycle -------------------------------------------------------
@@ -245,8 +251,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       // Phase 4: Schedule background streaming or go straight to enriching
       if (this.#accumulated.nextBodyChildIndex < this.#accumulated.totalBodyChildCount) {
         this.#transition('streaming');
-        this.#prefetchUpcomingWindow();
-        this.#scheduleAppendLoop();
+        this.#scheduleStreamingWork();
       } else {
         this.#completeness.markAllBodyComplete();
         this.#transition('enriching');
@@ -382,8 +387,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#completeness.reset();
     this.#renderShell = null;
     this.#appendInFlight = false;
-    this.#prefetchInFlight = false;
-    this.#prefetchedStartBodyChildIndex = null;
+    this.#appendBatchPolicy = createInitialStreamingBatchPolicy(this.#windowSize, DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE);
     this.#degradedInfo = null;
   }
 
@@ -392,19 +396,20 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   #accumulateWindow(windowResult: WindowedProjectionResult, startIndex: number): void {
     const { blocks, continuation, sectionMetadata, dependencyManifest } = windowResult;
     const bodyChildCount = Math.max(0, continuation.nextBodyChildIndex - startIndex);
+    const contractBlocks = toContractFlowBlocks(blocks);
 
     const record: WindowRecord = {
       index: this.#accumulated.windowRecords.length,
       startBodyChildIndex: startIndex,
       bodyChildCount,
-      blockCount: blocks.length,
-      blocks,
+      blockCount: contractBlocks.length,
+      blocks: contractBlocks,
       sectionMetadataDelta: sectionMetadata,
       ...(dependencyManifest ? { dependencyManifest } : {}),
       status: 'projected',
     };
     this.#accumulated.windowRecords.push(record);
-    this.#accumulated.blocks = [...this.#accumulated.blocks, ...blocks];
+    this.#accumulated.blocks = [...this.#accumulated.blocks, ...contractBlocks];
     this.#accumulated.nextBodyChildIndex = continuation.nextBodyChildIndex;
     this.#accumulated.totalBodyChildCount = continuation.totalBodyChildCount;
     if (dependencyManifest) {
@@ -474,15 +479,19 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
   // ---- Private: Append pipeline ------------------------------------------------
 
-  #scheduleAppendLoop(): void {
+  #scheduleStreamingWork(): void {
+    if (this.#state !== 'streaming' && this.#state !== 'firstPaintComplete') {
+      return;
+    }
+
     if (this.#appendInFlight) return;
 
     if (this.#accumulated.nextBodyChildIndex >= this.#accumulated.totalBodyChildCount) {
-      this.#completeness.markAllBodyComplete();
-      if (this.#state === 'streaming') {
-        this.#transition('enriching');
-        this.#scheduleEnrichment();
-      }
+      this.#completeStreamingIfFinished();
+      return;
+    }
+
+    if (!this.#needsMoreBufferedPages()) {
       return;
     }
 
@@ -497,40 +506,74 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   async #appendNextWindow(): Promise<void> {
     const gen = this.#generation;
     const prevPageCount = this.#accumulated.layout?.pages.length ?? 0;
+    const startBodyChildIndex = this.#accumulated.nextBodyChildIndex;
+    const batchStartMs = perfNow();
 
     try {
       const continuation = {
-        nextBodyChildIndex: this.#accumulated.nextBodyChildIndex,
-        maxBodyChildCount: this.#windowSize,
+        nextBodyChildIndex: startBodyChildIndex,
+        maxBodyChildCount: this.#appendBatchPolicy.bodyChildLimit,
+        stopAfterPageEstimate: this.#appendBatchPolicy.pageEstimate,
       };
 
       const windowResult = await this.#runtime.projectNextWindow(continuation);
       if (gen !== this.#generation) return;
 
       const windowIndex = this.#accumulated.windowRecords.length;
-      this.#accumulateWindow(windowResult, this.#accumulated.nextBodyChildIndex);
+      this.#accumulateWindow(windowResult, startBodyChildIndex);
 
       await this.#measurePaginatePaint();
       if (gen !== this.#generation) return;
+
+      const nextPageCount = this.#accumulated.layout?.pages.length ?? prevPageCount;
+      const pagesAdded = Math.max(0, nextPageCount - prevPageCount);
+      const bodyChildrenConsumed = Math.max(0, this.#accumulated.nextBodyChildIndex - startBodyChildIndex);
+      this.#appendBatchPolicy = advanceStreamingBatchPolicy(this.#appendBatchPolicy, {
+        durationMs: perfNow() - batchStartMs,
+        bodyChildrenConsumed,
+        pagesAdded,
+      });
 
       // Pages from before this append are now body-complete
       this.#completeness.markBodyCompleteUpTo(prevPageCount);
 
       this.emit('appendComplete', {
         windowIndex,
-        newPageCount: this.#accumulated.layout!.pages.length,
+        newPageCount: nextPageCount,
       });
       v2PerfTimeline.gauge(PROJECTION_APPEND_WINDOW_COUNT, windowIndex + 1);
-      this.#prefetchUpcomingWindow();
     } catch (error) {
       if (gen !== this.#generation) return;
       this.#handleNonFatalError(error, 'append');
     } finally {
       this.#appendInFlight = false;
       if (gen === this.#generation) {
-        this.#scheduleAppendLoop();
+        this.#scheduleStreamingWork();
       }
     }
+  }
+
+  #completeStreamingIfFinished(): void {
+    if (this.#accumulated.nextBodyChildIndex < this.#accumulated.totalBodyChildCount) {
+      return;
+    }
+
+    this.#completeness.markAllBodyComplete();
+    if (this.#state === 'streaming') {
+      this.#transition('enriching');
+      this.#scheduleEnrichment();
+    }
+  }
+
+  #needsMoreBufferedPages(): boolean {
+    const layout = this.#accumulated.layout;
+    if (!layout) {
+      return true;
+    }
+
+    const totalPages = layout.pages.length;
+    const { last } = this.#getVisiblePageRange();
+    return totalPages < last + BUFFER_AHEAD_PAGES;
   }
 
   // ---- Private: Enrichment (stub — workstream 06) ------------------------------
@@ -545,31 +588,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#transition('complete');
   }
 
-  #prefetchUpcomingWindow(): void {
-    const startBodyChildIndex = this.#accumulated.nextBodyChildIndex;
-
-    if (this.#prefetchInFlight) return;
-    if (startBodyChildIndex >= this.#accumulated.totalBodyChildCount) return;
-    if (this.#prefetchedStartBodyChildIndex === startBodyChildIndex) return;
-
-    this.#prefetchInFlight = true;
-    this.#prefetchedStartBodyChildIndex = startBodyChildIndex;
-
-    void this.#runtime
-      .prefetchWindow({
-        startBodyChildIndex,
-        maxBodyChildCount: this.#windowSize,
-      })
-      .catch((error) => {
-        this.#prefetchedStartBodyChildIndex = null;
-        this.#emitLayoutError(normalizeError(error), 'prefetch');
-      })
-      .finally(() => {
-        this.#prefetchInFlight = false;
-      });
-  }
-
-  // ---- Private: Scroll / prefetch ----------------------------------------------
+  // ---- Private: Scroll ---------------------------------------------------------
 
   #installScrollListener(): void {
     this.#scrollHandler = () => {
@@ -579,7 +598,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         this.#scrollRafPending = false;
         this.#domPainter?.onScroll?.();
         if (this.#state === 'streaming' || this.#state === 'firstPaintComplete') {
-          this.#evaluatePrefetch();
+          this.#scheduleStreamingWork();
         }
       });
     };
@@ -591,21 +610,6 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       this.element.removeEventListener('scroll', this.#scrollHandler);
       this.#scrollHandler = null;
     }
-  }
-
-  #evaluatePrefetch(): void {
-    const layout = this.#accumulated.layout;
-    if (!layout) return;
-
-    const totalPages = layout.pages.length;
-    const { last } = this.#getVisiblePageRange();
-
-    if (totalPages >= last + PREFETCH_AHEAD_PAGES) return;
-    if (this.#accumulated.nextBodyChildIndex >= this.#accumulated.totalBodyChildCount) return;
-    if (this.#appendInFlight) return;
-
-    this.#prefetchUpcomingWindow();
-    this.#scheduleAppendLoop();
   }
 
   #getVisiblePageRange(): { first: number; last: number } {
@@ -900,6 +904,18 @@ function normalizeTwips(twips: number): number {
 
 function countMountedPages(container: ParentNode): number {
   return container.querySelectorAll('.superdoc-page').length;
+}
+
+/**
+ * The v2 model projection layer publishes FlowBlock shapes that are
+ * intentionally wire-compatible with the layout-engine contract package.
+ *
+ * TypeScript cannot prove that compatibility across package boundaries, so the
+ * host normalizes the boundary once here instead of spreading assertions
+ * throughout the render pipeline.
+ */
+function toContractFlowBlocks(blocks: WindowedProjectionResult['blocks']): FlowBlock[] {
+  return blocks as unknown as FlowBlock[];
 }
 
 function perfNow(): number {

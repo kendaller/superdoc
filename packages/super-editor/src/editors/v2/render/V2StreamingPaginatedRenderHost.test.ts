@@ -308,6 +308,7 @@ describe('V2StreamingPaginatedRenderHost', () => {
           expect(runtime.projectNextWindow).toHaveBeenCalledWith({
             nextBodyChildIndex: 1,
             maxBodyChildCount: 3,
+            stopAfterPageEstimate: 2,
           });
         },
         { timeout: 2000 },
@@ -585,13 +586,13 @@ describe('V2StreamingPaginatedRenderHost', () => {
       expect(runtime.close).toHaveBeenCalled();
     });
 
-    it('rapid scroll during streaming does not pile up prefetches', async () => {
+    it('rapid scroll during streaming does not pile up append requests', async () => {
       const runtime = createMockRuntime();
 
       // 20 body children, first window gets 3
       configureDocumentWindow(runtime, { totalBodyChildCount: 20 });
 
-      // Make append windows slow enough to observe prefetch behavior
+      // Make append windows slow enough to observe append scheduling.
       let appendCallCount = 0;
       (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockImplementation(async () => {
         appendCallCount++;
@@ -610,10 +611,9 @@ describe('V2StreamingPaginatedRenderHost', () => {
       await host.load(new Uint8Array([1, 2, 3]));
       expect(host.state).toBe('streaming');
 
-      // Simulate multiple rapid scroll-triggered prefetch calls
-      // The host should not pile up multiple concurrent prefetches
-      // (prefetchInFlight guard prevents this)
-      expect(runtime.prefetchWindow).toHaveBeenCalledTimes(1); // Only one prefetch after first paint
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        host.element.dispatchEvent(new Event('scroll'));
+      }
 
       // Wait for streaming to complete
       await vi.waitFor(
@@ -626,6 +626,7 @@ describe('V2StreamingPaginatedRenderHost', () => {
       // All 20 body children should have been consumed
       const snapshot = host.getLayoutSnapshot();
       expect(snapshot.blocks.length).toBe(20);
+      expect(runtime.prefetchWindow).not.toHaveBeenCalled();
     });
   });
 
@@ -665,8 +666,8 @@ describe('V2StreamingPaginatedRenderHost', () => {
     });
   });
 
-  describe('prefetch behavior', () => {
-    it('prefetches the next window after first paint when more body children remain', async () => {
+  describe('buffered append behavior', () => {
+    it('uses page-bounded append windows after first paint', async () => {
       const runtime = createMockRuntime();
       const host = new V2StreamingPaginatedRenderHost({
         element: document.createElement('div'),
@@ -676,10 +677,72 @@ describe('V2StreamingPaginatedRenderHost', () => {
 
       await host.load(new Uint8Array([1, 2, 3]));
 
-      expect(runtime.prefetchWindow).toHaveBeenCalledWith({
-        startBodyChildIndex: 3,
-        maxBodyChildCount: 3,
+      await vi.waitFor(
+        () => {
+          expect(runtime.projectNextWindow).toHaveBeenCalledWith({
+            nextBodyChildIndex: 3,
+            maxBodyChildCount: 3,
+            stopAfterPageEstimate: 2,
+          });
+        },
+        { timeout: 2000 },
+      );
+
+      expect(runtime.prefetchWindow).not.toHaveBeenCalled();
+    });
+
+    it('stops appending once the viewport has enough buffered pages', async () => {
+      incrementalLayoutMock.mockImplementation(
+        async (_previousBlocks: unknown, _previousLayout: unknown, nextBlocks: { id: string }[]) => {
+          return {
+            layout: {
+              pageSize: { w: 612, h: 792 },
+              pages: nextBlocks.map((_block, index) => ({
+                number: index + 1,
+                fragments: [],
+                size: { w: 612, h: 792 },
+              })),
+            },
+            measures: nextBlocks.map((block) => ({ blockId: block.id, width: 100, height: 20 })),
+            dirty: { dirtyFromIndex: 0 },
+          };
+        },
+      );
+
+      const runtime = createMockRuntime();
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(40));
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
+        makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 40),
+      );
+
+      let nextBodyChildIndex = 3;
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        const start = nextBodyChildIndex;
+        const blockIds = [`b${start + 1}`, `b${start + 2}`];
+        nextBodyChildIndex += blockIds.length;
+        return makeWindowResult(blockIds.map(makeBlock), nextBodyChildIndex, 40);
       });
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 50,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(
+        () => {
+          expect(runtime.projectNextWindow).toHaveBeenCalledTimes(4);
+        },
+        { timeout: 2000 },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(host.state).toBe('streaming');
+      expect(host.getPages()).toHaveLength(11);
+      expect(runtime.projectNextWindow).toHaveBeenCalledTimes(4);
     });
   });
 

@@ -14,7 +14,13 @@ import { createRenderShellSnapshot } from '../render-shell/index.js';
 import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type { DocumentHandle, ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
 import type { DocumentRuntime, RuntimeEventHandler } from './runtime-interface.js';
-import type { TaskId, EnrichmentTarget, ProjectWindowParams, WindowContinuation } from './worker-protocol.js';
+import type {
+  TaskId,
+  EnrichmentTarget,
+  PrefetchWindowParams,
+  ProjectWindowParams,
+  WindowContinuation,
+} from './worker-protocol.js';
 import type { EnrichmentResult } from '../enrichment/enrichment-results.js';
 import type { EnrichmentRequest } from '../enrichment/enrichment-request.js';
 import { open } from '../session/open.js';
@@ -70,7 +76,7 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
     return this.#windowProjection.projectNextWindow(this.#handle!, continuation);
   }
 
-  async prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void> {
+  async prefetchWindow(params: PrefetchWindowParams): Promise<void> {
     this.#assertOpen();
     this.#windowProjection.prefetchWindow(this.#handle!, params);
   }

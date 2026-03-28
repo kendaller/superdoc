@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import type { LayoutEngineOptions } from '../../v1/core/presentation-editor/types.js';
-import { InProcessRuntimeV2 } from '@superdoc/v2-model';
 import type { DocumentRuntime } from '@superdoc/v2-model';
 import { V2StreamingPaginatedRenderHost } from '../render/V2StreamingPaginatedRenderHost.js';
 import type { StateChangeEvent } from '../render/streaming-host-types.js';
+import { createDefaultV2DocumentRuntime } from '../runtime/create-default-runtime.js';
 
 type DocumentMode = 'editing' | 'viewing' | 'suggesting';
 
@@ -16,7 +16,7 @@ type Props = {
     documentMode?: DocumentMode;
     disableContextMenu?: boolean;
   } | null;
-  /** Optional runtime override. Defaults to an in-process v2 runtime. */
+  /** Optional runtime override. Defaults to the worker-backed browser runtime. */
   runtime?: DocumentRuntime | null;
   /** Body children per projection window. Default: 50. */
   windowSize?: number;
@@ -103,7 +103,7 @@ function resolveRuntime(): DocumentRuntime {
   }
 
   if (!ownedRuntime.value) {
-    ownedRuntime.value = new InProcessRuntimeV2();
+    ownedRuntime.value = createDefaultV2DocumentRuntime();
   }
 
   return ownedRuntime.value;

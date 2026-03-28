@@ -24,6 +24,7 @@ import type {
   WorkerMessageEnvelope,
   WorkerSourceDescriptor,
   EnrichmentTarget,
+  PrefetchWindowParams,
   ProjectWindowParams,
   WindowContinuation,
 } from './worker-protocol.js';
@@ -105,7 +106,7 @@ export class WorkerProxyV2 {
     return this.#send('projectNextWindow', { continuation }, 'near-viewport') as Promise<WindowedProjectionResult>;
   }
 
-  async prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void> {
+  async prefetchWindow(params: PrefetchWindowParams): Promise<void> {
     await this.#send('prefetchWindow', params, 'near-viewport');
   }
 

@@ -62,16 +62,22 @@ export type EnrichmentTarget = 'comments' | 'headers-footers' | 'footnotes' | 'e
 
 // ---- Projection parameters --------------------------------------------------
 
-export type ProjectWindowParams = {
-  startBodyChildIndex: number;
+type WindowBatchParams = {
   maxBodyChildCount: number;
   stopAfterPageEstimate?: number;
+};
+
+export type ProjectWindowParams = WindowBatchParams & {
+  startBodyChildIndex: number;
   includeDependencyManifest?: boolean;
 };
 
-export type WindowContinuation = {
+export type WindowContinuation = WindowBatchParams & {
   nextBodyChildIndex: number;
-  maxBodyChildCount: number;
+};
+
+export type PrefetchWindowParams = WindowBatchParams & {
+  startBodyChildIndex: number;
 };
 
 // ---- V2 Request messages ----------------------------------------------------
@@ -98,7 +104,7 @@ export type WorkerRequestV2 =
       id: string;
       taskId: TaskId;
       method: 'prefetchWindow';
-      params: { startBodyChildIndex: number; maxBodyChildCount: number };
+      params: PrefetchWindowParams;
       priority: TaskPriority;
     }
   | { id: string; taskId: TaskId; method: 'advanceStructure'; params: Record<string, never>; priority: TaskPriority }

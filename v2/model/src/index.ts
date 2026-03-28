@@ -74,6 +74,7 @@ export type {
 
 export type { DocumentRuntime, RuntimeEventHandler } from './runtime/runtime-interface.js';
 export { InProcessRuntimeV2 } from './runtime/in-process-v2.js';
+export { WorkerProxyV2, installWorkerHostV2 } from './runtime/index.js';
 export type {
   EnrichmentTarget,
   ProjectWindowParams,

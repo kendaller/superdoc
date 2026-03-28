@@ -33,6 +33,42 @@ describe('windowed projection runtimes', () => {
     await runtime.close();
   });
 
+  it('passes stopAfterPageEstimate through continuation calls in-process', async () => {
+    const runtime = new InProcessRuntimeV2();
+    const paragraphs = Array.from(
+      { length: 40 },
+      (_unused, index) => `Paragraph ${index + 1}: ${'Long content '.repeat(40)}`,
+    );
+    await runtime.openSource(createMultiParagraphDocx(paragraphs));
+    await runtime.ready('render-shell');
+
+    const firstWindow = await runtime.projectWindow({
+      startBodyChildIndex: 0,
+      maxBodyChildCount: 100,
+      stopAfterPageEstimate: 1,
+      includeDependencyManifest: true,
+    });
+
+    expect(firstWindow.continuation.nextBodyChildIndex).toBeGreaterThan(0);
+    expect(firstWindow.continuation.nextBodyChildIndex).toBeLessThan(paragraphs.length);
+
+    await runtime.prefetchWindow({
+      startBodyChildIndex: firstWindow.continuation.nextBodyChildIndex,
+      maxBodyChildCount: 100,
+      stopAfterPageEstimate: 1,
+    });
+
+    const secondWindow = await runtime.projectNextWindow({
+      nextBodyChildIndex: firstWindow.continuation.nextBodyChildIndex,
+      maxBodyChildCount: 100,
+      stopAfterPageEstimate: 1,
+    });
+
+    expect(secondWindow.continuation.nextBodyChildIndex).toBeGreaterThan(firstWindow.continuation.nextBodyChildIndex);
+
+    await runtime.close();
+  });
+
   it('projects and prefetched windows through the worker proxy', async () => {
     const { mainThreadWorker, workerScope } = createWorkerLoopback();
     installWorkerHostV2(workerScope);
@@ -62,6 +98,45 @@ describe('windowed projection runtimes', () => {
 
     expect(paragraphText(secondWindow.blocks)).toContain('Beta');
     expect(secondWindow.continuation.nextBodyChildIndex).toBe(2);
+
+    await runtime.close();
+  });
+
+  it('passes stopAfterPageEstimate through continuation calls in the worker proxy', async () => {
+    const { mainThreadWorker, workerScope } = createWorkerLoopback();
+    installWorkerHostV2(workerScope);
+
+    const runtime = new WorkerProxyV2(mainThreadWorker);
+    const paragraphs = Array.from(
+      { length: 40 },
+      (_unused, index) => `Paragraph ${index + 1}: ${'Long content '.repeat(40)}`,
+    );
+    await runtime.openSource(createMultiParagraphDocx(paragraphs));
+    await runtime.ready('render-shell');
+
+    const firstWindow = await runtime.projectWindow({
+      startBodyChildIndex: 0,
+      maxBodyChildCount: 100,
+      stopAfterPageEstimate: 1,
+      includeDependencyManifest: true,
+    });
+
+    expect(firstWindow.continuation.nextBodyChildIndex).toBeGreaterThan(0);
+    expect(firstWindow.continuation.nextBodyChildIndex).toBeLessThan(paragraphs.length);
+
+    await runtime.prefetchWindow({
+      startBodyChildIndex: firstWindow.continuation.nextBodyChildIndex,
+      maxBodyChildCount: 100,
+      stopAfterPageEstimate: 1,
+    });
+
+    const secondWindow = await runtime.projectNextWindow({
+      nextBodyChildIndex: firstWindow.continuation.nextBodyChildIndex,
+      maxBodyChildCount: 100,
+      stopAfterPageEstimate: 1,
+    });
+
+    expect(secondWindow.continuation.nextBodyChildIndex).toBeGreaterThan(firstWindow.continuation.nextBodyChildIndex);
 
     await runtime.close();
   });

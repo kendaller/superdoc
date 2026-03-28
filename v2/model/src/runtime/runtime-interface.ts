@@ -13,6 +13,7 @@ import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type {
   TaskId,
   EnrichmentTarget,
+  PrefetchWindowParams,
   ProjectWindowParams,
   WindowContinuation,
   WorkerEventV2,
@@ -42,7 +43,7 @@ export interface DocumentRuntime {
   getRenderShell(): Promise<RenderShellSnapshot | undefined>;
   projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult>;
   projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult>;
-  prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void>;
+  prefetchWindow(params: PrefetchWindowParams): Promise<void>;
   advanceStructure(): Promise<void>;
   enrich(target: EnrichmentTarget, request?: EnrichmentRequest): Promise<EnrichmentResult>;
 

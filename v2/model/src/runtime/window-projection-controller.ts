@@ -1,12 +1,7 @@
 import { StyleResolver } from '../resolve/style-resolver.js';
 import { projectWindowToFlowBlocks, type WindowedProjectionResult } from '../projections/layout/index.js';
 import type { DocumentHandle } from '../types/session.js';
-import type { ProjectWindowParams, WindowContinuation } from './worker-protocol.js';
-
-type PrefetchWindowParams = {
-  startBodyChildIndex: number;
-  maxBodyChildCount: number;
-};
+import type { PrefetchWindowParams, ProjectWindowParams, WindowContinuation } from './worker-protocol.js';
 
 /**
  * Shared windowed-projection helper used by both runtime implementations.
@@ -35,6 +30,9 @@ export class WindowProjectionController {
     return this.projectWindow(handle, {
       startBodyChildIndex: continuation.nextBodyChildIndex,
       maxBodyChildCount: continuation.maxBodyChildCount,
+      ...(continuation.stopAfterPageEstimate != null
+        ? { stopAfterPageEstimate: continuation.stopAfterPageEstimate }
+        : {}),
     });
   }
 
@@ -49,6 +47,7 @@ export class WindowProjectionController {
       this.#projectWindow(handle, {
         startBodyChildIndex: params.startBodyChildIndex,
         maxBodyChildCount: params.maxBodyChildCount,
+        ...(params.stopAfterPageEstimate != null ? { stopAfterPageEstimate: params.stopAfterPageEstimate } : {}),
       }),
     );
   }
