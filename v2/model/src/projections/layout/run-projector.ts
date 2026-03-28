@@ -8,30 +8,17 @@
 // optional resolved-properties overlay for style-engine integration.
 // ---------------------------------------------------------------------------
 
-import type { SemanticModel } from "../../model.js";
-import type {
-  DrawingEntity,
-  RunEntity,
-  RunFormatting,
-} from "../../entities/types.js";
-import type { DrawingSegment, InlineSegment } from "../../entities/inline-segments.js";
-import type {
-  Run,
-  RunMarks,
-  TextRun,
-  ImageRun,
-  TabRun,
-  LineBreakRun,
-  BreakRun,
-} from "./types.js";
-import { createSourceRef } from "../../identity/types.js";
-import {
-  halfPointsToLayoutPx,
-  twipsToLayoutPx,
-} from "./measurement-conversions.js";
+import type { SemanticModel } from '../../model.js';
+import type { DrawingEntity, RunEntity, RunFormatting, RunRawProperties } from '../../entities/types.js';
+import type { DrawingSegment, InlineSegment } from '../../entities/inline-segments.js';
+import type { Run, RunMarks, TextRun, ImageRun, TabRun, LineBreakRun, BreakRun } from './types.js';
+import type { ProjectionFeeder, FeederNode } from './feeder.js';
+import type { DependencyCollector } from './dependency-manifest.js';
+import { createSourceRef } from '../../identity/types.js';
+import { halfPointsToLayoutPx, twipsToLayoutPx } from './measurement-conversions.js';
 
 /** Default font family when none is specified. */
-const DEFAULT_FONT_FAMILY = "Calibri";
+const DEFAULT_FONT_FAMILY = 'Calibri';
 
 /** Default font size in layout pixels when no DOCX size is resolved. */
 const DEFAULT_FONT_SIZE = 12;
@@ -52,36 +39,126 @@ export type ResolvedRunProperties = Partial<RunFormatting>;
  * @param resolved - Optional resolved run properties from the style engine.
  * @returns An array of Run objects for the layout engine.
  */
-export function projectRuns(
-  runEntity: RunEntity,
-  model: SemanticModel,
-  resolved?: ResolvedRunProperties,
-): Run[] {
+export function projectRuns(runEntity: RunEntity, model: SemanticModel, resolved?: ResolvedRunProperties): Run[] {
   const raw = runEntity.raw();
   const formatting = resolved ?? raw.formatting;
   const marks = buildRunMarks(formatting);
   const fontFamily = formatting.fontFamily ?? DEFAULT_FONT_FAMILY;
-  const fontSize = formatting.fontSize !== undefined
-    ? halfPointsToLayoutPx(formatting.fontSize)
-    : DEFAULT_FONT_SIZE;
+  const fontSize = formatting.fontSize !== undefined ? halfPointsToLayoutPx(formatting.fontSize) : DEFAULT_FONT_SIZE;
 
   const runs: Run[] = [];
 
   for (const segment of raw.segments) {
-    const projected = projectSegment(
-      runEntity,
-      segment,
-      model,
-      marks,
-      fontFamily,
-      fontSize,
-    );
+    const projected = projectSegment(runEntity, segment, model, marks, fontFamily, fontSize);
     if (projected !== undefined) {
       runs.push(projected);
     }
   }
 
   return runs;
+}
+
+/**
+ * Feeder-based run segment projection.
+ *
+ * Projects a run FeederNode's inline segments to layout-compatible Run objects.
+ * Drawing resolution and dependency collection go through the feeder abstraction
+ * instead of the semantic model.
+ */
+export function projectRunSegmentsFromFeeder(
+  runNode: FeederNode<'run'>,
+  raw: RunRawProperties,
+  feeder: ProjectionFeeder,
+  resolved?: ResolvedRunProperties,
+  deps?: DependencyCollector,
+): Run[] {
+  const formatting = resolved ?? raw.formatting;
+  const marks = buildRunMarks(formatting);
+  const fontFamily = formatting.fontFamily ?? DEFAULT_FONT_FAMILY;
+  const fontSize = formatting.fontSize !== undefined ? halfPointsToLayoutPx(formatting.fontSize) : DEFAULT_FONT_SIZE;
+
+  const runs: Run[] = [];
+
+  for (const segment of raw.segments) {
+    const projected = projectSegmentFromFeeder(runNode, segment, feeder, marks, fontFamily, fontSize, deps);
+    if (projected !== undefined) {
+      runs.push(projected);
+    }
+  }
+
+  return runs;
+}
+
+function projectSegmentFromFeeder(
+  runNode: FeederNode<'run'>,
+  segment: InlineSegment,
+  feeder: ProjectionFeeder,
+  marks: RunMarks,
+  fontFamily: string,
+  fontSize: number,
+  deps?: DependencyCollector,
+): Run | undefined {
+  switch (segment.segmentKind) {
+    case 'text':
+      return projectTextSegment(segment.text, marks, fontFamily, fontSize);
+    case 'tab':
+      return projectTabSegment(marks);
+    case 'break':
+      return projectBreakSegment(segment.breakType);
+    case 'symbol':
+      return projectTextSegment(segment.char, marks, segment.font ?? fontFamily, fontSize);
+    case 'drawing':
+      return projectDrawingFromFeeder(runNode, segment, feeder, deps);
+    case 'footnoteRef':
+      if (deps) deps.addFootnote(segment.footnoteId);
+      return projectFootnoteRef(segment.footnoteId, marks, fontFamily, fontSize);
+    case 'endnoteRef':
+      if (deps) deps.addEndnote(segment.endnoteId);
+      return projectEndnoteRef(segment.endnoteId, marks, fontFamily, fontSize);
+    case 'softHyphen':
+      return projectTextSegment('\u00AD', marks, fontFamily, fontSize);
+    case 'noBreakHyphen':
+      return projectTextSegment('\u2011', marks, fontFamily, fontSize);
+    case 'fieldChar':
+    case 'instrText':
+    case 'deletedText':
+    case 'preserved':
+      return undefined;
+  }
+}
+
+function projectDrawingFromFeeder(
+  runNode: FeederNode<'run'>,
+  segment: DrawingSegment,
+  feeder: ProjectionFeeder,
+  deps?: DependencyCollector,
+): ImageRun | undefined {
+  const result = feeder.resolveDrawing(runNode, segment.localId);
+  if (!result) return undefined;
+
+  const raw = result.raw;
+  if (!raw.isInline || raw.drawingType !== 'image' || !raw.blipRelId) {
+    return undefined;
+  }
+  if (raw.width === undefined || raw.height === undefined) {
+    return undefined;
+  }
+
+  if (deps) {
+    deps.addImage(raw.blipRelId, runNode.sourceAnchor.partUri);
+  }
+
+  const source = result.imageSrc;
+  if (!source) return undefined;
+
+  return {
+    kind: 'image',
+    src: source,
+    width: emuToPixels(raw.width),
+    height: emuToPixels(raw.height),
+    ...(raw.description ? { alt: raw.description, title: raw.description } : {}),
+    verticalAlign: 'bottom',
+  };
 }
 
 // ---- Segment dispatch -------------------------------------------------------
@@ -95,44 +172,39 @@ function projectSegment(
   fontSize: number,
 ): Run | undefined {
   switch (segment.segmentKind) {
-    case "text":
+    case 'text':
       return projectTextSegment(segment.text, marks, fontFamily, fontSize);
-    case "tab":
+    case 'tab':
       return projectTabSegment(marks);
-    case "break":
+    case 'break':
       return projectBreakSegment(segment.breakType);
-    case "symbol":
+    case 'symbol':
       return projectTextSegment(segment.char, marks, segment.font ?? fontFamily, fontSize);
-    case "drawing":
+    case 'drawing':
       return projectDrawingSegment(runEntity, segment, model);
-    case "footnoteRef":
+    case 'footnoteRef':
       return projectFootnoteRef(segment.footnoteId, marks, fontFamily, fontSize);
-    case "endnoteRef":
+    case 'endnoteRef':
       return projectEndnoteRef(segment.endnoteId, marks, fontFamily, fontSize);
-    case "softHyphen":
-      return projectTextSegment("\u00AD", marks, fontFamily, fontSize);
-    case "noBreakHyphen":
-      return projectTextSegment("\u2011", marks, fontFamily, fontSize);
+    case 'softHyphen':
+      return projectTextSegment('\u00AD', marks, fontFamily, fontSize);
+    case 'noBreakHyphen':
+      return projectTextSegment('\u2011', marks, fontFamily, fontSize);
     // Not yet projected — dropped from FlowBlock output:
     // - fieldChar/instrText: field display requires field resolver + layout data
     // - deletedText: requires tracked-changes mode filtering
     // - preserved: unknown inline elements have no layout representation
-    case "fieldChar":
-    case "instrText":
-    case "deletedText":
-    case "preserved":
+    case 'fieldChar':
+    case 'instrText':
+    case 'deletedText':
+    case 'preserved':
       return undefined;
   }
 }
 
 // ---- Individual segment projectors ------------------------------------------
 
-function projectTextSegment(
-  text: string,
-  marks: RunMarks,
-  fontFamily: string,
-  fontSize: number,
-): TextRun {
+function projectTextSegment(text: string, marks: RunMarks, fontFamily: string, fontSize: number): TextRun {
   return {
     text,
     fontFamily,
@@ -151,15 +223,13 @@ function projectDrawingSegment(
     return undefined;
   }
 
-  const drawingEntity = model.entityBySourceRef(
-    createSourceRef(runSource.partUri, segment.localId),
-  );
-  if (!drawingEntity || drawingEntity.kind !== "drawing") {
+  const drawingEntity = model.entityBySourceRef(createSourceRef(runSource.partUri, segment.localId));
+  if (!drawingEntity || drawingEntity.kind !== 'drawing') {
     return undefined;
   }
 
   const raw = (drawingEntity as DrawingEntity).raw();
-  if (!raw.isInline || raw.drawingType !== "image" || !raw.blipRelId) {
+  if (!raw.isInline || raw.drawingType !== 'image' || !raw.blipRelId) {
     return undefined;
   }
 
@@ -169,19 +239,19 @@ function projectDrawingSegment(
   }
 
   return {
-    kind: "image",
+    kind: 'image',
     src: source,
     width: emuToPixels(raw.width),
     height: emuToPixels(raw.height),
     ...(raw.description ? { alt: raw.description, title: raw.description } : {}),
-    verticalAlign: "bottom",
+    verticalAlign: 'bottom',
   };
 }
 
 function projectTabSegment(marks: RunMarks): TabRun {
   return {
-    kind: "tab",
-    text: "\t",
+    kind: 'tab',
+    text: '\t',
     ...marks,
   };
 }
@@ -190,42 +260,30 @@ function emuToPixels(value: number): number {
   return Math.max(1, Math.round(value / EMUS_PER_PIXEL));
 }
 
-function projectBreakSegment(
-  breakType: "line" | "page" | "column" | "textWrapping",
-): LineBreakRun | BreakRun {
-  if (breakType === "line" || breakType === "textWrapping") {
-    return { kind: "lineBreak" };
+function projectBreakSegment(breakType: 'line' | 'page' | 'column' | 'textWrapping'): LineBreakRun | BreakRun {
+  if (breakType === 'line' || breakType === 'textWrapping') {
+    return { kind: 'lineBreak' };
   }
-  return { kind: "break", breakType };
+  return { kind: 'break', breakType };
 }
 
-function projectFootnoteRef(
-  footnoteId: string,
-  marks: RunMarks,
-  fontFamily: string,
-  fontSize: number,
-): TextRun {
+function projectFootnoteRef(footnoteId: string, marks: RunMarks, fontFamily: string, fontSize: number): TextRun {
   return {
     text: footnoteId,
     fontFamily,
     fontSize,
     ...marks,
-    vertAlign: "superscript",
+    vertAlign: 'superscript',
   };
 }
 
-function projectEndnoteRef(
-  endnoteId: string,
-  marks: RunMarks,
-  fontFamily: string,
-  fontSize: number,
-): TextRun {
+function projectEndnoteRef(endnoteId: string, marks: RunMarks, fontFamily: string, fontSize: number): TextRun {
   return {
     text: endnoteId,
     fontFamily,
     fontSize,
     ...marks,
-    vertAlign: "superscript",
+    vertAlign: 'superscript',
   };
 }
 
@@ -247,7 +305,7 @@ function buildRunMarks(formatting: Partial<RunFormatting>): RunMarks {
   if (formatting.strike || formatting.dstrike) {
     marks.strike = true;
   }
-  if (formatting.underline && formatting.underline !== "none") {
+  if (formatting.underline && formatting.underline !== 'none') {
     marks.underline = { style: mapUnderlineStyle(formatting.underline) };
   }
   if (formatting.color) {
@@ -266,9 +324,9 @@ function buildRunMarks(formatting: Partial<RunFormatting>): RunMarks {
     marks.vertAlign = mapVertAlign(formatting.vertAlign);
   }
   if (formatting.caps) {
-    marks.textTransform = "uppercase";
+    marks.textTransform = 'uppercase';
   } else if (formatting.smallCaps) {
-    marks.textTransform = "uppercase";
+    marks.textTransform = 'uppercase';
   }
 
   return marks;
@@ -277,38 +335,34 @@ function buildRunMarks(formatting: Partial<RunFormatting>): RunMarks {
 /**
  * Map OOXML underline values to the layout engine's style subset.
  */
-function mapUnderlineStyle(
-  value: string,
-): "single" | "double" | "dotted" | "dashed" | "wavy" {
+function mapUnderlineStyle(value: string): 'single' | 'double' | 'dotted' | 'dashed' | 'wavy' {
   switch (value) {
-    case "double":
-      return "double";
-    case "dotted":
-    case "dottedHeavy":
-      return "dotted";
-    case "dash":
-    case "dashLong":
-    case "dashLongHeavy":
-    case "dashDotHeavy":
-      return "dashed";
-    case "wave":
-    case "wavyDouble":
-    case "wavyHeavy":
-      return "wavy";
+    case 'double':
+      return 'double';
+    case 'dotted':
+    case 'dottedHeavy':
+      return 'dotted';
+    case 'dash':
+    case 'dashLong':
+    case 'dashLongHeavy':
+    case 'dashDotHeavy':
+      return 'dashed';
+    case 'wave':
+    case 'wavyDouble':
+    case 'wavyHeavy':
+      return 'wavy';
     default:
-      return "single";
+      return 'single';
   }
 }
 
 /**
  * Map OOXML vertAlign string to the layout engine's enum.
  */
-function mapVertAlign(
-  value: string,
-): "superscript" | "subscript" | "baseline" {
-  if (value === "superscript") return "superscript";
-  if (value === "subscript") return "subscript";
-  return "baseline";
+function mapVertAlign(value: string): 'superscript' | 'subscript' | 'baseline' {
+  if (value === 'superscript') return 'superscript';
+  if (value === 'subscript') return 'subscript';
+  return 'baseline';
 }
 
 /**
@@ -316,7 +370,7 @@ function mapVertAlign(
  * without one. Passes through "auto" and named colors unchanged.
  */
 function normalizeColor(color: string): string {
-  if (color === "auto") return color;
+  if (color === 'auto') return color;
   if (/^[0-9a-fA-F]{6}$/.test(color)) return `#${color}`;
   return color;
 }

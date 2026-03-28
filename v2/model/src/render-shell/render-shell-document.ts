@@ -21,6 +21,7 @@ import { createStylesView } from '../word/styles-view.js';
 import { createNumberingView } from '../word/numbering-view.js';
 import { createSettingsView } from '../word/settings-view.js';
 import { getAttr } from '../word/tree-helpers.js';
+import { resolveRelationshipTarget as resolveRelTargetFromOpc } from '../opc/relationships.js';
 
 // ---- Public types -----------------------------------------------------------
 
@@ -61,6 +62,10 @@ export type RenderShellDocument = {
   numberingShell(): NumberingView | undefined;
   /** Settings shell — read-only access to settings.xml. */
   settingsShell(): SettingsView | undefined;
+  /** The main document part URI (e.g., "/word/document.xml"). */
+  partUri(): string;
+  /** Resolve a relationship ID on the main document part to a target URI. */
+  resolveRelationshipTarget(relationshipId: string): string | undefined;
 };
 
 // ---- Factory ----------------------------------------------------------------
@@ -146,6 +151,24 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
         cachedSettingsView = createSettingsView(session) ?? undefined;
       }
       return cachedSettingsView;
+    },
+
+    partUri(): string {
+      return session.mainDocumentUri;
+    },
+
+    resolveRelationshipTarget(relationshipId: string): string | undefined {
+      const rels = session.relationships.partRelationships.get(session.mainDocumentUri);
+      if (!rels) return undefined;
+
+      const record = rels.get(relationshipId);
+      if (!record) return undefined;
+
+      if (record.targetMode === 'External') {
+        return record.target;
+      }
+
+      return resolveRelTargetFromOpc(session.mainDocumentUri, record.target);
     },
   };
 }

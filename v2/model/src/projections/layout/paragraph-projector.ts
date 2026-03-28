@@ -10,13 +10,13 @@
 // raw formatting otherwise.
 // ---------------------------------------------------------------------------
 
-import type { SemanticModel } from "../../model.js";
-import type { ParagraphEntity, ParagraphRawProperties, TabStop as EntityTabStop } from "../../entities/types.js";
-import type { StyleResolver } from "../../resolve/style-resolver.js";
+import type { SemanticModel } from '../../model.js';
+import type { ParagraphEntity, ParagraphRawProperties, TabStop as EntityTabStop } from '../../entities/types.js';
+import type { StyleResolver } from '../../resolve/style-resolver.js';
 import type {
   ParagraphProperties as ResolvedParagraphProperties,
   ParagraphTabStop,
-} from "@superdoc/style-engine/ooxml";
+} from '@superdoc/style-engine/ooxml';
 import type {
   ParagraphBlock,
   ParagraphAttrs,
@@ -27,19 +27,20 @@ import type {
   ParagraphShading,
   TabStop,
   Run,
-} from "./types.js";
-import type { ProjectionIdAllocator } from "./block-id.js";
-import { projectRuns } from "./run-projector.js";
+} from './types.js';
+import type { ProjectionIdAllocator } from './block-id.js';
+import type { StableIdAllocator } from './stable-id.js';
+import type { ProjectionFeeder, FeederNode } from './feeder.js';
+import type { DependencyCollector } from './dependency-manifest.js';
+import { projectRuns, projectRunSegmentsFromFeeder } from './run-projector.js';
+import type { ResolvedRunProperties } from './run-projector.js';
 import {
   normalizeColor,
   rawParagraphToStyleEngine,
   rawRunToStyleEngine,
   styleEngineRunToFormatting,
-} from "./style-engine-adapters.js";
-import {
-  paragraphLineToLayoutSpacing,
-  twipsToLayoutPx,
-} from "./measurement-conversions.js";
+} from './style-engine-adapters.js';
+import { paragraphLineToLayoutSpacing, twipsToLayoutPx } from './measurement-conversions.js';
 
 type BorderLike = {
   readonly val?: string;
@@ -56,15 +57,13 @@ export function projectParagraph(
   resolver?: StyleResolver,
 ): ParagraphBlock {
   const raw = entity.raw();
-  const resolvedParagraph = resolver
-    ? resolver.resolveParagraphProperties(rawParagraphToStyleEngine(raw))
-    : undefined;
+  const resolvedParagraph = resolver ? resolver.resolveParagraphProperties(rawParagraphToStyleEngine(raw)) : undefined;
 
   const attrs = buildParagraphAttrs(raw, resolvedParagraph);
 
   return {
-    kind: "paragraph",
-    id: ids.nextBlockId("paragraph", entity.ref),
+    kind: 'paragraph',
+    id: ids.nextBlockId('paragraph', entity.ref, entity.sourceRefs[0]),
     runs: collectRuns(entity, model, resolver, resolvedParagraph),
     ...(attrs ? { attrs } : {}),
   };
@@ -81,15 +80,63 @@ function collectRuns(
   for (const runEntity of model.runs(entity.ref)) {
     const resolvedFormatting = resolver
       ? styleEngineRunToFormatting(
-          resolver.resolveRunProperties(
-            rawRunToStyleEngine(runEntity.raw().formatting),
-            resolvedParagraph,
-          ),
+          resolver.resolveRunProperties(rawRunToStyleEngine(runEntity.raw().formatting), resolvedParagraph),
         )
       : undefined;
 
     for (const projectedRun of projectRuns(runEntity, model, resolvedFormatting)) {
       projectedRuns.push(projectedRun);
+    }
+  }
+
+  return projectedRuns;
+}
+
+/**
+ * Feeder-based paragraph projection.
+ *
+ * Projects a paragraph FeederNode to a layout-compatible ParagraphBlock.
+ * Uses the same `buildParagraphAttrs` helpers as the entity-based path.
+ */
+export function projectParagraphFromFeeder(
+  node: FeederNode<'paragraph'>,
+  feeder: ProjectionFeeder,
+  ids: StableIdAllocator,
+  resolver?: StyleResolver,
+  deps?: DependencyCollector,
+): ParagraphBlock {
+  const raw = node.raw();
+  const resolvedParagraph = resolver ? resolver.resolveParagraphProperties(rawParagraphToStyleEngine(raw)) : undefined;
+
+  const attrs = buildParagraphAttrs(raw, resolvedParagraph);
+
+  return {
+    kind: 'paragraph',
+    id: ids.blockId('paragraph', node.sourceAnchor),
+    runs: collectRunsFromFeeder(node, feeder, resolver, resolvedParagraph, deps),
+    ...(attrs ? { attrs } : {}),
+  };
+}
+
+function collectRunsFromFeeder(
+  paragraphNode: FeederNode<'paragraph'>,
+  feeder: ProjectionFeeder,
+  resolver: StyleResolver | undefined,
+  resolvedParagraph: ResolvedParagraphProperties | undefined,
+  deps?: DependencyCollector,
+): Run[] {
+  const projectedRuns: Run[] = [];
+
+  for (const runNode of feeder.paragraphRuns(paragraphNode)) {
+    const runRaw = runNode.raw();
+    const resolvedFormatting: ResolvedRunProperties | undefined = resolver
+      ? styleEngineRunToFormatting(
+          resolver.resolveRunProperties(rawRunToStyleEngine(runRaw.formatting), resolvedParagraph),
+        )
+      : undefined;
+
+    for (const run of projectRunSegmentsFromFeeder(runNode, runRaw, feeder, resolvedFormatting, deps)) {
+      projectedRuns.push(run);
     }
   }
 
@@ -156,9 +203,7 @@ function buildParagraphAttrs(
     hasContent = true;
   }
 
-  const tabs = resolved?.tabStops
-    ? buildResolvedTabs(resolved.tabStops)
-    : buildTabs(raw.tabs);
+  const tabs = resolved?.tabStops ? buildResolvedTabs(resolved.tabStops) : buildTabs(raw.tabs);
   if (tabs) {
     attrs.tabs = tabs;
     hasContent = true;
@@ -178,18 +223,16 @@ function buildParagraphAttrs(
   }
 
   if (resolved?.rightToLeft ?? raw.bidi) {
-    attrs.direction = "rtl";
+    attrs.direction = 'rtl';
     attrs.rtl = true;
     hasContent = true;
   }
 
-  return hasContent
-    ? attrs
-    : undefined;
+  return hasContent ? attrs : undefined;
 }
 
 function buildSpacing(
-  spacing: ParagraphRawProperties["spacing"] | ResolvedParagraphProperties["spacing"],
+  spacing: ParagraphRawProperties['spacing'] | ResolvedParagraphProperties['spacing'],
 ): ParagraphSpacing | undefined {
   if (!spacing) {
     return undefined;
@@ -206,10 +249,7 @@ function buildSpacing(
     result.after = twipsToLayoutPx(spacing.after);
     hasValue = true;
   }
-  const normalizedLineSpacing = paragraphLineToLayoutSpacing(
-    spacing.line,
-    spacing.lineRule,
-  );
+  const normalizedLineSpacing = paragraphLineToLayoutSpacing(spacing.line, spacing.lineRule);
   if (normalizedLineSpacing) {
     result.line = normalizedLineSpacing.value;
     result.lineUnit = normalizedLineSpacing.unit;
@@ -228,13 +268,11 @@ function buildSpacing(
     hasValue = true;
   }
 
-  return hasValue
-    ? result
-    : undefined;
+  return hasValue ? result : undefined;
 }
 
 function buildIndent(
-  indent: ParagraphRawProperties["indentation"] | ResolvedParagraphProperties["indent"],
+  indent: ParagraphRawProperties['indentation'] | ResolvedParagraphProperties['indent'],
 ): ParagraphIndent | undefined {
   if (!indent) {
     return undefined;
@@ -260,13 +298,11 @@ function buildIndent(
     hasValue = true;
   }
 
-  return hasValue
-    ? result
-    : undefined;
+  return hasValue ? result : undefined;
 }
 
 function buildBorders(
-  borders: ParagraphRawProperties["borders"] | ResolvedParagraphProperties["borders"],
+  borders: ParagraphRawProperties['borders'] | ResolvedParagraphProperties['borders'],
 ): ParagraphBorders | undefined {
   if (!borders) {
     return undefined;
@@ -275,7 +311,7 @@ function buildBorders(
   const result: ParagraphBorders = {};
   let hasValue = false;
 
-  for (const side of ["top", "bottom", "left", "right", "between"] as const) {
+  for (const side of ['top', 'bottom', 'left', 'right', 'between'] as const) {
     const border = borders[side];
     if (!border) {
       continue;
@@ -290,31 +326,23 @@ function buildBorders(
     hasValue = true;
   }
 
-  return hasValue
-    ? result
-    : undefined;
+  return hasValue ? result : undefined;
 }
 
-function mapBorder(
-  border: BorderLike,
-): ParagraphBorder | undefined {
-  if (!border.val || border.val === "none" || border.val === "nil") {
+function mapBorder(border: BorderLike): ParagraphBorder | undefined {
+  if (!border.val || border.val === 'none' || border.val === 'nil') {
     return undefined;
   }
 
   return {
     style: mapBorderStyle(border.val),
     ...((border.sz ?? border.size) !== undefined ? { width: (border.sz ?? border.size)! / 8 } : {}),
-    ...(border.color && border.color !== "auto"
-      ? { color: normalizeColor(border.color) }
-      : {}),
+    ...(border.color && border.color !== 'auto' ? { color: normalizeColor(border.color) } : {}),
     ...(border.space !== undefined ? { space: border.space } : {}),
   };
 }
 
-function buildShading(
-  shading: ResolvedParagraphProperties["shading"] | undefined,
-): ParagraphShading | undefined {
+function buildShading(shading: ResolvedParagraphProperties['shading'] | undefined): ParagraphShading | undefined {
   if (!shading) {
     return undefined;
   }
@@ -335,14 +363,10 @@ function buildShading(
     hasValue = true;
   }
 
-  return hasValue
-    ? result
-    : undefined;
+  return hasValue ? result : undefined;
 }
 
-function buildTabs(
-  tabs: readonly EntityTabStop[] | undefined,
-): TabStop[] | undefined {
+function buildTabs(tabs: readonly EntityTabStop[] | undefined): TabStop[] | undefined {
   if (!tabs || tabs.length === 0) {
     return undefined;
   }
@@ -354,9 +378,7 @@ function buildTabs(
   }));
 }
 
-function buildResolvedTabs(
-  tabs: readonly ParagraphTabStop[],
-): TabStop[] | undefined {
+function buildResolvedTabs(tabs: readonly ParagraphTabStop[]): TabStop[] | undefined {
   const result: TabStop[] = [];
 
   for (const entry of tabs) {
@@ -372,14 +394,12 @@ function buildResolvedTabs(
     });
   }
 
-  return result.length > 0
-    ? result
-    : undefined;
+  return result.length > 0 ? result : undefined;
 }
 
 function toResolvedNumbering(
-  numbering: ParagraphRawProperties["numPr"],
-): ResolvedParagraphProperties["numberingProperties"] | undefined {
+  numbering: ParagraphRawProperties['numPr'],
+): ResolvedParagraphProperties['numberingProperties'] | undefined {
   if (!numbering) {
     return undefined;
   }
@@ -390,105 +410,95 @@ function toResolvedNumbering(
   };
 }
 
-function mapAlignment(
-  value: string,
-): ParagraphAttrs["alignment"] | undefined {
+function mapAlignment(value: string): ParagraphAttrs['alignment'] | undefined {
   switch (value) {
-    case "left":
-    case "start":
-      return "left";
-    case "center":
-      return "center";
-    case "right":
-    case "end":
-      return "right";
-    case "both":
-    case "justify":
-    case "distribute":
-      return "justify";
+    case 'left':
+    case 'start':
+      return 'left';
+    case 'center':
+      return 'center';
+    case 'right':
+    case 'end':
+      return 'right';
+    case 'both':
+    case 'justify':
+    case 'distribute':
+      return 'justify';
     default:
       return undefined;
   }
 }
 
-function mapLineRule(
-  value: string,
-): ParagraphSpacing["lineRule"] {
+function mapLineRule(value: string): ParagraphSpacing['lineRule'] {
   switch (value) {
-    case "exact":
-      return "exact";
-    case "atLeast":
-      return "atLeast";
+    case 'exact':
+      return 'exact';
+    case 'atLeast':
+      return 'atLeast';
     default:
-      return "auto";
+      return 'auto';
   }
 }
 
-function mapBorderStyle(
-  value: string,
-): ParagraphBorder["style"] {
+function mapBorderStyle(value: string): ParagraphBorder['style'] {
   switch (value) {
-    case "double":
-    case "triple":
-    case "thinThickSmallGap":
-    case "thickThinSmallGap":
-    case "thinThickMediumGap":
-    case "thickThinMediumGap":
-    case "thinThickLargeGap":
-    case "thickThinLargeGap":
-      return "double";
-    case "dashed":
-    case "dashSmallGap":
-    case "dotDash":
-    case "dotDotDash":
-      return "dashed";
-    case "dotted":
-      return "dotted";
-    case "none":
-    case "nil":
-      return "none";
+    case 'double':
+    case 'triple':
+    case 'thinThickSmallGap':
+    case 'thickThinSmallGap':
+    case 'thinThickMediumGap':
+    case 'thickThinMediumGap':
+    case 'thinThickLargeGap':
+    case 'thickThinLargeGap':
+      return 'double';
+    case 'dashed':
+    case 'dashSmallGap':
+    case 'dotDash':
+    case 'dotDotDash':
+      return 'dashed';
+    case 'dotted':
+      return 'dotted';
+    case 'none':
+    case 'nil':
+      return 'none';
     default:
-      return "solid";
+      return 'solid';
   }
 }
 
-function mapTabAlignment(
-  value: string | undefined,
-): TabStop["val"] {
+function mapTabAlignment(value: string | undefined): TabStop['val'] {
   switch (value) {
-    case "right":
-    case "end":
-      return "end";
-    case "center":
-      return "center";
-    case "decimal":
-      return "decimal";
-    case "bar":
-      return "bar";
-    case "clear":
-      return "clear";
-    case "left":
-    case "start":
+    case 'right':
+    case 'end':
+      return 'end';
+    case 'center':
+      return 'center';
+    case 'decimal':
+      return 'decimal';
+    case 'bar':
+      return 'bar';
+    case 'clear':
+      return 'clear';
+    case 'left':
+    case 'start':
     default:
-      return "start";
+      return 'start';
   }
 }
 
-function mapTabLeader(
-  value: string,
-): TabStop["leader"] {
+function mapTabLeader(value: string): TabStop['leader'] {
   switch (value) {
-    case "dot":
-      return "dot";
-    case "hyphen":
-      return "hyphen";
-    case "heavy":
-      return "heavy";
-    case "underscore":
-      return "underscore";
-    case "middleDot":
-      return "middleDot";
+    case 'dot':
+      return 'dot';
+    case 'hyphen':
+      return 'hyphen';
+    case 'heavy':
+      return 'heavy';
+    case 'underscore':
+      return 'underscore';
+    case 'middleDot':
+      return 'middleDot';
     default:
-      return "none";
+      return 'none';
   }
 }

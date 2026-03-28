@@ -21,25 +21,25 @@ export type RunMarks = {
   letterSpacing?: number;
   color?: string;
   underline?: {
-    style?: "single" | "double" | "dotted" | "dashed" | "wavy";
+    style?: 'single' | 'double' | 'dotted' | 'dashed' | 'wavy';
     color?: string;
   } | null;
   strike?: boolean;
   highlight?: string;
-  textTransform?: "uppercase" | "lowercase" | "capitalize" | "none";
-  vertAlign?: "superscript" | "subscript" | "baseline";
+  textTransform?: 'uppercase' | 'lowercase' | 'capitalize' | 'none';
+  vertAlign?: 'superscript' | 'subscript' | 'baseline';
   baselineShift?: number;
 };
 
 export type TextRun = RunMarks & {
-  kind?: "text";
+  kind?: 'text';
   text: string;
   fontFamily: string;
   fontSize: number;
 };
 
 export type ImageRun = {
-  kind: "image";
+  kind: 'image';
   src: string;
   width: number;
   height: number;
@@ -50,18 +50,18 @@ export type ImageRun = {
   distBottom?: number;
   distLeft?: number;
   distRight?: number;
-  verticalAlign?: "bottom";
+  verticalAlign?: 'bottom';
   pmStart?: number;
   pmEnd?: number;
 };
 
 export type TabRun = RunMarks & {
-  kind: "tab";
-  text: "\t";
+  kind: 'tab';
+  text: '\t';
 };
 
 export type LineBreakRun = {
-  kind: "lineBreak";
+  kind: 'lineBreak';
   attrs?: {
     lineBreakType?: string;
     clear?: string;
@@ -69,8 +69,8 @@ export type LineBreakRun = {
 };
 
 export type BreakRun = {
-  kind: "break";
-  breakType?: "line" | "page" | "column" | string;
+  kind: 'break';
+  breakType?: 'line' | 'page' | 'column' | string;
 };
 
 export type Run = TextRun | ImageRun | TabRun | LineBreakRun | BreakRun;
@@ -81,8 +81,8 @@ export type ParagraphSpacing = {
   before?: number;
   after?: number;
   line?: number;
-  lineUnit?: "px" | "multiplier";
-  lineRule?: "auto" | "exact" | "atLeast";
+  lineUnit?: 'px' | 'multiplier';
+  lineRule?: 'auto' | 'exact' | 'atLeast';
   beforeAutospacing?: boolean;
   afterAutospacing?: boolean;
 };
@@ -95,7 +95,7 @@ export type ParagraphIndent = {
 };
 
 export type ParagraphBorder = {
-  style?: "none" | "solid" | "dashed" | "dotted" | "double";
+  style?: 'none' | 'solid' | 'dashed' | 'dotted' | 'double';
   width?: number;
   color?: string;
   space?: number;
@@ -116,14 +116,14 @@ export type ParagraphShading = {
 };
 
 export type TabStop = {
-  val: "start" | "end" | "center" | "decimal" | "bar" | "clear";
+  val: 'start' | 'end' | 'center' | 'decimal' | 'bar' | 'clear';
   pos: number;
-  leader?: "none" | "dot" | "hyphen" | "heavy" | "underscore" | "middleDot";
+  leader?: 'none' | 'dot' | 'hyphen' | 'heavy' | 'underscore' | 'middleDot';
 };
 
 export type ParagraphAttrs = {
   styleId?: string;
-  alignment?: "left" | "center" | "right" | "justify";
+  alignment?: 'left' | 'center' | 'right' | 'justify';
   spacing?: ParagraphSpacing;
   contextualSpacing?: boolean;
   indent?: ParagraphIndent;
@@ -134,12 +134,12 @@ export type ParagraphAttrs = {
   keepNext?: boolean;
   keepLines?: boolean;
   pageBreakBefore?: boolean;
-  direction?: "ltr" | "rtl";
+  direction?: 'ltr' | 'rtl';
   rtl?: boolean;
 };
 
 export type ParagraphBlock = {
-  kind: "paragraph";
+  kind: 'paragraph';
   id: BlockId;
   runs: Run[];
   attrs?: ParagraphAttrs;
@@ -182,7 +182,7 @@ export type BoxSpacing = {
 export type TableCellAttrs = {
   borders?: CellBorders;
   padding?: BoxSpacing;
-  verticalAlign?: "top" | "middle" | "center" | "bottom";
+  verticalAlign?: 'top' | 'middle' | 'center' | 'bottom';
   background?: string;
 };
 
@@ -207,7 +207,7 @@ export type TableRowAttrs = {
   };
   rowHeight?: {
     value: number;
-    rule?: "auto" | "atLeast" | "exact" | string;
+    rule?: 'auto' | 'atLeast' | 'exact' | string;
   };
 };
 
@@ -218,7 +218,7 @@ export type TableRow = {
 };
 
 export type TableBlock = {
-  kind: "table";
+  kind: 'table';
   id: BlockId;
   rows: TableRow[];
   attrs?: TableAttrs;
@@ -228,11 +228,11 @@ export type TableBlock = {
 // ---- Section break types ----------------------------------------------------
 
 export type SectionBreakBlock = {
-  kind: "sectionBreak";
+  kind: 'sectionBreak';
   id: BlockId;
-  type?: "continuous" | "nextPage" | "evenPage" | "oddPage";
+  type?: 'continuous' | 'nextPage' | 'evenPage' | 'oddPage';
   pageSize?: { w: number; h: number };
-  orientation?: "portrait" | "landscape";
+  orientation?: 'portrait' | 'landscape';
   margins: {
     header?: number;
     footer?: number;
@@ -267,7 +267,67 @@ export type SectionBreakBlock = {
 
 // ---- FlowBlock union --------------------------------------------------------
 
-export type FlowBlock =
-  | ParagraphBlock
-  | TableBlock
-  | SectionBreakBlock;
+export type FlowBlock = ParagraphBlock | TableBlock | SectionBreakBlock;
+
+// ---- Windowed projection types ----------------------------------------------
+
+import type { SourceAnchor } from './source-anchor.js';
+import type { DependencyManifest } from './dependency-manifest.js';
+
+/** Specification for what to project in a window. */
+export type WindowSpec = {
+  /** First body-child index to include. */
+  startBodyChildIndex: number;
+  /** Maximum number of body children to project. */
+  maxBodyChildCount: number;
+  /**
+   * Stop after estimating this many pages of content.
+   * Uses page height from primary section geometry for estimation.
+   * Optional — if omitted, projects all children in the range.
+   */
+  stopAfterPageEstimate?: number;
+  /** Whether to collect a dependency manifest for the window. */
+  includeDependencyManifest?: boolean;
+};
+
+/** Continuation token for requesting the next window. */
+export type WindowContinuation = {
+  /** The next body-child index to start from. */
+  nextBodyChildIndex: number;
+  /** Whether there are more body children after this window. */
+  hasMore: boolean;
+  /** Total body child count (for progress estimation). */
+  totalBodyChildCount: number;
+};
+
+/** Section metadata emitted when a section boundary is encountered. */
+export type SectionMetadataDelta = {
+  /** Section break blocks encountered in this window. */
+  sectionBreaks: SectionBreakBlock[];
+  /** Primary page geometry (from the document-level sectPr). */
+  primaryPageGeometry?: {
+    width: number;
+    height: number;
+    margins: { top: number; right: number; bottom: number; left: number };
+  };
+};
+
+/** Result of a windowed projection. */
+export type WindowedProjectionResult = {
+  /** The projected FlowBlocks for this window. */
+  readonly blocks: FlowBlock[];
+  /** Window metadata for resumption. */
+  readonly continuation: WindowContinuation;
+  /**
+   * Maps block IDs to source anchors.
+   * The projection-to-source leg of the trace chain.
+   */
+  readonly blockToSourceRef: ReadonlyMap<string, SourceAnchor>;
+  /** Section metadata encountered in this window. */
+  readonly sectionMetadata: SectionMetadataDelta;
+  /**
+   * Typed references to resources needed by the projected content.
+   * Only populated when WindowSpec.includeDependencyManifest is true.
+   */
+  readonly dependencyManifest?: DependencyManifest;
+};

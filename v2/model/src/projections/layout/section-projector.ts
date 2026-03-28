@@ -5,10 +5,12 @@
 // settings from the semantic model's SectionRawProperties.
 // ---------------------------------------------------------------------------
 
-import type { SectionEntity } from "../../entities/types.js";
-import type { SectionBreakBlock } from "./types.js";
-import type { ProjectionIdAllocator } from "./block-id.js";
-import { twipsToLayoutPx } from "./measurement-conversions.js";
+import type { SectionEntity, SectionRawProperties } from '../../entities/types.js';
+import type { SectionBreakBlock } from './types.js';
+import type { ProjectionIdAllocator } from './block-id.js';
+import type { StableIdAllocator } from './stable-id.js';
+import type { FeederNode } from './feeder.js';
+import { twipsToLayoutPx } from './measurement-conversions.js';
 
 /**
  * Project a section entity to a layout-compatible SectionBreakBlock.
@@ -17,15 +19,18 @@ import { twipsToLayoutPx } from "./measurement-conversions.js";
  * @param nextId - Block ID generator.
  * @returns A SectionBreakBlock ready for the layout engine.
  */
-export function projectSection(
-  entity: SectionEntity,
-  ids: ProjectionIdAllocator,
-): SectionBreakBlock {
+export function projectSection(entity: SectionEntity, ids: ProjectionIdAllocator): SectionBreakBlock {
   const raw = entity.raw();
+  return buildSectionBreakBlock(raw, ids.nextBlockId('sectionBreak', entity.ref, entity.sourceRefs[0]));
+}
 
+/**
+ * Core builder shared by both the entity-based and feeder-based paths.
+ */
+function buildSectionBreakBlock(raw: SectionRawProperties, blockId: string): SectionBreakBlock {
   const block: SectionBreakBlock = {
-    kind: "sectionBreak",
-    id: ids.nextBlockId("sectionBreak", entity.ref),
+    kind: 'sectionBreak',
+    id: blockId,
     margins: {
       ...(raw.marginTop !== undefined ? { top: twipsToLayoutPx(raw.marginTop) } : {}),
       ...(raw.marginRight !== undefined ? { right: twipsToLayoutPx(raw.marginRight) } : {}),
@@ -73,11 +78,22 @@ export function projectSection(
   return block;
 }
 
+/**
+ * Project a section FeederNode to a layout-compatible SectionBreakBlock.
+ *
+ * This is the feeder-based counterpart of `projectSection`. Both share the
+ * same core logic via `buildSectionBreakBlock`.
+ */
+export function projectSectionFromFeeder(node: FeederNode<'section'>, ids: StableIdAllocator): SectionBreakBlock {
+  const raw = node.raw();
+  return buildSectionBreakBlock(raw, ids.blockId('sectionBreak', node.sourceAnchor));
+}
+
 // ---- Helpers ----------------------------------------------------------------
 
-function mapOrientation(value: string): "portrait" | "landscape" | undefined {
-  if (value === "landscape") return "landscape";
-  if (value === "portrait") return "portrait";
+function mapOrientation(value: string): 'portrait' | 'landscape' | undefined {
+  if (value === 'landscape') return 'landscape';
+  if (value === 'portrait') return 'portrait';
   return undefined;
 }
 
@@ -90,9 +106,7 @@ function mapOrientation(value: string): "portrait" | "landscape" | undefined {
  * more precise mapping would need the ref type from the source XML
  * (e.g., w:type="default").
  */
-function buildHeaderFooterRefs(
-  refs: string[],
-): Record<string, string> | undefined {
+function buildHeaderFooterRefs(refs: string[]): Record<string, string> | undefined {
   if (refs.length === 0) return undefined;
 
   const result: Record<string, string> = {};

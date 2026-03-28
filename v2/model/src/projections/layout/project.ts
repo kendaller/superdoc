@@ -25,7 +25,13 @@ import {
 
 /** Options for the layout projection. */
 export type ProjectOptions = {
-  /** Prefix for generated block IDs. Defaults to "v2-". */
+  /**
+   * Optional ID prefix.
+   *
+   * Internal sequential IDs (such as table rows and cells) always use this
+   * prefix. Top-level FlowBlock IDs remain source-stable by default; when a
+   * custom prefix is provided, it is prepended to those stable IDs as well.
+   */
   prefix?: string;
   /** Style resolver for cascaded properties. If omitted, direct formatting only. */
   resolver?: StyleResolver;
@@ -57,8 +63,7 @@ export function projectToFlowBlocks(model: SemanticModel, options?: ProjectOptio
   markProjectionFirstWindowStart();
   const endProjection = startProjectionSpan();
 
-  const prefix = options?.prefix ?? 'v2-';
-  const ids = createProjectionIdAllocator(prefix);
+  const ids = createProjectionIdAllocator(options?.prefix);
 
   const mainStory = model.mainStory();
   if (!mainStory) {

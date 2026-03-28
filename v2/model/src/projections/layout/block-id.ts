@@ -5,10 +5,14 @@
 // Mirrors the pm-adapter's createBlockIdGenerator pattern.
 // ---------------------------------------------------------------------------
 
-import type { EntityRef } from "../../identity/types.js";
+import type { EntityRef, SourceRef } from '../../identity/types.js';
+import { sourceRefToSourceAnchor } from './source-anchor.js';
+import { makeStableBlockId } from './stable-id.js';
 
 /** Function that generates a unique block ID given a block kind. */
 export type BlockIdGenerator = (kind: string) => string;
+
+const DEFAULT_INTERNAL_ID_PREFIX = 'v2-';
 
 /**
  * ID allocator used during layout projection.
@@ -21,7 +25,7 @@ export type BlockIdGenerator = (kind: string) => string;
 export type ProjectionIdAllocator = {
   readonly blockToEntityRef: ReadonlyMap<string, EntityRef>;
   nextId(kind: string): string;
-  nextBlockId(kind: string, entityRef: EntityRef): string;
+  nextBlockId(kind: string, entityRef: EntityRef, sourceRef?: SourceRef): string;
 };
 
 /**
@@ -35,7 +39,7 @@ export type ProjectionIdAllocator = {
  * nextId("paragraph"); // "v2-2-paragraph"
  * ```
  */
-export function createBlockIdGenerator(prefix: string = "v2-"): BlockIdGenerator {
+export function createBlockIdGenerator(prefix: string = 'v2-'): BlockIdGenerator {
   let counter = 0;
   return (kind: string) => `${prefix}${counter++}-${kind}`;
 }
@@ -43,10 +47,10 @@ export function createBlockIdGenerator(prefix: string = "v2-"): BlockIdGenerator
 /**
  * Create a projection-aware ID allocator that also records block ownership.
  */
-export function createProjectionIdAllocator(
-  prefix: string = "v2-",
-): ProjectionIdAllocator {
-  const nextId = createBlockIdGenerator(prefix);
+export function createProjectionIdAllocator(prefix?: string): ProjectionIdAllocator {
+  const internalIdPrefix = prefix ?? DEFAULT_INTERNAL_ID_PREFIX;
+  const stableBlockPrefix = normalizeStableBlockPrefix(prefix);
+  const nextId = createBlockIdGenerator(internalIdPrefix);
   const blockToEntityRef = new Map<string, EntityRef>();
 
   return {
@@ -54,10 +58,20 @@ export function createProjectionIdAllocator(
 
     nextId,
 
-    nextBlockId(kind: string, entityRef: EntityRef): string {
-      const blockId = nextId(kind);
+    nextBlockId(kind: string, entityRef: EntityRef, sourceRef?: SourceRef): string {
+      const blockId = sourceRef
+        ? makeStableBlockId(kind, sourceRefToSourceAnchor(sourceRef), stableBlockPrefix)
+        : nextId(kind);
       blockToEntityRef.set(blockId, entityRef);
       return blockId;
     },
   };
+}
+
+function normalizeStableBlockPrefix(prefix?: string): string {
+  if (!prefix || prefix === DEFAULT_INTERNAL_ID_PREFIX) {
+    return '';
+  }
+
+  return prefix;
 }

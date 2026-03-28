@@ -7,15 +7,15 @@
 // a dedicated row-property resolver.
 // ---------------------------------------------------------------------------
 
-import type { SemanticModel } from "../../model.js";
+import type { SemanticModel } from '../../model.js';
 import type {
   Entity,
   TableEntity,
   TableCellRawProperties,
   TableRowRawProperties,
   TableRawProperties,
-} from "../../entities/types.js";
-import type { StyleResolver } from "../../resolve/style-resolver.js";
+} from '../../entities/types.js';
+import type { StyleResolver } from '../../resolve/style-resolver.js';
 import type {
   TableBlock,
   TableRow,
@@ -28,19 +28,15 @@ import type {
   CellBorders,
   BorderSpec,
   ParagraphBlock,
-} from "./types.js";
-import type { ProjectionIdAllocator } from "./block-id.js";
-import type { TableCellProperties, TableInfo, TableProperties } from "@superdoc/style-engine/ooxml";
-import { projectParagraph } from "./paragraph-projector.js";
-import {
-  normalizeColor,
-  rawTableCellToStyleEngine,
-  rawTableToStyleEngine,
-} from "./style-engine-adapters.js";
-import {
-  measurementToLayoutPx,
-  twipsToLayoutPx,
-} from "./measurement-conversions.js";
+} from './types.js';
+import type { ProjectionIdAllocator } from './block-id.js';
+import type { StableIdAllocator } from './stable-id.js';
+import type { ProjectionFeeder, FeederNode } from './feeder.js';
+import type { DependencyCollector } from './dependency-manifest.js';
+import type { TableCellProperties, TableInfo, TableProperties } from '@superdoc/style-engine/ooxml';
+import { projectParagraph, projectParagraphFromFeeder } from './paragraph-projector.js';
+import { normalizeColor, rawTableCellToStyleEngine, rawTableToStyleEngine } from './style-engine-adapters.js';
+import { measurementToLayoutPx, twipsToLayoutPx } from './measurement-conversions.js';
 
 type BorderLike = {
   readonly val?: string;
@@ -57,14 +53,12 @@ export function projectTable(
   resolver?: StyleResolver,
 ): TableBlock {
   const raw = entity.raw();
-  const resolvedTable = resolver
-    ? resolver.resolveTableProperties(rawTableToStyleEngine(raw))
-    : undefined;
+  const resolvedTable = resolver ? resolver.resolveTableProperties(rawTableToStyleEngine(raw)) : undefined;
   const rowEntities = model.tableRows(entity.ref);
 
   const block: TableBlock = {
-    kind: "table",
-    id: ids.nextBlockId("table", entity.ref),
+    kind: 'table',
+    id: ids.nextBlockId('table', entity.ref, entity.sourceRefs[0]),
     rows: projectRows(entity, rowEntities, model, ids, resolvedTable, resolver),
   };
 
@@ -82,7 +76,7 @@ export function projectTable(
 
 function projectRows(
   tableEntity: TableEntity,
-  rowEntities: readonly Entity<"tableRow">[],
+  rowEntities: readonly Entity<'tableRow'>[],
   model: SemanticModel,
   ids: ProjectionIdAllocator,
   resolvedTable: TableProperties | undefined,
@@ -90,17 +84,8 @@ function projectRows(
 ): TableRow[] {
   return rowEntities.map((rowEntity, rowIndex) => {
     const row: TableRow = {
-      id: ids.nextId("tableRow"),
-      cells: projectCells(
-        tableEntity,
-        rowEntity,
-        rowEntities.length,
-        rowIndex,
-        model,
-        ids,
-        resolvedTable,
-        resolver,
-      ),
+      id: ids.nextId('tableRow'),
+      cells: projectCells(tableEntity, rowEntity, rowEntities.length, rowIndex, model, ids, resolvedTable, resolver),
     };
 
     const attrs = buildRowAttrs(rowEntity.raw());
@@ -114,7 +99,7 @@ function projectRows(
 
 function projectCells(
   tableEntity: TableEntity,
-  rowEntity: Entity<"tableRow">,
+  rowEntity: Entity<'tableRow'>,
   rowCount: number,
   rowIndex: number,
   model: SemanticModel,
@@ -126,31 +111,18 @@ function projectCells(
 
   return cellEntities.map((cellEntity, cellIndex) => {
     const rawCell = cellEntity.raw();
-    const tableInfo = buildTableInfo(
-      tableEntity,
-      resolvedTable,
-      rowIndex,
-      cellIndex,
-      rowCount,
-      cellEntities.length,
-    );
+    const tableInfo = buildTableInfo(tableEntity, resolvedTable, rowIndex, cellIndex, rowCount, cellEntities.length);
     const resolvedCell = resolver
       ? resolver.resolveTableCellProperties(rawTableCellToStyleEngine(rawCell), tableInfo)
       : undefined;
     const blocks = projectCellContent(cellEntity, model, ids, resolver);
 
     const cell: TableCell = {
-      id: ids.nextId("tableCell"),
-      ...(blocks.length === 1 && blocks[0].kind === "paragraph"
-        ? { paragraph: blocks[0] as ParagraphBlock }
-        : {}),
+      id: ids.nextId('tableCell'),
+      ...(blocks.length === 1 && blocks[0].kind === 'paragraph' ? { paragraph: blocks[0] as ParagraphBlock } : {}),
       ...(blocks.length > 0 ? { blocks } : {}),
-      ...(rawCell.gridSpan !== undefined && rawCell.gridSpan > 1
-        ? { colSpan: rawCell.gridSpan }
-        : {}),
-      ...(buildRowSpan(rawCell.vMerge) !== undefined
-        ? { rowSpan: buildRowSpan(rawCell.vMerge) }
-        : {}),
+      ...(rawCell.gridSpan !== undefined && rawCell.gridSpan > 1 ? { colSpan: rawCell.gridSpan } : {}),
+      ...(buildRowSpan(rawCell.vMerge) !== undefined ? { rowSpan: buildRowSpan(rawCell.vMerge) } : {}),
     };
 
     const attrs = buildCellAttrs(rawCell, resolvedCell);
@@ -163,7 +135,7 @@ function projectCells(
 }
 
 function projectCellContent(
-  cellEntity: Entity<"tableCell">,
+  cellEntity: Entity<'tableCell'>,
   model: SemanticModel,
   ids: ProjectionIdAllocator,
   resolver?: StyleResolver,
@@ -172,19 +144,19 @@ function projectCellContent(
 
   for (const entity of model.cellContent(cellEntity.ref)) {
     switch (entity.kind) {
-      case "paragraph":
-        blocks.push(projectParagraph(entity as Entity<"paragraph">, model, ids, resolver));
+      case 'paragraph':
+        blocks.push(projectParagraph(entity as Entity<'paragraph'>, model, ids, resolver));
         break;
-      case "table":
-        blocks.push(projectTable(entity as Entity<"table">, model, ids, resolver));
+      case 'table':
+        blocks.push(projectTable(entity as Entity<'table'>, model, ids, resolver));
         break;
-      case "contentControl":
+      case 'contentControl':
         for (const childRef of entity.childRefs()) {
           const child = model.entity(childRef);
-          if (child?.kind === "paragraph") {
-            blocks.push(projectParagraph(child as Entity<"paragraph">, model, ids, resolver));
-          } else if (child?.kind === "table") {
-            blocks.push(projectTable(child as Entity<"table">, model, ids, resolver));
+          if (child?.kind === 'paragraph') {
+            blocks.push(projectParagraph(child as Entity<'paragraph'>, model, ids, resolver));
+          } else if (child?.kind === 'table') {
+            blocks.push(projectTable(child as Entity<'table'>, model, ids, resolver));
           }
         }
         break;
@@ -193,6 +165,165 @@ function projectCellContent(
 
   return blocks;
 }
+
+// ---- Feeder-based table projection ------------------------------------------
+
+/**
+ * Feeder-based table projection.
+ *
+ * Projects a table FeederNode to a layout-compatible TableBlock using the same
+ * `buildTableAttrs`, `buildRowAttrs`, `buildCellAttrs` helpers as the
+ * entity-based path.
+ */
+export function projectTableFromFeeder(
+  node: FeederNode<'table'>,
+  feeder: ProjectionFeeder,
+  ids: StableIdAllocator,
+  resolver?: StyleResolver,
+  deps?: DependencyCollector,
+): TableBlock {
+  const raw = node.raw();
+  const resolvedTable = resolver ? resolver.resolveTableProperties(rawTableToStyleEngine(raw)) : undefined;
+  const rowNodes = feeder.tableRows(node);
+
+  const block: TableBlock = {
+    kind: 'table',
+    id: ids.blockId('table', node.sourceAnchor),
+    rows: projectRowsFromFeeder(node, rowNodes, feeder, ids, resolvedTable, resolver, deps),
+  };
+
+  const attrs = buildTableAttrs(raw, resolvedTable);
+  if (attrs) {
+    block.attrs = attrs;
+  }
+
+  if (raw.gridCols.length > 0) {
+    block.columnWidths = raw.gridCols.map((width) => twipsToLayoutPx(width));
+  }
+
+  return block;
+}
+
+function projectRowsFromFeeder(
+  tableNode: FeederNode<'table'>,
+  rowNodes: FeederNode<'tableRow'>[],
+  feeder: ProjectionFeeder,
+  ids: StableIdAllocator,
+  resolvedTable: TableProperties | undefined,
+  resolver?: StyleResolver,
+  deps?: DependencyCollector,
+): TableRow[] {
+  return rowNodes.map((rowNode, rowIndex) => {
+    const row: TableRow = {
+      id: ids.subBlockId('tableRow', rowNode.sourceAnchor),
+      cells: projectCellsFromFeeder(
+        tableNode,
+        rowNode,
+        rowNodes.length,
+        rowIndex,
+        feeder,
+        ids,
+        resolvedTable,
+        resolver,
+        deps,
+      ),
+    };
+
+    const attrs = buildRowAttrs(rowNode.raw());
+    if (attrs) {
+      row.attrs = attrs;
+    }
+
+    return row;
+  });
+}
+
+function projectCellsFromFeeder(
+  tableNode: FeederNode<'table'>,
+  rowNode: FeederNode<'tableRow'>,
+  rowCount: number,
+  rowIndex: number,
+  feeder: ProjectionFeeder,
+  ids: StableIdAllocator,
+  resolvedTable: TableProperties | undefined,
+  resolver?: StyleResolver,
+  deps?: DependencyCollector,
+): TableCell[] {
+  const cellNodes = feeder.tableCells(rowNode);
+
+  return cellNodes.map((cellNode, cellIndex) => {
+    const rawCell = cellNode.raw();
+    const tableInfo = buildTableInfoFromFeeder(
+      tableNode,
+      resolvedTable,
+      rowIndex,
+      cellIndex,
+      rowCount,
+      cellNodes.length,
+    );
+    const resolvedCell = resolver
+      ? resolver.resolveTableCellProperties(rawTableCellToStyleEngine(rawCell), tableInfo)
+      : undefined;
+    const blocks = projectCellContentFromFeeder(cellNode, feeder, ids, resolver, deps);
+
+    const cell: TableCell = {
+      id: ids.subBlockId('tableCell', cellNode.sourceAnchor),
+      ...(blocks.length === 1 && blocks[0].kind === 'paragraph' ? { paragraph: blocks[0] as ParagraphBlock } : {}),
+      ...(blocks.length > 0 ? { blocks } : {}),
+      ...(rawCell.gridSpan !== undefined && rawCell.gridSpan > 1 ? { colSpan: rawCell.gridSpan } : {}),
+      ...(buildRowSpan(rawCell.vMerge) !== undefined ? { rowSpan: buildRowSpan(rawCell.vMerge) } : {}),
+    };
+
+    const attrs = buildCellAttrs(rawCell, resolvedCell);
+    if (attrs) {
+      cell.attrs = attrs;
+    }
+
+    return cell;
+  });
+}
+
+function projectCellContentFromFeeder(
+  cellNode: FeederNode<'tableCell'>,
+  feeder: ProjectionFeeder,
+  ids: StableIdAllocator,
+  resolver?: StyleResolver,
+  deps?: DependencyCollector,
+): (ParagraphBlock | TableBlock)[] {
+  const blocks: (ParagraphBlock | TableBlock)[] = [];
+
+  for (const contentNode of feeder.cellContent(cellNode)) {
+    switch (contentNode.kind) {
+      case 'paragraph':
+        blocks.push(projectParagraphFromFeeder(contentNode as FeederNode<'paragraph'>, feeder, ids, resolver, deps));
+        break;
+      case 'table':
+        blocks.push(projectTableFromFeeder(contentNode as FeederNode<'table'>, feeder, ids, resolver, deps));
+        break;
+    }
+  }
+
+  return blocks;
+}
+
+function buildTableInfoFromFeeder(
+  tableNode: FeederNode<'table'>,
+  resolvedTable: TableProperties | undefined,
+  rowIndex: number,
+  cellIndex: number,
+  rowCount: number,
+  cellCount: number,
+): TableInfo {
+  return {
+    tableProperties: resolvedTable ?? rawTableToStyleEngine(tableNode.raw()),
+    rowIndex,
+    cellIndex,
+    numRows: rowCount,
+    numCells: cellCount,
+  };
+}
+
+// ---- Shared helpers ---------------------------------------------------------
 
 function buildTableInfo(
   tableEntity: TableEntity,
@@ -211,19 +342,12 @@ function buildTableInfo(
   };
 }
 
-function buildTableAttrs(
-  raw: TableRawProperties,
-  resolved: TableProperties | undefined,
-): TableAttrs | undefined {
+function buildTableAttrs(raw: TableRawProperties, resolved: TableProperties | undefined): TableAttrs | undefined {
   const borders = buildTableBorders(resolved?.borders ?? raw.borders);
-  return borders
-    ? { borders }
-    : undefined;
+  return borders ? { borders } : undefined;
 }
 
-function buildRowAttrs(
-  raw: TableRowRawProperties,
-): TableRowAttrs | undefined {
+function buildRowAttrs(raw: TableRowRawProperties): TableRowAttrs | undefined {
   const attrs: TableRowAttrs = {};
   let hasContent = false;
 
@@ -246,9 +370,7 @@ function buildRowAttrs(
     }
   }
 
-  return hasContent
-    ? attrs
-    : undefined;
+  return hasContent ? attrs : undefined;
 }
 
 function buildCellAttrs(
@@ -282,13 +404,11 @@ function buildCellAttrs(
     hasContent = true;
   }
 
-  return hasContent
-    ? attrs
-    : undefined;
+  return hasContent ? attrs : undefined;
 }
 
 function buildTableBorders(
-  borders: TableRawProperties["borders"] | TableProperties["borders"],
+  borders: TableRawProperties['borders'] | TableProperties['borders'],
 ): TableBorders | undefined {
   if (!borders) {
     return undefined;
@@ -297,7 +417,7 @@ function buildTableBorders(
   const result: TableBorders = {};
   let hasValue = false;
 
-  for (const side of ["top", "bottom", "left", "right"] as const) {
+  for (const side of ['top', 'bottom', 'left', 'right'] as const) {
     const border = borders[side];
     if (!border) {
       continue;
@@ -316,13 +436,11 @@ function buildTableBorders(
     hasValue = true;
   }
 
-  return hasValue
-    ? result
-    : undefined;
+  return hasValue ? result : undefined;
 }
 
 function buildCellBorders(
-  borders: TableCellRawProperties["borders"] | TableCellProperties["borders"],
+  borders: TableCellRawProperties['borders'] | TableCellProperties['borders'],
 ): CellBorders | undefined {
   if (!borders) {
     return undefined;
@@ -331,36 +449,32 @@ function buildCellBorders(
   const result: CellBorders = {};
   let hasValue = false;
 
-  for (const side of ["top", "bottom", "left", "right"] as const) {
+  for (const side of ['top', 'bottom', 'left', 'right'] as const) {
     const border = borders[side] as BorderLike | undefined;
-    if (!border || !border.val || border.val === "none" || border.val === "nil") {
+    if (!border || !border.val || border.val === 'none' || border.val === 'nil') {
       continue;
     }
 
     result[side] = {
       style: border.val,
       ...((border.sz ?? border.size) !== undefined ? { width: (border.sz ?? border.size)! / 8 } : {}),
-      ...(border.color && border.color !== "auto"
-        ? { color: normalizeColor(border.color) }
-        : {}),
+      ...(border.color && border.color !== 'auto' ? { color: normalizeColor(border.color) } : {}),
       ...(border.space !== undefined ? { space: border.space } : {}),
     };
     hasValue = true;
   }
 
-  return hasValue
-    ? result
-    : undefined;
+  return hasValue ? result : undefined;
 }
 
 function buildCellPadding(
-  margins: TableCellProperties["cellMargins"] | undefined,
-): TableCellAttrs["padding"] | undefined {
+  margins: TableCellProperties['cellMargins'] | undefined,
+): TableCellAttrs['padding'] | undefined {
   if (!margins) {
     return undefined;
   }
 
-  const padding: NonNullable<TableCellAttrs["padding"]> = {};
+  const padding: NonNullable<TableCellAttrs['padding']> = {};
   let hasValue = false;
 
   if (margins.marginTop?.value !== undefined) {
@@ -392,61 +506,49 @@ function buildCellPadding(
     }
   }
 
-  return hasValue
-    ? padding
-    : undefined;
+  return hasValue ? padding : undefined;
 }
 
-function buildRowSpan(
-  vMerge: string | undefined,
-): number | undefined {
-  if (vMerge === "restart") {
+function buildRowSpan(vMerge: string | undefined): number | undefined {
+  if (vMerge === 'restart') {
     return 1;
   }
-  if (vMerge === "continue" || vMerge === "") {
+  if (vMerge === 'continue' || vMerge === '') {
     return 0;
   }
   return undefined;
 }
 
-function mapTableBorderValue(
-  border: BorderLike | undefined,
-): TableBorderValue {
-  if (!border || !border.val || border.val === "none" || border.val === "nil") {
+function mapTableBorderValue(border: BorderLike | undefined): TableBorderValue {
+  if (!border || !border.val || border.val === 'none' || border.val === 'nil') {
     return { none: true };
   }
 
   const spec: BorderSpec = {
     style: border.val,
     ...((border.sz ?? border.size) !== undefined ? { width: (border.sz ?? border.size)! / 8 } : {}),
-    ...(border.color && border.color !== "auto"
-      ? { color: normalizeColor(border.color) }
-      : {}),
+    ...(border.color && border.color !== 'auto' ? { color: normalizeColor(border.color) } : {}),
     ...(border.space !== undefined ? { space: border.space } : {}),
   };
 
   return spec;
 }
 
-function mapVerticalAlignment(
-  value: string | undefined,
-): TableCellAttrs["verticalAlign"] | undefined {
+function mapVerticalAlignment(value: string | undefined): TableCellAttrs['verticalAlign'] | undefined {
   switch (value) {
-    case "top":
-      return "top";
-    case "center":
-      return "center";
-    case "bottom":
-      return "bottom";
+    case 'top':
+      return 'top';
+    case 'center':
+      return 'center';
+    case 'bottom':
+      return 'bottom';
     default:
       return undefined;
   }
 }
 
-function resolveBackgroundColor(
-  fill: string | undefined,
-): string | undefined {
-  if (!fill || fill === "auto") {
+function resolveBackgroundColor(fill: string | undefined): string | undefined {
+  if (!fill || fill === 'auto') {
     return undefined;
   }
 
