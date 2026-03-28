@@ -12,13 +12,11 @@ import { resolvePartBytes } from '../session/part-bytes.js';
 import { buildLexicalIndex } from './indexer.js';
 import type { BoundaryConfig } from './indexer.js';
 
-// Parts indexed during the "render-shell" stage (critical path only)
-const RENDER_SHELL_PARTS = new Set([
-  '/word/document.xml',
-  '/word/styles.xml',
-  '/word/numbering.xml',
-  '/word/settings.xml',
-]);
+// The main document is the only XML part indexed on the first-paint critical path.
+const FIRST_PAINT_SHELL_INDEXED_PARTS = new Set(['/word/document.xml']);
+
+// Support parts indexed during the later "render-shell" stage.
+const RENDER_SHELL_SUPPORT_PARTS = new Set(['/word/styles.xml', '/word/numbering.xml', '/word/settings.xml']);
 
 // Parts that should be indexed during the "structure" stage
 const STRUCTURE_PARTS = new Set([
@@ -56,15 +54,27 @@ const BOUNDARY_CONFIGS: Record<string, BoundaryConfig> = {
 };
 
 /**
- * Index only the critical-path XML parts needed for the "render-shell" stage.
- * Enough to enumerate body-child boundaries, resolve page geometry,
- * and look up styles/numbering/settings for visible-window layout.
+ * Index only the critical-path XML parts needed for the "first-paint-shell" stage.
+ * This keeps the pre-render stage focused on the main document body's boundary
+ * index while leaving styles/numbering/settings for the later render-shell stage.
  */
 export function indexRenderShellParts(session: PackageSession, signal?: AbortSignal): void {
   for (const [uri, part] of session.parts) {
     throwIfAborted(signal);
     if (part.kind !== 'xml') continue;
-    if (!RENDER_SHELL_PARTS.has(uri)) continue;
+    if (!FIRST_PAINT_SHELL_INDEXED_PARTS.has(uri)) continue;
+    indexSinglePart(part, session, 'first-paint-shell');
+  }
+}
+
+/**
+ * Index the support XML parts needed for style-aware render-shell access.
+ */
+export function indexRenderShellSupportParts(session: PackageSession, signal?: AbortSignal): void {
+  for (const [uri, part] of session.parts) {
+    throwIfAborted(signal);
+    if (part.kind !== 'xml') continue;
+    if (!RENDER_SHELL_SUPPORT_PARTS.has(uri)) continue;
     indexSinglePart(part, session, 'render-shell');
   }
 }

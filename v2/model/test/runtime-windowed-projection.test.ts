@@ -6,7 +6,7 @@ describe('windowed projection runtimes', () => {
   it('projects and prefetched windows in-process', async () => {
     const runtime = new InProcessRuntimeV2();
     await runtime.openSource(createMultiParagraphDocx(['Alpha', 'Beta', 'Gamma']));
-    await runtime.ready('render-shell');
+    await runtime.ready('first-paint-shell');
 
     const firstWindow = await runtime.projectWindow({
       startBodyChildIndex: 0,
@@ -40,7 +40,7 @@ describe('windowed projection runtimes', () => {
       (_unused, index) => `Paragraph ${index + 1}: ${'Long content '.repeat(40)}`,
     );
     await runtime.openSource(createMultiParagraphDocx(paragraphs));
-    await runtime.ready('render-shell');
+    await runtime.ready('first-paint-shell');
 
     const firstWindow = await runtime.projectWindow({
       startBodyChildIndex: 0,
@@ -75,7 +75,7 @@ describe('windowed projection runtimes', () => {
 
     const runtime = new WorkerProxyV2(mainThreadWorker);
     await runtime.openSource(createMultiParagraphDocx(['Alpha', 'Beta', 'Gamma']));
-    await runtime.ready('render-shell');
+    await runtime.ready('first-paint-shell');
 
     const firstWindow = await runtime.projectWindow({
       startBodyChildIndex: 0,
@@ -112,7 +112,7 @@ describe('windowed projection runtimes', () => {
       (_unused, index) => `Paragraph ${index + 1}: ${'Long content '.repeat(40)}`,
     );
     await runtime.openSource(createMultiParagraphDocx(paragraphs));
-    await runtime.ready('render-shell');
+    await runtime.ready('first-paint-shell');
 
     const firstWindow = await runtime.projectWindow({
       startBodyChildIndex: 0,

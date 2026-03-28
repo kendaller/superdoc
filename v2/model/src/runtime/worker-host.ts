@@ -308,6 +308,12 @@ export function installWorkerHostV2(scope: WorkerScope): void {
         return null;
       }
 
+      case 'advanceRenderShell': {
+        if (!handle) throw new Error('No session open');
+        await handle.ready('render-shell', signal);
+        return null;
+      }
+
       case 'advanceStructure': {
         if (!handle) throw new Error('No session open');
         await handle.ready('structure', signal);

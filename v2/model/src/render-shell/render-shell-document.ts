@@ -5,9 +5,9 @@
 // contract providing only what the first visible window needs:
 //   - body-child count and windowed access
 //   - section shells with page geometry
-//   - style, numbering, and settings shells
+//   - deferred access to style, numbering, and settings shells
 //
-// Available after ready("render-shell"), before ready("structure").
+// Available after ready("first-paint-shell"), before ready("structure").
 // ---------------------------------------------------------------------------
 
 import type { PackageSession } from '../types/session.js';
@@ -58,6 +58,12 @@ export type RenderShellDocument = {
   sectionShells(): SectionShell[];
   /** Get page geometry for the first (primary) section. */
   primaryPageGeometry(): PageGeometry | undefined;
+  /** Report which supporting XML shells are ready without extra stage advancement. */
+  availableShells(): {
+    styles: boolean;
+    numbering: boolean;
+    settings: boolean;
+  };
   /** Style shell — read-only access to styles.xml. */
   styleShell(): StylesView | undefined;
   /** Numbering shell — read-only access to numbering.xml. */
@@ -133,7 +139,14 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
       return primarySectPr ? extractPageGeometry(primarySectPr) : undefined;
     },
 
+    availableShells() {
+      return resolveAvailableShells(session);
+    },
+
     styleShell(): StylesView | undefined {
+      if (!resolveAvailableShells(session).styles) {
+        return undefined;
+      }
       if (!cachedStylesView) {
         cachedStylesView = createStylesView(session) ?? undefined;
       }
@@ -141,6 +154,9 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
     },
 
     numberingShell(): NumberingView | undefined {
+      if (!resolveAvailableShells(session).numbering) {
+        return undefined;
+      }
       if (!cachedNumberingView) {
         cachedNumberingView = createNumberingView(session) ?? undefined;
       }
@@ -148,6 +164,9 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
     },
 
     settingsShell(): SettingsView | undefined {
+      if (!resolveAvailableShells(session).settings) {
+        return undefined;
+      }
       if (!cachedSettingsView) {
         cachedSettingsView = createSettingsView(session) ?? undefined;
       }
@@ -196,6 +215,20 @@ function resolvePrimarySectionElement(docView: DocumentView | undefined): XmlEle
   }
 
   return undefined;
+}
+
+function resolveAvailableShells(session: PackageSession): {
+  styles: boolean;
+  numbering: boolean;
+  settings: boolean;
+} {
+  const supportShellsReady = session.currentStage === 'render-shell' || session.currentStage === 'structure';
+
+  return {
+    styles: supportShellsReady && session.parts.has('/word/styles.xml'),
+    numbering: supportShellsReady && session.parts.has('/word/numbering.xml'),
+    settings: supportShellsReady && session.parts.has('/word/settings.xml'),
+  };
 }
 
 function extractPageGeometry(sectPr: XmlElementNode): PageGeometry {

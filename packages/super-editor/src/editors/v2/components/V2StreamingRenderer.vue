@@ -20,7 +20,7 @@ type Props = {
   runtime?: DocumentRuntime | null;
   /** Body children per projection window. Default: 50. */
   windowSize?: number;
-  /** stopAfterPageEstimate for the first window. Default: 3. */
+  /** stopAfterPageEstimate for the first window. Default: 1. */
   firstWindowPageEstimate?: number;
 };
 

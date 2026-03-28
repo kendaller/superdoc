@@ -23,7 +23,7 @@ import type { ContentTypesView, RelationshipsView } from '../word/content-types-
 
 // ---- Ready stages ---------------------------------------------------------
 
-export type ReadyStage = 'fast-open' | 'render-shell' | 'structure';
+export type ReadyStage = 'fast-open' | 'first-paint-shell' | 'render-shell' | 'structure';
 
 // ---- Document handle (public API) -----------------------------------------
 
@@ -39,7 +39,7 @@ export type DocumentHandle = {
   views(): PackageViews;
   /**
    * Get the render-shell surface for fast first paint.
-   * Available after ready("render-shell"). Returns undefined before that stage.
+   * Available after ready("first-paint-shell"). Returns undefined before that stage.
    * This is a read-only critical-path surface — not a replacement for semanticModel().
    */
   renderShell(): import('../render-shell/render-shell-document.js').RenderShellDocument | undefined;

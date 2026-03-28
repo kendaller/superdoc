@@ -66,7 +66,7 @@ export class WindowProjectionController {
   #projectWindow(handle: DocumentHandle, params: ProjectWindowParams): WindowedProjectionResult {
     const renderShell = handle.renderShell();
     if (!renderShell) {
-      throw new Error('Render shell is not available. Call ready("render-shell") before projecting windows.');
+      throw new Error('Render shell is not available. Call ready("first-paint-shell") before projecting windows.');
     }
 
     const views = handle.views();

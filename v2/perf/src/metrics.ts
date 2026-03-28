@@ -10,6 +10,7 @@
 
 export const OPEN_START = 'open.start' as const;
 export const OPEN_FAST_OPEN_COMPLETE = 'open.fastOpenComplete' as const;
+export const OPEN_FIRST_PAINT_SHELL_READY = 'open.firstPaintShellReady' as const;
 export const OPEN_RENDER_SHELL_READY = 'open.renderShellReady' as const;
 export const OPEN_STRUCTURE_READY = 'open.structureReady' as const;
 export const OPEN_BYTES_READ_BEFORE_FIRST_PAINT = 'open.bytesReadBeforeFirstPaint' as const;
@@ -66,6 +67,7 @@ export const RUNTIME_TASK_CANCELLATIONS = 'runtime.taskCancellations' as const;
 export const SPAN_OPEN = 'open' as const;
 export const SPAN_FAST_OPEN = 'open.fastOpen' as const;
 export const SPAN_MATERIALIZE_XML = 'open.materializeXml' as const;
+export const SPAN_ADVANCE_TO_FIRST_PAINT_SHELL = 'open.advanceToFirstPaintShell' as const;
 export const SPAN_ADVANCE_TO_RENDER_SHELL = 'open.advanceToRenderShell' as const;
 export const SPAN_ADVANCE_TO_STRUCTURE = 'open.advanceToStructure' as const;
 export const SPAN_INDEX_XML_PARTS = 'open.indexXmlParts' as const;
@@ -104,6 +106,7 @@ export const ENTERPRISE_RESOURCE_VIOLATION_COUNT = 'enterprise.resourceViolation
 export type OpenMetricName =
   | typeof OPEN_START
   | typeof OPEN_FAST_OPEN_COMPLETE
+  | typeof OPEN_FIRST_PAINT_SHELL_READY
   | typeof OPEN_RENDER_SHELL_READY
   | typeof OPEN_STRUCTURE_READY;
 
@@ -158,6 +161,7 @@ export type SpanName =
   | typeof SPAN_OPEN
   | typeof SPAN_FAST_OPEN
   | typeof SPAN_MATERIALIZE_XML
+  | typeof SPAN_ADVANCE_TO_FIRST_PAINT_SHELL
   | typeof SPAN_ADVANCE_TO_RENDER_SHELL
   | typeof SPAN_ADVANCE_TO_STRUCTURE
   | typeof SPAN_INDEX_XML_PARTS

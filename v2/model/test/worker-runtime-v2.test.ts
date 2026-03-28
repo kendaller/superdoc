@@ -41,7 +41,7 @@ describe('worker runtime v2', () => {
 
     const runtime = new WorkerProxyV2(mainThreadWorker);
     await runtime.openSource(createMinimalDocx());
-    await runtime.ready('render-shell');
+    await runtime.ready('first-paint-shell');
 
     const renderShell = await runtime.getRenderShell();
 
@@ -49,16 +49,24 @@ describe('worker runtime v2', () => {
     expect(renderShell).toMatchObject({
       bodyChildCount: expect.any(Number),
       availableShells: {
-        styles: true,
-        numbering: true,
-        settings: true,
+        styles: false,
+        numbering: false,
+        settings: false,
       },
       primaryPageGeometry: {
         width: 12240,
         height: 15840,
       },
     });
-    expect(renderShell?.sections.length).toBeGreaterThan(0);
+    expect(renderShell?.sections).toEqual([]);
+
+    await runtime.advanceRenderShell();
+    const enrichedShell = await runtime.getRenderShell();
+    expect(enrichedShell?.availableShells).toEqual({
+      styles: true,
+      numbering: true,
+      settings: true,
+    });
 
     await runtime.close();
   });

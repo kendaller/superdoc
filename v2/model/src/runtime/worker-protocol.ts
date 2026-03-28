@@ -107,6 +107,13 @@ export type WorkerRequestV2 =
       params: PrefetchWindowParams;
       priority: TaskPriority;
     }
+  | {
+      id: string;
+      taskId: TaskId;
+      method: 'advanceRenderShell';
+      params: Record<string, never>;
+      priority: TaskPriority;
+    }
   | { id: string; taskId: TaskId; method: 'advanceStructure'; params: Record<string, never>; priority: TaskPriority }
   | {
       id: string;

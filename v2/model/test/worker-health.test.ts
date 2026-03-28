@@ -10,6 +10,7 @@ function createRuntimeStub(overrides?: Partial<DocumentRuntime>): DocumentRuntim
     projectWindow: vi.fn(),
     projectNextWindow: vi.fn(),
     prefetchWindow: vi.fn(),
+    advanceRenderShell: vi.fn(),
     advanceStructure: vi.fn(),
     enrich: vi.fn(),
     cancelTask: vi.fn(),

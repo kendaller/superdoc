@@ -5,16 +5,16 @@
 // and region boundaries. Does NOT produce a full tree — that's hydration's job.
 // ---------------------------------------------------------------------------
 
-import { SaxesParser } from "saxes";
-import type {
-  XmlLexicalIndex,
-  XmlStructuralRecord,
-  XmlStructuralRegion,
-  SourceSpan,
-} from "../types/xml.js";
-import { makeNodeId } from "./node-id.js";
-import { buildCharToByteMap, detectXmlEncoding, findOpenAngleBracket, assertUtf8Encoding } from "./byte-mapping.js";
-import { parseXmlDeclaration } from "./declaration-parser.js";
+import { SaxesParser } from 'saxes';
+import type { XmlLexicalIndex, XmlStructuralRecord, XmlStructuralRegion, SourceSpan } from '../types/xml.js';
+import { makeNodeId } from './node-id.js';
+import {
+  createCharToByteResolver,
+  detectXmlEncoding,
+  findOpenAngleBracket,
+  assertUtf8Encoding,
+} from './byte-mapping.js';
+import { parseXmlDeclaration } from './declaration-parser.js';
 
 // ---- Configuration --------------------------------------------------------
 
@@ -42,8 +42,8 @@ export function buildLexicalIndex(
   config: BoundaryConfig = DEFAULT_BOUNDARY,
 ): XmlLexicalIndex {
   assertUtf8Encoding(bytes, partUri);
-  const text = new TextDecoder("utf-8").decode(bytes);
-  const charToByte = buildCharToByteMap(text, bytes);
+  const text = new TextDecoder('utf-8').decode(bytes);
+  const charToByte = createCharToByteResolver(text, bytes);
   const encoding = detectXmlEncoding(bytes);
 
   const recordsById = new Map<string, XmlStructuralRecord>();
@@ -60,12 +60,12 @@ export function buildLexicalIndex(
 
   const parser = new SaxesParser({ xmlns: true, position: true });
 
-  parser.on("opentag", (node) => {
+  parser.on('opentag', (node) => {
     depth++;
     // parser.position is the char index right after the `>` of the open tag.
     // Scan backwards in the text to find the `<` that started it.
     const tagStartChar = findOpenAngleBracket(text, parser.position);
-    const startByte = charToByte[tagStartChar] ?? 0;
+    const startByte = charToByte(tagStartChar);
 
     const frame: StackFrame = {
       localName: node.local,
@@ -80,9 +80,9 @@ export function buildLexicalIndex(
 
     // Determine role
     if (depth === 1) {
-      frame.role = "root";
+      frame.role = 'root';
     } else if (isAtBoundaryDepth(depth, config, stack)) {
-      frame.role = "boundary";
+      frame.role = 'boundary';
     }
 
     stack.push(frame);
@@ -91,13 +91,13 @@ export function buildLexicalIndex(
     // saxes fires closetag for self-closing tags too, so we let it handle it.
   });
 
-  parser.on("closetag", () => {
+  parser.on('closetag', () => {
     const frame = stack.pop();
     if (!frame) return;
 
     // parser.position is 0-based char index AFTER the `>` of the close tag
     const endChar = parser.position;
-    const endByte = charToByte[endChar] ?? bytes.length;
+    const endByte = charToByte(endChar);
 
     // Update parent's descendant count
     if (stack.length > 0) {
@@ -110,21 +110,20 @@ export function buildLexicalIndex(
         startByte: frame.startByte,
         endByte,
       };
-      const id = makeNodeId(partUri, "element", fullSpan);
+      const id = makeNodeId(partUri, 'element', fullSpan);
 
       const record: XmlStructuralRecord = {
         id,
         role: frame.role,
-        kind: "element",
+        kind: 'element',
         depth: frame.depth,
         prefix: frame.prefix,
         localName: frame.localName,
         namespaceUri: frame.uri,
         fullSpan,
-        childBoundaryIds:
-          frame.childBoundaryIds.length > 0 ? frame.childBoundaryIds : undefined,
+        childBoundaryIds: frame.childBoundaryIds.length > 0 ? frame.childBoundaryIds : undefined,
         descendantCount: frame.descendants,
-        hydrationBoundary: frame.role === "boundary",
+        hydrationBoundary: frame.role === 'boundary',
       };
 
       // Link to nearest recorded ancestor
@@ -139,18 +138,18 @@ export function buildLexicalIndex(
       indexedNodeIds.push(id);
       frame.recordId = id;
 
-      if (frame.role === "root") rootElementId = id;
+      if (frame.role === 'root') rootElementId = id;
 
       // Register as child boundary on parent
-      if (frame.role === "boundary" && stack.length > 0) {
+      if (frame.role === 'boundary' && stack.length > 0) {
         stack[stack.length - 1].childBoundaryIds.push(id);
       }
 
       // Create region for each boundary
-      if (frame.role === "boundary") {
+      if (frame.role === 'boundary') {
         regions.push({
           id: `region:${id}`,
-          kind: "subtree",
+          kind: 'subtree',
           span: fullSpan,
           anchorNodeId: id,
         });
@@ -168,8 +167,8 @@ export function buildLexicalIndex(
     const rootRec = recordsById.get(rootElementId);
     if (rootRec) {
       regions.unshift({
-        id: "region:root",
-        kind: "root",
+        id: 'region:root',
+        kind: 'root',
         span: rootRec.fullSpan,
         anchorNodeId: rootElementId,
       });
@@ -177,7 +176,7 @@ export function buildLexicalIndex(
   }
 
   return {
-    density: "sparse",
+    density: 'sparse',
     declaration,
     rootElementId,
     indexedNodeIds,
@@ -198,27 +197,20 @@ type StackFrame = {
   descendants: number;
   childBoundaryIds: string[];
   isSelfClosing: boolean;
-  role?: "root" | "boundary" | "anchor";
+  role?: 'root' | 'boundary' | 'anchor';
   recordId?: string;
 };
 
 // ---- Boundary logic -------------------------------------------------------
 
-function isAtBoundaryDepth(
-  depth: number,
-  config: BoundaryConfig,
-  stack: StackFrame[],
-): boolean {
+function isAtBoundaryDepth(depth: number, config: BoundaryConfig, stack: StackFrame[]): boolean {
   if (depth === config.boundaryDepth + 1) return true;
 
   if (config.boundaryParents && stack.length >= 1) {
     const parent = stack[stack.length - 1];
-    const qname = parent.prefix
-      ? `${parent.prefix}:${parent.localName}`
-      : parent.localName;
+    const qname = parent.prefix ? `${parent.prefix}:${parent.localName}` : parent.localName;
     if (config.boundaryParents.has(qname)) return true;
   }
 
   return false;
 }
-

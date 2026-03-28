@@ -53,7 +53,7 @@ const DEFAULT_PAGE_GAP = 24;
 const DEFAULT_HORIZONTAL_PAGE_GAP = 20;
 const DEFAULT_LAYOUT_MODE = 'vertical';
 const DEFAULT_WINDOW_SIZE = 50;
-const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 3;
+const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 1;
 const DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE = 2;
 const BUFFER_AHEAD_PAGES = 10;
 const TWIPS_PER_INCH = 1440;
@@ -71,7 +71,7 @@ export type V2StreamingPaginatedRenderHostOptions = {
   runtime: DocumentRuntime;
   /** Upper bound for how many body children one window may scan. Default: 50. */
   windowSize?: number;
-  /** stopAfterPageEstimate for the first window. Default: 3. */
+  /** stopAfterPageEstimate for the first window. Default: 1. */
   firstWindowPageEstimate?: number;
 };
 
@@ -193,11 +193,11 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#transition('opening');
 
     try {
-      // Phase 1: Open + render-shell
+      // Phase 1: Open + first-paint shell
       await this.#runtime.openSource(source);
       if (gen !== this.#generation) return;
 
-      await this.#runtime.ready('render-shell');
+      await this.#runtime.ready('first-paint-shell');
       if (gen !== this.#generation) return;
 
       const shell = await this.#runtime.getRenderShell();
@@ -252,6 +252,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         pageCount: this.#accumulated.layout?.pages.length ?? 0,
       };
       this.emit('firstPaintComplete', firstPaintPayload);
+
+      void this.#advanceRenderShellInBackground(gen);
 
       // Phase 4: Schedule background streaming or go straight to enriching
       if (this.#accumulated.nextBodyChildIndex < this.#accumulated.totalBodyChildCount) {
@@ -558,6 +560,28 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       if (gen === this.#generation) {
         this.#scheduleStreamingWork();
       }
+    }
+  }
+
+  async #advanceRenderShellInBackground(generation: number): Promise<void> {
+    try {
+      await this.#runtime.advanceRenderShell();
+      if (generation !== this.#generation) {
+        return;
+      }
+
+      // Keep the shell snapshot in sync with newly available support shells.
+      const nextShell = await this.#runtime.getRenderShell();
+      if (generation !== this.#generation || !nextShell) {
+        return;
+      }
+
+      this.#renderShell = nextShell;
+    } catch (error) {
+      if (generation !== this.#generation) {
+        return;
+      }
+      this.#handleNonFatalError(error, 'advance-render-shell');
     }
   }
 

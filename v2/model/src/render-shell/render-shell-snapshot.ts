@@ -53,11 +53,7 @@ export function createRenderShellSnapshot(
     bodyChildCount: renderShell.bodyChildCount(),
     sections,
     primaryPageGeometry: clonePageGeometry(renderShell.primaryPageGeometry()),
-    availableShells: {
-      styles: renderShell.styleShell() !== undefined,
-      numbering: renderShell.numberingShell() !== undefined,
-      settings: renderShell.settingsShell() !== undefined,
-    },
+    availableShells: renderShell.availableShells(),
   };
 }
 

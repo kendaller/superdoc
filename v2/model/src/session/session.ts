@@ -7,13 +7,20 @@ import type { ArchiveByteSource, AsyncArchiveReader } from '../types/package.js'
 import { fastOpen, fastOpenAsync } from '../opc/package-loader.js';
 import { inflateEntryAsync } from '../opc/zip-reader.js';
 import { nextRevision } from './revision.js';
-import { indexRenderShellParts, indexXmlParts, indexPartOnDemand } from '../xml/index-integration.js';
+import {
+  indexRenderShellParts,
+  indexRenderShellSupportParts,
+  indexXmlParts,
+  indexPartOnDemand,
+} from '../xml/index-integration.js';
 import {
   startFastOpenSpan,
+  startAdvanceToFirstPaintShellSpan,
   startAdvanceToRenderShellSpan,
   startAdvanceToStructureSpan,
   startMaterializeXmlSpan,
   startIndexXmlPartsSpan,
+  markFirstPaintShellReady,
   markRenderShellReady,
   markStructureReady,
   recordXmlPartsMaterialized,
@@ -69,7 +76,7 @@ export async function createSessionAsync(
   };
 }
 
-const STAGE_ORDER: ReadyStage[] = ['fast-open', 'render-shell', 'structure'];
+const STAGE_ORDER: ReadyStage[] = ['fast-open', 'first-paint-shell', 'render-shell', 'structure'];
 
 /** Advance the session to a deeper ready stage. */
 export async function advanceToStage(session: PackageSession, stage: ReadyStage, signal?: AbortSignal): Promise<void> {
@@ -80,15 +87,25 @@ export async function advanceToStage(session: PackageSession, stage: ReadyStage,
 
   // Advance through each intermediate stage in order
   if (currentIdx < 1 && targetIdx >= 1) {
-    await advanceToRenderShell(session, signal);
+    await advanceToFirstPaintShell(session, signal);
   }
   if (currentIdx < 2 && targetIdx >= 2) {
+    await advanceToRenderShell(session, signal);
+  }
+  if (currentIdx < 3 && targetIdx >= 3) {
     await advanceToStructure(session, signal);
   }
 }
 
-/** Parts needed for render-shell stage (critical path only). */
-const RENDER_SHELL_PART_URIS = new Set([
+/**
+ * Parts materialized before first paint.
+ *
+ * The first visible window may still need styles/numbering/settings for
+ * correctness, but only `/word/document.xml` is indexed on the critical path.
+ * The supporting parts are materialized here so they can be indexed lazily
+ * during first projection without forcing a second archive read.
+ */
+const FIRST_PAINT_SHELL_PART_URIS = new Set([
   '/word/document.xml',
   '/word/styles.xml',
   '/word/numbering.xml',
@@ -96,17 +113,37 @@ const RENDER_SHELL_PART_URIS = new Set([
 ]);
 
 /**
- * Advance to render-shell: materialize and index only the critical-path parts
- * needed for first-window paginated render.
+ * Advance to first-paint-shell: materialize critical-path XML bytes and index
+ * only the main document part.
+ */
+async function advanceToFirstPaintShell(session: PackageSession, signal?: AbortSignal): Promise<void> {
+  const endFirstPaintShell = startAdvanceToFirstPaintShellSpan();
+  try {
+    if (session.asyncReader) {
+      await materializeXmlParts(session, FIRST_PAINT_SHELL_PART_URIS, signal);
+    }
+
+    const endIndex = startIndexXmlPartsSpan();
+    try {
+      indexRenderShellSupportParts(session, signal);
+    } finally {
+      endIndex();
+    }
+
+    session.currentStage = 'first-paint-shell';
+    markFirstPaintShellReady();
+  } finally {
+    endFirstPaintShell();
+  }
+}
+
+/**
+ * Advance to render-shell: index supporting XML parts needed for style-aware
+ * paginated rendering after the first visible window has painted.
  */
 async function advanceToRenderShell(session: PackageSession, signal?: AbortSignal): Promise<void> {
   const endRenderShell = startAdvanceToRenderShellSpan();
   try {
-    // For lazy sessions, materialize only the render-shell parts
-    if (session.asyncReader) {
-      await materializeXmlParts(session, RENDER_SHELL_PART_URIS, signal);
-    }
-
     const endIndex = startIndexXmlPartsSpan();
     try {
       indexRenderShellParts(session, signal);

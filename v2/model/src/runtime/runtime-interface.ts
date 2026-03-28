@@ -44,6 +44,7 @@ export interface DocumentRuntime {
   projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult>;
   projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult>;
   prefetchWindow(params: PrefetchWindowParams): Promise<void>;
+  advanceRenderShell(): Promise<void>;
   advanceStructure(): Promise<void>;
   enrich(target: EnrichmentTarget, request?: EnrichmentRequest): Promise<EnrichmentResult>;
 

@@ -12,6 +12,7 @@ function createRuntimeStub(overrides?: Partial<DocumentRuntime>): DocumentRuntim
     projectWindow: vi.fn(),
     projectNextWindow: vi.fn(),
     prefetchWindow: vi.fn().mockResolvedValue(undefined),
+    advanceRenderShell: vi.fn().mockResolvedValue(undefined),
     advanceStructure: vi.fn().mockResolvedValue(undefined),
     enrich: vi.fn().mockResolvedValue({ target: 'comments', mergePolicy: 'overlay-only', items: [] }),
     cancelTask: vi.fn(),

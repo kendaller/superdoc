@@ -2,59 +2,56 @@
 // Render-shell stage tests
 //
 // Proves that:
-// 1. "render-shell" is a valid and distinct ready stage
+// 1. "first-paint-shell" and "render-shell" are valid ready stages
 // 2. Body-child windows work without full structure
 // 3. semanticModel() is unavailable before "structure"
-// 4. Page geometry is available at render-shell
+// 4. Page geometry is available at first-paint-shell
 // 5. Comments and secondary stories are not required
-// 6. Fewer parts are indexed at render-shell than at structure
+// 6. Support shells remain deferred until render-shell
 // ---------------------------------------------------------------------------
 
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { open } from '../src/session/open.js';
 import { createRenderShellSnapshot } from '../src/render-shell/render-shell-snapshot.js';
-import { createMinimalDocx, createMultiParagraphDocx, createComplexDocx } from './helpers/create-test-docx.js';
+import { createComplexDocx, createMinimalDocx, createMultiParagraphDocx } from './helpers/create-test-docx.js';
 
-describe('render-shell stage', () => {
-  it('is a valid ready stage distinct from fast-open and structure', async () => {
+describe('render-shell stages', () => {
+  it('treats first-paint-shell as a valid intermediate stage', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
-    const status = await handle.status();
-    expect(status.currentStage).toBe('render-shell');
+    expect((await handle.status()).currentStage).toBe('first-paint-shell');
 
     await handle.close();
   });
 
-  it('advances through render-shell on the way to structure', async () => {
+  it('advances through both shell stages on the way to structure', async () => {
     const handle = await open(createMinimalDocx());
 
-    // Before advancing, we're at fast-open
-    const before = await handle.status();
-    expect(before.currentStage).toBe('fast-open');
+    expect((await handle.status()).currentStage).toBe('fast-open');
 
-    // Advance directly to structure — should pass through render-shell
     await handle.ready('structure');
 
-    const after = await handle.status();
-    expect(after.currentStage).toBe('structure');
+    expect((await handle.status()).currentStage).toBe('structure');
 
     await handle.close();
   });
 
-  it('is idempotent — calling render-shell twice does not error', async () => {
+  it('is idempotent for first-paint-shell', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
+    await handle.ready('first-paint-shell');
 
-    const status = await handle.status();
-    expect(status.currentStage).toBe('render-shell');
+    expect((await handle.status()).currentStage).toBe('first-paint-shell');
 
     await handle.close();
   });
 
-  it('can advance from render-shell to structure', async () => {
+  it('can advance from first-paint-shell to render-shell to structure', async () => {
     const handle = await open(createMinimalDocx());
+    await handle.ready('first-paint-shell');
+    expect((await handle.status()).currentStage).toBe('first-paint-shell');
+
     await handle.ready('render-shell');
     expect((await handle.status()).currentStage).toBe('render-shell');
 
@@ -66,18 +63,17 @@ describe('render-shell stage', () => {
 });
 
 describe('renderShell() accessor', () => {
-  it('returns undefined before render-shell stage', async () => {
+  it('returns undefined before first-paint-shell stage', async () => {
     const handle = await open(createMinimalDocx());
     expect(handle.renderShell()).toBeUndefined();
     await handle.close();
   });
 
-  it('returns RenderShellDocument after render-shell stage', async () => {
+  it('returns RenderShellDocument after first-paint-shell stage', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
-    const shell = handle.renderShell();
-    expect(shell).toBeDefined();
+    expect(handle.renderShell()).toBeDefined();
 
     await handle.close();
   });
@@ -86,8 +82,7 @@ describe('renderShell() accessor', () => {
     const handle = await open(createMinimalDocx());
     await handle.ready('structure');
 
-    const shell = handle.renderShell();
-    expect(shell).toBeDefined();
+    expect(handle.renderShell()).toBeDefined();
 
     await handle.close();
   });
@@ -97,10 +92,9 @@ describe('render-shell body-child access', () => {
   it('reports body child count without full structure', async () => {
     const paragraphs = ['One', 'Two', 'Three', 'Four', 'Five'];
     const handle = await open(createMultiParagraphDocx(paragraphs));
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
     const shell = handle.renderShell()!;
-    // 5 paragraphs + 1 sectPr = 6 body children
     expect(shell.bodyChildCount()).toBe(6);
 
     await handle.close();
@@ -109,7 +103,7 @@ describe('render-shell body-child access', () => {
   it('returns windowed body children', async () => {
     const paragraphs = ['A', 'B', 'C', 'D', 'E'];
     const handle = await open(createMultiParagraphDocx(paragraphs));
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
     const shell = handle.renderShell()!;
     const window = shell.bodyChildWindow(1, 3);
@@ -125,13 +119,11 @@ describe('render-shell body-child access', () => {
 
   it('clamps window to available children', async () => {
     const handle = await open(createMultiParagraphDocx(['A', 'B']));
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
     const shell = handle.renderShell()!;
-    // Request more than available
     const window = shell.bodyChildWindow(0, 100);
 
-    // 2 paragraphs + 1 sectPr = 3
     expect(window).toHaveLength(3);
 
     await handle.close();
@@ -139,23 +131,21 @@ describe('render-shell body-child access', () => {
 
   it('returns empty for out-of-range start', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
     const shell = handle.renderShell()!;
-    const window = shell.bodyChildWindow(999, 5);
-    expect(window).toHaveLength(0);
+    expect(shell.bodyChildWindow(999, 5)).toHaveLength(0);
 
     await handle.close();
   });
 });
 
 describe('render-shell page geometry', () => {
-  it('provides primary page geometry at render-shell stage', async () => {
+  it('provides primary page geometry at first-paint-shell stage', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
-    const shell = handle.renderShell()!;
-    const geo = shell.primaryPageGeometry();
+    const geo = handle.renderShell()!.primaryPageGeometry();
 
     expect(geo).toBeDefined();
     expect(geo!.width).toBe(12240);
@@ -170,13 +160,11 @@ describe('render-shell page geometry', () => {
 
   it('enumerates section shells', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
-    const shell = handle.renderShell()!;
-    const sections = shell.sectionShells();
+    const sections = handle.renderShell()!.sectionShells();
 
     expect(sections.length).toBeGreaterThan(0);
-    expect(sections[0].pageGeometry).toBeDefined();
     expect(sections[0].pageGeometry.width).toBe(12240);
 
     await handle.close();
@@ -184,9 +172,9 @@ describe('render-shell page geometry', () => {
 });
 
 describe('render-shell snapshot transport', () => {
-  it('keeps the default snapshot cheap by omitting full section shells', async () => {
+  it('keeps the default snapshot cheap at first-paint-shell', async () => {
     const handle = await open(createMinimalDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
     const snapshot = createRenderShellSnapshot(handle.renderShell());
 
@@ -194,6 +182,27 @@ describe('render-shell snapshot transport', () => {
     expect(snapshot?.bodyChildCount).toBeGreaterThan(0);
     expect(snapshot?.sections).toEqual([]);
     expect(snapshot?.primaryPageGeometry?.width).toBe(12240);
+    expect(snapshot?.availableShells).toEqual({
+      styles: false,
+      numbering: false,
+      settings: false,
+    });
+
+    await handle.close();
+  });
+
+  it('reports support-shell availability after render-shell', async () => {
+    const handle = await open(createMinimalDocx());
+    await handle.ready('render-shell');
+
+    const snapshot = createRenderShellSnapshot(handle.renderShell());
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.availableShells).toEqual({
+      styles: true,
+      numbering: true,
+      settings: true,
+    });
 
     await handle.close();
   });
@@ -213,12 +222,24 @@ describe('render-shell snapshot transport', () => {
 });
 
 describe('render-shell style/numbering/settings access', () => {
+  it('keeps support shells deferred at first-paint-shell stage', async () => {
+    const handle = await open(createMinimalDocx());
+    await handle.ready('first-paint-shell');
+
+    const shell = handle.renderShell()!;
+
+    expect(shell.styleShell()).toBeUndefined();
+    expect(shell.numberingShell()).toBeUndefined();
+    expect(shell.settingsShell()).toBeUndefined();
+
+    await handle.close();
+  });
+
   it('provides style shell at render-shell stage', async () => {
     const handle = await open(createMinimalDocx());
     await handle.ready('render-shell');
 
-    const shell = handle.renderShell()!;
-    const styles = shell.styleShell();
+    const styles = handle.renderShell()!.styleShell();
 
     expect(styles).toBeDefined();
     expect(styles!.list().length).toBeGreaterThan(0);
@@ -230,10 +251,7 @@ describe('render-shell style/numbering/settings access', () => {
     const handle = await open(createMinimalDocx());
     await handle.ready('render-shell');
 
-    const shell = handle.renderShell()!;
-    const numbering = shell.numberingShell();
-
-    expect(numbering).toBeDefined();
+    expect(handle.renderShell()!.numberingShell()).toBeDefined();
 
     await handle.close();
   });
@@ -242,16 +260,22 @@ describe('render-shell style/numbering/settings access', () => {
     const handle = await open(createMinimalDocx());
     await handle.ready('render-shell');
 
-    const shell = handle.renderShell()!;
-    const settings = shell.settingsShell();
-
-    expect(settings).toBeDefined();
+    expect(handle.renderShell()!.settingsShell()).toBeDefined();
 
     await handle.close();
   });
 });
 
 describe('render-shell guards', () => {
+  it('semanticModel() is unavailable at first-paint-shell stage', async () => {
+    const handle = await open(createMinimalDocx());
+    await handle.ready('first-paint-shell');
+
+    expect(handle.semanticModel()).toBeUndefined();
+
+    await handle.close();
+  });
+
   it('semanticModel() is unavailable at render-shell stage', async () => {
     const handle = await open(createMinimalDocx());
     await handle.ready('render-shell');
@@ -271,30 +295,38 @@ describe('render-shell guards', () => {
   });
 });
 
-describe('render-shell indexes fewer parts than structure', () => {
+describe('render-shell indexing', () => {
+  it('indexes fewer XML parts at first-paint-shell than at render-shell', async () => {
+    const handle = await open(createComplexDocx());
+    await handle.ready('first-paint-shell');
+    const firstPaintIndexed = (await handle.status()).metrics.indexedXmlPartCount;
+
+    await handle.ready('render-shell');
+    const renderShellIndexed = (await handle.status()).metrics.indexedXmlPartCount;
+
+    expect(firstPaintIndexed).toBeGreaterThan(0);
+    expect(renderShellIndexed).toBeGreaterThan(firstPaintIndexed);
+
+    await handle.close();
+  });
+
   it('indexes fewer XML parts at render-shell than at structure', async () => {
     const handle = await open(createComplexDocx());
     await handle.ready('render-shell');
-
-    const renderShellStatus = await handle.status();
-    const renderShellIndexed = renderShellStatus.metrics.indexedXmlPartCount;
+    const renderShellIndexed = (await handle.status()).metrics.indexedXmlPartCount;
 
     await handle.ready('structure');
+    const structureIndexed = (await handle.status()).metrics.indexedXmlPartCount;
 
-    const structureStatus = await handle.status();
-    const structureIndexed = structureStatus.metrics.indexedXmlPartCount;
-
-    expect(renderShellIndexed).toBeGreaterThan(0);
     expect(structureIndexed).toBeGreaterThan(renderShellIndexed);
 
     await handle.close();
   });
 
-  it('does not require comments to be indexed for render-shell', async () => {
+  it('does not require comments to be indexed for first-paint-shell', async () => {
     const handle = await open(createComplexDocx());
-    await handle.ready('render-shell');
+    await handle.ready('first-paint-shell');
 
-    // render-shell should work fine even though the complex docx has comments
     const shell = handle.renderShell()!;
     expect(shell.bodyChildCount()).toBeGreaterThan(0);
     expect(shell.primaryPageGeometry()).toBeDefined();

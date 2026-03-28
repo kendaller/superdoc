@@ -110,6 +110,10 @@ export class WorkerProxyV2 {
     await this.#send('prefetchWindow', params, 'near-viewport');
   }
 
+  async advanceRenderShell(): Promise<void> {
+    await this.#send('advanceRenderShell', {}, 'background');
+  }
+
   async advanceStructure(): Promise<void> {
     await this.#send('advanceStructure', {}, 'background');
   }

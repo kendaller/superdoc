@@ -44,7 +44,7 @@ export type WindowProjectOptions = {
  *
  * Does NOT require SemanticModel or Entity objects.
  *
- * @param renderShell - The render-shell document (available after `ready("render-shell")`)
+ * @param renderShell - The render-shell document (available after `ready("first-paint-shell")`)
  * @param windowSpec - What range of body children to project
  * @param options - Optional resolver and abort signal
  * @returns A WindowedProjectionResult with blocks, continuation, trace map, section metadata, and optional dependency manifest

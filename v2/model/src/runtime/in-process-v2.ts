@@ -81,6 +81,11 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
     this.#windowProjection.prefetchWindow(this.#handle!, params);
   }
 
+  async advanceRenderShell(): Promise<void> {
+    this.#assertOpen();
+    await this.#handle!.ready('render-shell');
+  }
+
   async advanceStructure(): Promise<void> {
     this.#assertOpen();
     await this.#handle!.ready('structure');

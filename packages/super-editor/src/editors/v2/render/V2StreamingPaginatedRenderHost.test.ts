@@ -139,10 +139,11 @@ function createMockRuntime(overrides?: Partial<DocumentRuntime>): DocumentRuntim
       .mockResolvedValue(makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 10)),
     projectNextWindow: vi.fn().mockResolvedValue(makeWindowResult([makeBlock('b4'), makeBlock('b5')], 5, 10)),
     prefetchWindow: vi.fn().mockResolvedValue(undefined),
+    advanceRenderShell: vi.fn().mockResolvedValue(undefined),
     advanceStructure: vi.fn().mockResolvedValue(undefined),
     enrich: vi.fn().mockResolvedValue({ target: 'comments', mergePolicy: 'overlay-only', items: [] }),
     cancelTask: vi.fn(),
-    status: vi.fn().mockResolvedValue({ stage: 'render-shell' }),
+    status: vi.fn().mockResolvedValue({ stage: 'first-paint-shell' }),
     save: vi.fn().mockResolvedValue(new Uint8Array()),
     on: vi.fn().mockReturnValue(() => {}),
     ...overrides,
@@ -185,8 +186,9 @@ describe('V2StreamingPaginatedRenderHost', () => {
       await host.load(new Uint8Array([1, 2, 3]));
 
       expect(runtime.openSource).toHaveBeenCalledTimes(1);
-      expect(runtime.ready).toHaveBeenCalledWith('render-shell');
-      expect(runtime.getRenderShell).toHaveBeenCalledTimes(1);
+      expect(runtime.ready).toHaveBeenCalledWith('first-paint-shell');
+      expect(runtime.getRenderShell).toHaveBeenCalledTimes(2);
+      expect(runtime.advanceRenderShell).toHaveBeenCalledTimes(1);
       expect(runtime.projectWindow).toHaveBeenCalledWith(
         expect.objectContaining({
           startBodyChildIndex: 0,
