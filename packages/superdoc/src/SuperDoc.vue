@@ -30,7 +30,13 @@ import { useSuperdocStore } from '@superdoc/stores/superdoc-store';
 import { useCommentsStore } from '@superdoc/stores/comments-store';
 
 import { DOCX, PDF, HTML } from '@superdoc/common';
-import { SuperEditor, AIWriter, PresentationEditor, V2StaticRenderer } from '@superdoc/super-editor';
+import {
+  SuperEditor,
+  AIWriter,
+  PresentationEditor,
+  V2StaticRenderer,
+  V2StreamingRenderer,
+} from '@superdoc/super-editor';
 import HtmlViewer from './components/HtmlViewer/HtmlViewer.vue';
 import useComment from './components/CommentsLayer/use-comment';
 import AiLayer from './components/AiLayer/AiLayer.vue';
@@ -390,7 +396,7 @@ const onEditorReady = ({ editor, presentationEditor }) => {
   });
 };
 
-const onV2StaticRendererReady = ({ renderer, documentId, container }) => {
+const onV2RendererReady = ({ renderer, documentId, container }) => {
   if (!renderer || !documentId) return;
 
   const doc = getDocument(documentId);
@@ -411,12 +417,13 @@ const onV2StaticRendererReady = ({ renderer, documentId, container }) => {
   proxy.$superdoc.broadcastRenderSurfaceReady(renderer);
 };
 
-const onV2StaticRendererError = (doc, payload = {}) => {
-  const error = payload.error instanceof Error ? payload.error : new Error(String(payload.error ?? 'Unknown render error'));
+const onV2RendererError = (doc, code, payload = {}) => {
+  const error =
+    payload.error instanceof Error ? payload.error : new Error(String(payload.error ?? 'Unknown render error'));
   proxy.$superdoc.emit('exception', {
     error,
     editor: null,
-    code: 'v2-static-renderer-error',
+    code,
     documentId: doc?.id,
   });
 };
@@ -772,25 +779,41 @@ const editorOptions = (doc) => {
   return options;
 };
 
-const staticRendererOptions = (doc) => ({
+const buildV2RendererOptions = (doc) => ({
   layoutEngineOptions: {
     ...(proxy.$superdoc.config.layoutEngineOptions || {}),
     debugLabel: proxy.$superdoc.config.layoutEngineOptions?.debugLabel ?? doc.name ?? doc.id,
     zoom: (activeZoom.value ?? 100) / 100,
-    virtualization: {
-      ...(proxy.$superdoc.config.layoutEngineOptions?.virtualization || {}),
-      enabled: false,
-    },
   },
   documentMode: proxy.$superdoc.config.documentMode,
   disableContextMenu: proxy.$superdoc.config.disableContextMenu,
 });
 
-const shouldUseV2StaticRenderer = (doc) => {
-  if (!doc || doc.type !== DOCX) return false;
-  if (proxy.$superdoc.config.useLayoutEngine === false) return false;
-  return proxy.$superdoc.config.renderPipeline === 'v2-static';
+const staticRendererOptions = (doc) => {
+  const baseOptions = buildV2RendererOptions(doc);
+
+  return {
+    ...baseOptions,
+    layoutEngineOptions: {
+      ...baseOptions.layoutEngineOptions,
+      virtualization: {
+        ...(proxy.$superdoc.config.layoutEngineOptions?.virtualization || {}),
+        enabled: false,
+      },
+    },
+  };
 };
+
+const streamingRendererOptions = (doc) => buildV2RendererOptions(doc);
+
+const getDocxRenderPipeline = (doc) => {
+  if (!doc || doc.type !== DOCX) return 'legacy';
+  if (proxy.$superdoc.config.useLayoutEngine === false) return 'legacy';
+  return proxy.$superdoc.config.renderPipeline ?? 'legacy';
+};
+
+const shouldUseV2StaticRenderer = (doc) => getDocxRenderPipeline(doc) === 'v2-static';
+const shouldUseV2StreamingRenderer = (doc) => getDocxRenderPipeline(doc) === 'v2-streaming';
 
 /**
  * Trigger a comment-positions location update
@@ -1593,8 +1616,17 @@ const getPDFViewer = () => {
             :file-source="doc.data"
             :document-id="doc.id"
             :options="staticRendererOptions(doc)"
-            @renderer-ready="onV2StaticRendererReady"
-            @renderer-error="onV2StaticRendererError(doc, $event)"
+            @renderer-ready="onV2RendererReady"
+            @renderer-error="onV2RendererError(doc, 'v2-static-renderer-error', $event)"
+          />
+
+          <V2StreamingRenderer
+            v-else-if="shouldUseV2StreamingRenderer(doc)"
+            :file-source="doc.data"
+            :document-id="doc.id"
+            :options="streamingRendererOptions(doc)"
+            @renderer-ready="onV2RendererReady"
+            @renderer-error="onV2RendererError(doc, 'v2-streaming-renderer-error', $event)"
           />
 
           <SuperEditor

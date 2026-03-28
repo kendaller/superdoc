@@ -82,6 +82,16 @@ export const SPAN_STREAMING_APPEND = 'streaming.append' as const;
 export const SPAN_STREAMING_TOTAL = 'streaming.total' as const;
 export const STREAMING_STATE_TRANSITION = 'streaming.stateTransition' as const;
 
+// ---- Enterprise hardening ---------------------------------------------------
+
+export const ENTERPRISE_WORKER_ERROR_COUNT = 'enterprise.workerErrorCount' as const;
+export const ENTERPRISE_FALLBACK_COUNT = 'enterprise.fallbackCount' as const;
+export const ENTERPRISE_CANCELLATION_COUNT = 'enterprise.cancellationCount' as const;
+export const ENTERPRISE_MEMORY_WARNING_COUNT = 'enterprise.memoryWarningCount' as const;
+export const ENTERPRISE_DEGRADED_COUNT = 'enterprise.degradedCount' as const;
+export const ENTERPRISE_EVICTION_COUNT = 'enterprise.evictionCount' as const;
+export const ENTERPRISE_RESOURCE_VIOLATION_COUNT = 'enterprise.resourceViolationCount' as const;
+
 // ---- Aggregate type for all metric names -----------------------------------
 
 export type OpenMetricName =
@@ -123,6 +133,15 @@ export type RuntimeCountName =
   | typeof RUNTIME_TASK_QUEUE_DEPTH
   | typeof RUNTIME_TASK_PREEMPTIONS
   | typeof RUNTIME_TASK_CANCELLATIONS;
+
+export type EnterpriseCountName =
+  | typeof ENTERPRISE_WORKER_ERROR_COUNT
+  | typeof ENTERPRISE_FALLBACK_COUNT
+  | typeof ENTERPRISE_CANCELLATION_COUNT
+  | typeof ENTERPRISE_MEMORY_WARNING_COUNT
+  | typeof ENTERPRISE_DEGRADED_COUNT
+  | typeof ENTERPRISE_EVICTION_COUNT
+  | typeof ENTERPRISE_RESOURCE_VIOLATION_COUNT;
 
 export type SpanName =
   | typeof SPAN_OPEN

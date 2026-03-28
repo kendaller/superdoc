@@ -129,7 +129,9 @@ export type WorkerEventV2 =
   | { event: 'progress'; taskId: TaskId; stage: string; progress: number }
   | { event: 'diagnostic'; data: { code: string; message: string; severity: string } }
   | { event: 'revision'; data: { revision: string } }
-  | { event: 'memory'; data: { heapUsedMb: number; heapTotalMb: number } };
+  | { event: 'memory'; data: { heapUsedMb: number; heapTotalMb: number } }
+  | { event: 'workerError'; data: { message: string; filename?: string; lineno?: number } }
+  | { event: 'workerTerminated'; data: { reason: string } };
 
 // ---- Version-tagged envelope ------------------------------------------------
 

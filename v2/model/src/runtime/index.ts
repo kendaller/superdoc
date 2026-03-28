@@ -11,7 +11,13 @@ export { InProcessRuntimeV2 } from './in-process-v2.js';
 export { TaskQueue, TaskCancelledError } from './task-queue.js';
 export type { QueuedTask, TaskStatus, TaskLifecycleEvent } from './task-queue.js';
 export type { DocumentRuntime, RuntimeEventHandler } from './runtime-interface.js';
-export { createPortBackedReader, installRangeReaderHost, closePortBackedReader } from './range-reader-proxy.js';
+export {
+  createPortBackedReader,
+  installRangeReaderHost,
+  closePortBackedReader,
+  RangeReadTimeoutError,
+} from './range-reader-proxy.js';
+export type { RangeReaderOptions } from './range-reader-proxy.js';
 export type {
   TaskId,
   TaskPriority,
@@ -25,3 +31,15 @@ export type {
   WindowContinuation,
 } from './worker-protocol.js';
 export { createRequestId, createTaskId, priorityOrdinal } from './worker-protocol.js';
+
+// Worker health monitor
+export { WorkerHealthMonitor } from './worker-health.js';
+
+// Resource guards
+export {
+  validateRenderShell,
+  validateDependencyManifest,
+  applyRenderShellCaps,
+  DEFAULT_RESOURCE_LIMITS,
+} from './resource-guards.js';
+export type { ResourceLimits, ResourceViolation } from './resource-guards.js';

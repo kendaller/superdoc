@@ -190,7 +190,7 @@ export class SuperDoc extends EventEmitter {
     // Internal: toggle layout-engine-powered PresentationEditor in dev shells
     useLayoutEngine: true,
     // Exploratory product-side render switch. `legacy` keeps the PM-backed editor path.
-    // `v2-static` uses the v2 model pipeline for static DOCX rendering only.
+    // `v2-static` and `v2-streaming` route DOCX rendering through the v2 model pipeline.
     renderPipeline: 'legacy',
   };
 

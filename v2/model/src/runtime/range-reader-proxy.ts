@@ -18,6 +18,18 @@
 
 import type { AsyncArchiveReader } from '../types/package.js';
 
+// ---- Configuration ----------------------------------------------------------
+
+export type RangeReaderOptions = {
+  /** Timeout in ms for a single read request. Default: 30_000. */
+  timeoutMs?: number;
+  /** Maximum retries on timeout (not on explicit errors). Default: 2. */
+  maxRetries?: number;
+};
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_RETRIES = 2;
+
 // ---- Message shapes ---------------------------------------------------------
 
 type RangeReadRequest = {
@@ -86,8 +98,15 @@ export function installRangeReaderHost(
  * Call this inside the worker after receiving a port via the openSource
  * message's range-proxy descriptor.
  */
-export function createPortBackedReader(port: MessagePort, size: number): AsyncArchiveReader {
+export function createPortBackedReader(
+  port: MessagePort,
+  size: number,
+  options?: RangeReaderOptions,
+): AsyncArchiveReader {
   let reqCounter = 0;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxRetries = options?.maxRetries ?? DEFAULT_MAX_RETRIES;
+
   const state: PortReaderState = {
     closed: false,
     pending: new Map<number, PendingReadRequest>(),
@@ -111,20 +130,79 @@ export function createPortBackedReader(port: MessagePort, size: number): AsyncAr
     }
   };
 
+  /** Send a single read request with a timeout guard. */
+  function rawRead(start: number, end: number): Promise<Uint8Array> {
+    if (state.closed) {
+      return Promise.reject(createReaderClosedError());
+    }
+
+    return new Promise<Uint8Array>((resolve, reject) => {
+      const reqId = reqCounter++;
+
+      const timer = setTimeout(() => {
+        // Remove the pending entry so a late response doesn't resolve
+        if (state.pending.delete(reqId)) {
+          reject(new RangeReadTimeoutError(start, end, timeoutMs));
+        }
+      }, timeoutMs);
+
+      state.pending.set(reqId, {
+        resolve: (bytes) => {
+          clearTimeout(timer);
+          resolve(bytes);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+
+      port.postMessage({ reqId, start, end } satisfies RangeReadRequest);
+    });
+  }
+
   return {
     size,
-    read(start: number, end: number): Promise<Uint8Array> {
-      if (state.closed) {
-        return Promise.reject(createReaderClosedError());
+    async read(start: number, end: number): Promise<Uint8Array> {
+      let lastError: Error | undefined;
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          return await rawRead(start, end);
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+
+          // Only retry on timeout, not on explicit errors or reader-closed
+          if (!(lastError instanceof RangeReadTimeoutError)) {
+            throw lastError;
+          }
+
+          if (attempt < maxRetries) {
+            // Exponential backoff: 500ms, 1000ms (capped at 5s)
+            const backoff = Math.min(500 * 2 ** attempt, 5000);
+            await new Promise<void>((r) => setTimeout(r, backoff));
+          }
+        }
       }
 
-      return new Promise((resolve, reject) => {
-        const reqId = reqCounter++;
-        state.pending.set(reqId, { resolve, reject });
-        port.postMessage({ reqId, start, end } satisfies RangeReadRequest);
-      });
+      throw lastError!;
     },
   };
+}
+
+/** Typed error for range-read timeout, distinguishable from explicit reader errors. */
+export class RangeReadTimeoutError extends Error {
+  readonly start: number;
+  readonly end: number;
+  readonly timeoutMs: number;
+
+  constructor(start: number, end: number, timeoutMs: number) {
+    super(`Range read timed out after ${timeoutMs}ms for [${start}, ${end})`);
+    this.name = 'RangeReadTimeoutError';
+    this.start = start;
+    this.end = end;
+    this.timeoutMs = timeoutMs;
+  }
 }
 
 /**

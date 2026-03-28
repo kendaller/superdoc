@@ -13,6 +13,9 @@
  * - SD_DEBUG_HF_CACHE: Enable debug logging for header/footer cache operations
  * - SD_DEBUG_LAYOUT_VERSION: Enable debug logging for layout version tracking
  * - SD_V2_MODEL_ADAPTER: Use v2/model semantic model instead of pm-adapter (Phase 6)
+ * - SD_V2_STREAMING_HOST: Use v2-streaming render host as the primary path
+ * - SD_V2_STREAMING_SHADOW: Run v2-streaming in shadow mode for comparison
+ * - SD_V2_STREAMING_TELEMETRY: Enable production telemetry for v2-streaming
  *
  * Each flag can be set to:
  * - "true" or "1": Explicitly enabled
@@ -109,6 +112,15 @@ export const FeatureFlags = {
    * Default: false (PM path remains active until parity is validated).
    */
   V2_MODEL_ADAPTER: isEnabled('SD_V2_MODEL_ADAPTER', false),
+
+  /** Use v2-streaming render host as the primary rendering path. Default: false. */
+  V2_STREAMING_HOST: isEnabled('SD_V2_STREAMING_HOST', false),
+
+  /** Run v2-streaming in shadow mode alongside PM path for comparison. Default: false. */
+  V2_STREAMING_SHADOW: isEnabled('SD_V2_STREAMING_SHADOW', false),
+
+  /** Enable production telemetry for v2-streaming metrics. Default: false. */
+  V2_STREAMING_TELEMETRY: isEnabled('SD_V2_STREAMING_TELEMETRY', false),
 } as const;
 
 /**

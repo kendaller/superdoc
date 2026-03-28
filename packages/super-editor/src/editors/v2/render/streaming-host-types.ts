@@ -24,6 +24,44 @@ export type StateChangeEvent = {
   previous: HostState;
   current: HostState;
   timestamp: number;
+  /** Present when current === 'degraded'. */
+  degradedInfo?: DegradedInfo;
+};
+
+// ---- Degraded mode policy ----------------------------------------------------
+
+export type DegradedReason =
+  | 'append-stalled'
+  | 'enrichment-unavailable'
+  | 'worker-error'
+  | 'memory-pressure'
+  | 'partial-render';
+
+export type DegradedInfo = {
+  reason: DegradedReason;
+  message: string;
+  timestamp: number;
+  /** Whether recovery is possible without reloading. */
+  recoverable: boolean;
+};
+
+// ---- Memory policy -----------------------------------------------------------
+
+export type MemoryPolicy = {
+  /** Max pages to keep in DOM. Default: 200. */
+  maxMountedPages: number;
+  /** Max blocks to keep in accumulated state. Default: 5000. */
+  maxAccumulatedBlocks: number;
+  /** Max heap MB before emitting a warning. null = no limit. */
+  heapWarningMb: number | null;
+  /** Max heap MB before forcing eviction. null = no limit. */
+  heapCeilingMb: number | null;
+};
+
+export type WindowEvictionRecord = {
+  windowIndex: number;
+  evictedAt: number;
+  blockRange: [startIdx: number, endIdx: number];
 };
 
 // ---- Window tracking ---------------------------------------------------------

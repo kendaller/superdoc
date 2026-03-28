@@ -3,18 +3,14 @@
 // ---------------------------------------------------------------------------
 
 // Core timeline
-export { PerfTimeline, v2PerfTimeline } from "./timeline.js";
-export type { MarkEntry, SpanEntry, TimelineSnapshot } from "./timeline.js";
+export { PerfTimeline, v2PerfTimeline } from './timeline.js';
+export type { MarkEntry, SpanEntry, TimelineSnapshot } from './timeline.js';
 
 // Metric vocabulary
-export * from "./metrics.js";
+export * from './metrics.js';
 
 // Benchmark artifact schema
-export {
-  createArtifact,
-  toSummaryRow,
-  compareArtifacts,
-} from "./artifact.js";
+export { createArtifact, toSummaryRow, compareArtifacts } from './artifact.js';
 export type {
   BenchmarkMode,
   BenchmarkArtifact,
@@ -22,7 +18,7 @@ export type {
   ArtifactDelta,
   MachineInfo,
   GitInfo,
-} from "./artifact.js";
+} from './artifact.js';
 
 // Corpus manifest
 export {
@@ -32,19 +28,13 @@ export {
   entriesByProfile,
   getEntry,
   isManifestPopulated,
-} from "./corpus.js";
-export type {
-  DocumentClass,
-  ContentProfile,
-  CorpusEntry,
-  CorpusManifest,
-} from "./corpus.js";
+} from './corpus.js';
+export type { DocumentClass, ContentProfile, CorpusEntry, CorpusManifest } from './corpus.js';
+
+// Production telemetry
+export { ProductionTelemetryAdapter } from './production-telemetry.js';
+export type { TelemetrySink } from './production-telemetry.js';
 
 // Reporters
-export { formatSummaryTable, formatDeltaTable } from "./reporters/table-reporter.js";
-export {
-  artifactFilename,
-  serializeArtifact,
-  deserializeArtifact,
-  serializeBatch,
-} from "./reporters/json-reporter.js";
+export { formatSummaryTable, formatDeltaTable } from './reporters/table-reporter.js';
+export { artifactFilename, serializeArtifact, deserializeArtifact, serializeBatch } from './reporters/json-reporter.js';

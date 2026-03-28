@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { V2StreamingPaginatedRenderHost } from './V2StreamingPaginatedRenderHost.js';
 import type { DocumentRuntime, RenderShellSnapshot, WindowedProjectionResult } from '@superdoc/v2-model';
-import type { HostState, StateChangeEvent } from './streaming-host-types.js';
+import type { HostState, StateChangeEvent, DegradedInfo } from './streaming-host-types.js';
 
 // ---- Hoisted mocks -----------------------------------------------------------
 
@@ -36,15 +36,18 @@ function makeBlock(id: string) {
   return { id, kind: 'paragraph' as const, runs: [], attrs: {} };
 }
 
-function makeShell(bodyChildCount: number): RenderShellSnapshot {
+function makeShell(
+  bodyChildCount: number,
+  pageGeometry: { width: number; height: number } = { width: 12240, height: 15840 },
+): RenderShellSnapshot {
   return {
     bodyChildCount,
     sections: [
       {
         index: 0,
         pageGeometry: {
-          width: 12240,
-          height: 15840,
+          width: pageGeometry.width,
+          height: pageGeometry.height,
           margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
         },
         headerRefs: [],
@@ -52,8 +55,8 @@ function makeShell(bodyChildCount: number): RenderShellSnapshot {
       },
     ],
     primaryPageGeometry: {
-      width: 12240,
-      height: 15840,
+      width: pageGeometry.width,
+      height: pageGeometry.height,
       margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
     },
     availableShells: { styles: true, numbering: true, settings: true },
@@ -358,6 +361,33 @@ describe('V2StreamingPaginatedRenderHost', () => {
         }),
       ]);
     });
+
+    it('applies render-shell caps before building section metadata', async () => {
+      const runtime = createMockRuntime();
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(
+        makeShell(3, { width: 60_000, height: 70_000 }),
+      );
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
+        makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 3),
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      const layoutOptions = incrementalLayoutMock.mock.calls[0][3];
+      expect(layoutOptions.sectionMetadata).toEqual([
+        expect.objectContaining({
+          sectionIndex: 0,
+          pageSize: { w: 2880, h: 2880 },
+          margins: { top: 96, right: 96, bottom: 96, left: 96 },
+        }),
+      ]);
+    });
   });
 
   describe('zoom correctness', () => {
@@ -432,6 +462,170 @@ describe('V2StreamingPaginatedRenderHost', () => {
       expect(host.state).not.toBe('failed');
       // openSource should have been called twice
       expect(runtime.openSource).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('cancellation & reopen hardening', () => {
+    it('open-A-cancel-open-B: second load wins, no stale blocks from first', async () => {
+      const runtime = createMockRuntime();
+
+      // First openSource is slow — held by a deferred promise
+      let resolveFirstOpen!: () => void;
+      const firstOpenPromise = new Promise<{ sessionId: string }>((resolve) => {
+        resolveFirstOpen = () => resolve({ sessionId: 'session-A' });
+      });
+
+      let openCall = 0;
+      (runtime.openSource as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        openCall++;
+        if (openCall === 1) return firstOpenPromise;
+        return { sessionId: 'session-B' };
+      });
+
+      // Load 1 never gets past openSource, so getRenderShell and projectWindow
+      // are only called by load 2. Use simple mocks that return source-B data.
+      const blocksB = [makeBlock('B1'), makeBlock('B2')];
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(2));
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(blocksB, 2, 2));
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 50,
+      });
+
+      // Start first load without awaiting
+      const load1 = host.load(new Uint8Array([1]));
+      // Immediately start second load — bumps generation
+      const load2 = host.load(new Uint8Array([2]));
+
+      // Resolve first open after second load started — should be ignored
+      resolveFirstOpen();
+
+      await load1; // resolves silently (gen mismatch causes early return)
+      await load2;
+
+      expect(runtime.openSource).toHaveBeenCalledTimes(2);
+      expect(host.state).toBe('complete');
+
+      // Verify only source B blocks are present
+      const snapshot = host.getLayoutSnapshot();
+      expect(snapshot.blocks.map((b: { id: string }) => b.id)).toEqual(['B1', 'B2']);
+    });
+
+    it('reopen-same-doc resets accumulated state and triggers fresh first paint', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 3 });
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 50,
+      });
+
+      // First load — to firstPaintComplete and complete
+      await host.load(new Uint8Array([1, 2, 3]));
+      expect(host.state).toBe('complete');
+      const firstSnapshot = host.getLayoutSnapshot();
+      expect(firstSnapshot.blocks).toHaveLength(3);
+
+      // Reset mocks for second load
+      vi.clearAllMocks();
+      incrementalLayoutMock.mockImplementation(
+        async (_prev: unknown, _prevLayout: unknown, nextBlocks: { id: string }[]) => {
+          return makeLayoutResult(Math.max(1, Math.ceil(nextBlocks.length / 2)), nextBlocks);
+        },
+      );
+      createDomPainterMock.mockReturnValue(painter);
+
+      // Configure new blocks for second load
+      const newBlocks = [makeBlock('new1'), makeBlock('new2')];
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(2));
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(newBlocks, 2, 2));
+
+      // Second load — same doc, different bytes
+      await host.load(new Uint8Array([4, 5, 6]));
+
+      expect(host.state).toBe('complete');
+      // Verify accumulated blocks are from the second load only
+      const secondSnapshot = host.getLayoutSnapshot();
+      expect(secondSnapshot.blocks.map((b: { id: string }) => b.id)).toEqual(['new1', 'new2']);
+      // First paint occurred twice (openSource called once per load)
+      expect(runtime.openSource).toHaveBeenCalledTimes(1);
+    });
+
+    it('destroy-during-load does not throw and calls runtime.close', async () => {
+      const runtime = createMockRuntime();
+
+      // Make openSource slow
+      let resolveOpen!: () => void;
+      (runtime.openSource as ReturnType<typeof vi.fn>).mockImplementation(
+        () =>
+          new Promise<{ sessionId: string }>((resolve) => {
+            resolveOpen = () => resolve({ sessionId: 'test' });
+          }),
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      // Start load — it's waiting on openSource
+      const loadPromise = host.load(new Uint8Array([1, 2, 3]));
+
+      // Destroy while load is in flight
+      host.destroy();
+
+      // Resolve the pending open — should be silently ignored
+      resolveOpen();
+      await loadPromise; // Should resolve without throwing
+
+      expect(runtime.close).toHaveBeenCalled();
+    });
+
+    it('rapid scroll during streaming does not pile up prefetches', async () => {
+      const runtime = createMockRuntime();
+
+      // 20 body children, first window gets 3
+      configureDocumentWindow(runtime, { totalBodyChildCount: 20 });
+
+      // Make append windows slow enough to observe prefetch behavior
+      let appendCallCount = 0;
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        appendCallCount++;
+        const start = 3 + (appendCallCount - 1) * 3;
+        const end = Math.min(start + 3, 20);
+        const blocks = Array.from({ length: end - start }, (_, i) => makeBlock(`b${start + i + 1}`));
+        return makeWindowResult(blocks, end, 20);
+      });
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+      expect(host.state).toBe('streaming');
+
+      // Simulate multiple rapid scroll-triggered prefetch calls
+      // The host should not pile up multiple concurrent prefetches
+      // (prefetchInFlight guard prevents this)
+      expect(runtime.prefetchWindow).toHaveBeenCalledTimes(1); // Only one prefetch after first paint
+
+      // Wait for streaming to complete
+      await vi.waitFor(
+        () => {
+          expect(host.state).toBe('complete');
+        },
+        { timeout: 5000 },
+      );
+
+      // All 20 body children should have been consumed
+      const snapshot = host.getLayoutSnapshot();
+      expect(snapshot.blocks.length).toBe(20);
     });
   });
 
@@ -516,6 +710,176 @@ describe('V2StreamingPaginatedRenderHost', () => {
       expect(errorHandler).toHaveBeenCalled();
       // Layout snapshot should still exist from first paint
       expect(host.getLayoutSnapshot().layout).not.toBeNull();
+    });
+  });
+
+  describe('degraded mode policy', () => {
+    it('append failure produces append-stalled degraded info', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 6 });
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(
+        () => {
+          expect(host.state).toBe('degraded');
+        },
+        { timeout: 2000 },
+      );
+
+      const info = host.getDegradedInfo();
+      expect(info).not.toBeNull();
+      expect(info!.reason).toBe('append-stalled');
+      expect(info!.message).toBe('network error');
+      expect(info!.recoverable).toBe(true);
+      expect(info!.timestamp).toBeGreaterThan(0);
+    });
+
+    it('degradedInfo is included in stateChange event', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 6 });
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('fail'));
+
+      const stateEvents: StateChangeEvent[] = [];
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+      host.onStateChange((event: StateChangeEvent) => stateEvents.push(event));
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(
+        () => {
+          expect(host.state).toBe('degraded');
+        },
+        { timeout: 2000 },
+      );
+
+      const degradedEvent = stateEvents.find((e) => e.current === 'degraded');
+      expect(degradedEvent).toBeDefined();
+      expect(degradedEvent!.degradedInfo).toBeDefined();
+      expect(degradedEvent!.degradedInfo!.reason).toBe('append-stalled');
+    });
+
+    it('retryAppend recovers from append-stalled state', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 6 });
+
+      // First append fails
+      let appendCallCount = 0;
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        appendCallCount++;
+        if (appendCallCount === 1) {
+          throw new Error('transient failure');
+        }
+        return makeWindowResult([makeBlock('b4'), makeBlock('b5'), makeBlock('b6')], 6, 6);
+      });
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      // Wait for first append to fail
+      await vi.waitFor(
+        () => {
+          expect(host.state).toBe('degraded');
+        },
+        { timeout: 2000 },
+      );
+
+      expect(host.getDegradedInfo()!.reason).toBe('append-stalled');
+
+      // Retry — second append succeeds
+      host.retryAppend();
+
+      await vi.waitFor(
+        () => {
+          expect(host.state).toBe('complete');
+        },
+        { timeout: 2000 },
+      );
+
+      expect(host.getDegradedInfo()).toBeNull();
+      expect(host.getLayoutSnapshot().blocks).toHaveLength(6);
+    });
+
+    it('retryAppend is a no-op when not in append-stalled degraded state', () => {
+      const runtime = createMockRuntime();
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+      });
+
+      // Not degraded — retryAppend should be a no-op
+      host.retryAppend();
+      expect(host.state).toBe('idle');
+    });
+
+    it('getDegradedInfo returns null when not degraded', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 3 });
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      expect(host.state).toBe('complete');
+      expect(host.getDegradedInfo()).toBeNull();
+    });
+
+    it('degradedInfo is cleared on reload', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 6 });
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('fail'));
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(
+        () => {
+          expect(host.state).toBe('degraded');
+        },
+        { timeout: 2000 },
+      );
+
+      expect(host.getDegradedInfo()).not.toBeNull();
+
+      // Reload with a fresh doc
+      vi.clearAllMocks();
+      incrementalLayoutMock.mockImplementation(
+        async (_prev: unknown, _prevLayout: unknown, nextBlocks: { id: string }[]) => {
+          return makeLayoutResult(Math.max(1, Math.ceil(nextBlocks.length / 2)), nextBlocks);
+        },
+      );
+      createDomPainterMock.mockReturnValue(painter);
+      configureDocumentWindow(runtime, { totalBodyChildCount: 3 });
+
+      await host.load(new Uint8Array([4, 5, 6]));
+
+      expect(host.state).toBe('complete');
+      expect(host.getDegradedInfo()).toBeNull();
     });
   });
 

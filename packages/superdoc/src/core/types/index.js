@@ -577,9 +577,10 @@
  *     uiDisplayFallbackFont: '"Inter", Arial, sans-serif'
  * @property {boolean} [isDev] Whether the SuperDoc is in development mode
  * @property {boolean} [disablePiniaDevtools=false] Disable Pinia/Vue devtools plugin setup for this SuperDoc instance (useful in non-Vue hosts)
- * @property {'legacy' | 'v2-static'} [renderPipeline='legacy'] Product-level DOCX render pipeline.
+ * @property {'legacy' | 'v2-static' | 'v2-streaming'} [renderPipeline='legacy'] Product-level DOCX render pipeline.
  *   - 'legacy': current PM-backed editor/presentation path
  *   - 'v2-static': exploratory static `v2/model -> layout-engine -> DomPainter` path
+ *   - 'v2-streaming': exploratory streaming `v2/model -> layout-engine -> DomPainter` path
  * @property {Object} [layoutEngineOptions] Layout engine overrides passed through to PresentationEditor (page size, margins, virtualization, zoom, debug label, etc.)
  * @property {'paginated' | 'semantic'} [layoutEngineOptions.flowMode='paginated'] Layout engine flow mode.
  *   - 'paginated': standard page-first layout (default)

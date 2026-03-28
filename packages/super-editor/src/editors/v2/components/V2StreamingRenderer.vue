@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import type { LayoutEngineOptions } from '../../v1/core/presentation-editor/types.js';
+import { InProcessRuntimeV2 } from '@superdoc/v2-model';
 import type { DocumentRuntime } from '@superdoc/v2-model';
 import { V2StreamingPaginatedRenderHost } from '../render/V2StreamingPaginatedRenderHost.js';
 import type { StateChangeEvent } from '../render/streaming-host-types.js';
@@ -15,8 +16,8 @@ type Props = {
     documentMode?: DocumentMode;
     disableContextMenu?: boolean;
   } | null;
-  /** The DocumentRuntime to use (worker proxy or in-process). */
-  runtime: DocumentRuntime;
+  /** Optional runtime override. Defaults to an in-process v2 runtime. */
+  runtime?: DocumentRuntime | null;
   /** Body children per projection window. Default: 50. */
   windowSize?: number;
   /** stopAfterPageEstimate for the first window. Default: 3. */
@@ -40,6 +41,7 @@ const emit = defineEmits<{
 
 const rootElement = ref<HTMLElement | null>(null);
 const renderer = shallowRef<V2StreamingPaginatedRenderHost | null>(null);
+const ownedRuntime = shallowRef<DocumentRuntime | null>(null);
 
 async function initializeRenderer(): Promise<void> {
   if (!rootElement.value || !props.fileSource) {
@@ -54,7 +56,7 @@ async function initializeRenderer(): Promise<void> {
     layoutEngineOptions: props.options?.layoutEngineOptions,
     documentMode: props.options?.documentMode,
     disableContextMenu: props.options?.disableContextMenu,
-    runtime: props.runtime,
+    runtime: resolveRuntime(),
     windowSize: props.windowSize,
     firstWindowPageEstimate: props.firstWindowPageEstimate,
   });
@@ -88,6 +90,23 @@ async function initializeRenderer(): Promise<void> {
 function teardownRenderer(): void {
   renderer.value?.destroy();
   renderer.value = null;
+
+  if (ownedRuntime.value) {
+    void ownedRuntime.value.close();
+    ownedRuntime.value = null;
+  }
+}
+
+function resolveRuntime(): DocumentRuntime {
+  if (props.runtime) {
+    return props.runtime;
+  }
+
+  if (!ownedRuntime.value) {
+    ownedRuntime.value = new InProcessRuntimeV2();
+  }
+
+  return ownedRuntime.value;
 }
 
 watch(

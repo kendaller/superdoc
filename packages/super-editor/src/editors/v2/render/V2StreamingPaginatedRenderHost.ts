@@ -6,7 +6,9 @@ import type {
   DocumentRuntime,
   RenderShellSnapshot,
   WindowedProjectionResult,
+  ResourceViolation,
 } from '@superdoc/v2-model';
+import { validateRenderShell, validateDependencyManifest, applyRenderShellCaps } from '@superdoc/v2-model';
 import type { FlowBlock, Layout, Measure, SectionMetadata } from '@superdoc/contracts';
 import type { LayoutEngineOptions, TrackedChangesOverrides } from '../../v1/core/presentation-editor/types.js';
 import { runInstrumentedIncrementalLayout } from '../../../core/perf/runInstrumentedIncrementalLayout.js';
@@ -30,6 +32,8 @@ import type {
   V2StreamingLayoutSnapshot,
   V2StreamingLayoutPayload,
   PageCompleteness,
+  DegradedInfo,
+  DegradedReason,
 } from './streaming-host-types.js';
 
 // ---- Constants ---------------------------------------------------------------
@@ -103,6 +107,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   #prefetchedStartBodyChildIndex: number | null = null;
   #scrollRafPending = false;
   #scrollHandler: (() => void) | null = null;
+  #degradedInfo: DegradedInfo | null = null;
 
   constructor(options: V2StreamingPaginatedRenderHostOptions) {
     super();
@@ -150,6 +155,26 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     return this.#state === 'streaming' || this.#state === 'enriching';
   }
 
+  /** Returns degraded sub-classification, or null if not in degraded state. */
+  getDegradedInfo(): DegradedInfo | null {
+    return this.#degradedInfo;
+  }
+
+  /**
+   * Attempt to recover from 'append-stalled' degraded state by re-entering
+   * the streaming state and rescheduling the append loop.
+   *
+   * No-op if not in degraded state with reason 'append-stalled'.
+   */
+  retryAppend(): void {
+    if (this.#state !== 'degraded') return;
+    if (!this.#degradedInfo || this.#degradedInfo.reason !== 'append-stalled') return;
+
+    this.#degradedInfo = null;
+    this.#transition('streaming');
+    this.#scheduleAppendLoop();
+  }
+
   // ---- Public: Lifecycle -------------------------------------------------------
 
   async load(source: Uint8Array | Blob): Promise<void> {
@@ -172,9 +197,16 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         throw new Error('Empty or invalid document: no body children');
       }
 
-      this.#renderShell = shell;
-      this.#accumulated.totalBodyChildCount = shell.bodyChildCount;
-      this.#accumulated.sectionMetadata = buildSectionMetadataFromRenderShell(shell);
+      // Validate and cap hostile dimensions
+      const shellViolations = validateRenderShell(shell);
+      this.#reportResourceViolations(shellViolations);
+      const safeShell = shellViolations.some((v) => v.action === 'capped')
+        ? applyRenderShellCaps(shell, shellViolations)
+        : shell;
+
+      this.#renderShell = safeShell;
+      this.#accumulated.totalBodyChildCount = safeShell.bodyChildCount;
+      this.#accumulated.sectionMetadata = buildSectionMetadataFromRenderShell(safeShell);
       this.#transition('renderShellReady');
 
       // Phase 2: First window projection
@@ -338,7 +370,11 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#state = next;
     const entry: StateTransitionEntry = { state: next, timestamp: perfNow() };
     this.#stateHistory.push(entry);
-    this.emit('stateChange', { previous, current: next, timestamp: entry.timestamp } satisfies StateChangeEvent);
+    const event: StateChangeEvent = { previous, current: next, timestamp: entry.timestamp };
+    if (next === 'degraded' && this.#degradedInfo) {
+      event.degradedInfo = this.#degradedInfo;
+    }
+    this.emit('stateChange', event);
   }
 
   #resetState(): void {
@@ -348,6 +384,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#appendInFlight = false;
     this.#prefetchInFlight = false;
     this.#prefetchedStartBodyChildIndex = null;
+    this.#degradedInfo = null;
   }
 
   // ---- Private: Window accumulation --------------------------------------------
@@ -375,6 +412,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         this.#accumulated.dependencyManifest,
         dependencyManifest,
       );
+      this.#reportResourceViolations(validateDependencyManifest(this.#accumulated.dependencyManifest));
     }
   }
 
@@ -730,7 +768,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
   // ---- Private: Error handling -------------------------------------------------
 
-  #handleNonFatalError(error: unknown, phase: string): void {
+  #handleNonFatalError(error: unknown, phase: string, reason?: DegradedReason): void {
     const hasFirstPaint =
       this.#state === 'firstPaintComplete' ||
       this.#state === 'streaming' ||
@@ -738,9 +776,31 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       this.#state === 'degraded';
 
     if (hasFirstPaint) {
+      const degradedReason: DegradedReason =
+        reason ??
+        (phase === 'append' ? 'append-stalled' : phase === 'enrichment' ? 'enrichment-unavailable' : 'worker-error');
+
+      this.#degradedInfo = {
+        reason: degradedReason,
+        message: error instanceof Error ? error.message : String(error),
+        timestamp: perfNow(),
+        recoverable: degradedReason !== 'worker-error',
+      };
+
       this.#transition('degraded');
     }
     this.#emitLayoutError(error, phase);
+  }
+
+  #reportResourceViolations(violations: readonly ResourceViolation[]): void {
+    for (const violation of violations) {
+      this.#emitLayoutError(
+        new Error(
+          `Resource guard: ${violation.field} = ${violation.actual} exceeds limit ${violation.limit} (${violation.action})`,
+        ),
+        'resource-guard',
+      );
+    }
   }
 
   #emitLayoutError(error: unknown, phase: string): void {

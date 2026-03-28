@@ -73,6 +73,7 @@ export type {
 // ---- Runtime interface ----------------------------------------------------
 
 export type { DocumentRuntime, RuntimeEventHandler } from './runtime/runtime-interface.js';
+export { InProcessRuntimeV2 } from './runtime/in-process-v2.js';
 export type {
   EnrichmentTarget,
   ProjectWindowParams,
@@ -80,6 +81,15 @@ export type {
   TaskId,
   TaskPriority,
 } from './runtime/worker-protocol.js';
+
+// Resource guards
+export {
+  validateRenderShell,
+  validateDependencyManifest,
+  applyRenderShellCaps,
+  DEFAULT_RESOURCE_LIMITS,
+} from './runtime/resource-guards.js';
+export type { ResourceLimits, ResourceViolation } from './runtime/resource-guards.js';
 
 // ---- Semantic model -------------------------------------------------------
 

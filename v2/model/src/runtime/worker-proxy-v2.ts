@@ -53,6 +53,23 @@ export class WorkerProxyV2 {
   constructor(worker: Worker) {
     this.#worker = worker;
     this.#worker.onmessage = (e: MessageEvent) => this.#handleMessage(e);
+
+    this.#worker.onerror = (e: ErrorEvent) => {
+      this.#emitEvent({
+        event: 'workerError',
+        data: { message: e.message, filename: e.filename, lineno: e.lineno },
+      });
+      this.#rejectAllPending(new Error(`Worker error: ${e.message}`));
+    };
+
+    this.#worker.onmessageerror = () => {
+      const error = new Error('Worker message deserialization failed');
+      this.#emitEvent({
+        event: 'workerError',
+        data: { message: error.message },
+      });
+      this.#rejectAllPending(error);
+    };
   }
 
   // ---- Lifecycle ------------------------------------------------------------
@@ -157,6 +174,25 @@ export class WorkerProxyV2 {
     return () => handlers!.delete(handler);
   }
 
+  // ---- Private: event emission -----------------------------------------------
+
+  #emitEvent(event: WorkerEventV2): void {
+    const handlers = this.#eventHandlers.get(event.event);
+    if (handlers) {
+      for (const handler of handlers) {
+        handler(event);
+      }
+    }
+  }
+
+  #rejectAllPending(error: Error): void {
+    for (const [id, entry] of this.#pending) {
+      this.#pending.delete(id);
+      entry.cleanupAbort?.();
+      entry.reject(error);
+    }
+  }
+
   // ---- Private: message handling --------------------------------------------
 
   #handleMessage(e: MessageEvent): void {
@@ -192,13 +228,7 @@ export class WorkerProxyV2 {
 
     // Event (has event field)
     if ('event' in payload) {
-      const event = payload as WorkerEventV2;
-      const handlers = this.#eventHandlers.get(event.event);
-      if (handlers) {
-        for (const handler of handlers) {
-          handler(event);
-        }
-      }
+      this.#emitEvent(payload as WorkerEventV2);
     }
   }
 

@@ -104,6 +104,15 @@ const V2StaticRendererStub = defineComponent({
   },
 });
 
+const V2StreamingRendererStub = defineComponent({
+  name: 'V2StreamingRendererStub',
+  props: ['fileSource', 'documentId', 'options'],
+  emits: ['renderer-ready', 'renderer-error'],
+  setup(props) {
+    return () => h('div', { class: 'v2-streaming-renderer-stub' }, [JSON.stringify(props.documentId)]);
+  },
+});
+
 const AIWriterStub = stubComponent('AIWriter');
 const CommentDialogStub = stubComponent('CommentDialog');
 const FloatingCommentsStub = stubComponent('FloatingComments');
@@ -116,6 +125,7 @@ const HtmlViewerStub = stubComponent('HtmlViewer');
 vi.mock('@superdoc/super-editor', () => ({
   SuperEditor: SuperEditorStub,
   V2StaticRenderer: V2StaticRendererStub,
+  V2StreamingRenderer: V2StreamingRendererStub,
   AIWriter: AIWriterStub,
   PresentationEditor: class PresentationEditorMock {
     static getInstance(documentId) {
@@ -1177,6 +1187,17 @@ describe('SuperDoc.vue', () => {
     expect(wrapper.find('.super-editor-stub').exists()).toBe(false);
   });
 
+  it('renders the v2 streaming DOCX branch when renderPipeline is v2-streaming', async () => {
+    const superdocStub = createSuperdocStub();
+    superdocStub.config.renderPipeline = 'v2-streaming';
+
+    const wrapper = await mountComponent(superdocStub);
+    await nextTick();
+
+    expect(wrapper.find('.v2-streaming-renderer-stub').exists()).toBe(true);
+    expect(wrapper.find('.super-editor-stub').exists()).toBe(false);
+  });
+
   it('forces virtualization off for the v2 static renderer branch', async () => {
     const superdocStub = createSuperdocStub();
     superdocStub.config.renderPipeline = 'v2-static';
@@ -1209,6 +1230,31 @@ describe('SuperDoc.vue', () => {
     };
 
     wrapper.findComponent(V2StaticRendererStub).vm.$emit('renderer-ready', {
+      renderer,
+      documentId: 'doc-1',
+      container: document.createElement('div'),
+    });
+    await nextTick();
+
+    expect(doc.setPresentationEditor).toHaveBeenCalledWith(renderer);
+    expect(doc.isReady).toBe(true);
+    expect(superdocStub.broadcastRenderSurfaceReady).toHaveBeenCalledWith(renderer);
+  });
+
+  it('handles v2 streaming renderer ready by storing the render surface and marking the document ready', async () => {
+    const superdocStub = createSuperdocStub();
+    superdocStub.config.renderPipeline = 'v2-streaming';
+
+    const wrapper = await mountComponent(superdocStub);
+    await nextTick();
+
+    const doc = superdocStoreStub.documents.value[0];
+    const renderer = {
+      setContextMenuDisabled: vi.fn(),
+      on: vi.fn(),
+    };
+
+    wrapper.findComponent(V2StreamingRendererStub).vm.$emit('renderer-ready', {
       renderer,
       documentId: 'doc-1',
       container: document.createElement('div'),

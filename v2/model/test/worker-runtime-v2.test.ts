@@ -2,7 +2,7 @@
 // Worker runtime v2 integration tests
 // ---------------------------------------------------------------------------
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { installWorkerHostV2, WorkerProxyV2 } from '../src/runtime/index.js';
 import type { WorkerMessageEnvelope, WorkerRequestV2, WorkerResponseV2 } from '../src/runtime/worker-protocol.js';
 import { createMinimalDocx } from './helpers/create-test-docx.js';
@@ -90,6 +90,16 @@ describe('worker runtime v2', () => {
 
     await runtime.close();
   });
+
+  it('rejects pending requests when the worker reports a message deserialization failure', async () => {
+    const mainThreadWorker = createMessageErrorWorkerStub();
+    const runtime = new WorkerProxyV2(mainThreadWorker);
+
+    const statusPromise = runtime.status();
+    mainThreadWorker.onmessageerror?.(new MessageEvent('messageerror'));
+
+    await expect(statusPromise).rejects.toThrow('Worker message deserialization failed');
+  });
 });
 
 function createRecordingWorkerScope(): {
@@ -133,6 +143,16 @@ function createWorkerLoopback(): {
   } as unknown as Worker;
 
   return { mainThreadWorker, workerScope };
+}
+
+function createMessageErrorWorkerStub(): Worker {
+  return {
+    onmessage: null,
+    onerror: null,
+    onmessageerror: null,
+    postMessage: vi.fn(),
+    terminate(): void {},
+  } as unknown as Worker;
 }
 
 async function dispatchToWorker(

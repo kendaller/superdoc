@@ -686,6 +686,7 @@ export declare class V2StaticRenderHost {
 }
 
 export declare const V2StaticRenderer: any;
+export declare const V2StreamingRenderer: any;
 
 /**
  * PresentationEditor provides a paginated, layout-engine-powered editing experience.
