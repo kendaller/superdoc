@@ -2,11 +2,11 @@
 // open() — public entry point
 // ---------------------------------------------------------------------------
 
-import type { DocumentHandle } from "../types/session.js";
-import type { ArchiveByteSource, AsyncArchiveReader } from "../types/package.js";
-import { createSession, createSessionAsync } from "./session.js";
-import { createHandle } from "./handle.js";
-import { markOpenStart, startOpenSpan, markFastOpenComplete } from "../perf.js";
+import type { DocumentHandle } from '../types/session.js';
+import type { ArchiveByteSource, AsyncArchiveReader } from '../types/package.js';
+import { createSession, createSessionAsync } from './session.js';
+import { createHandle } from './handle.js';
+import { markOpenStart, startOpenSpan, markFastOpenComplete, recordBytesReadBeforeFirstPaint } from '../perf.js';
 
 /**
  * Open a .docx package and return a lightweight DocumentHandle.
@@ -18,50 +18,45 @@ import { markOpenStart, startOpenSpan, markFastOpenComplete } from "../perf.js";
  *   entries are read. Content parts are materialized lazily when
  *   ready("structure") is called.
  */
-export async function open(
-  source: Uint8Array | Blob | ArchiveByteSource,
-): Promise<DocumentHandle> {
+export async function open(source: Uint8Array | Blob | ArchiveByteSource): Promise<DocumentHandle> {
   markOpenStart();
   const endOpen = startOpenSpan();
 
   try {
     // Uint8Array → synchronous memory path
     if (source instanceof Uint8Array) {
-      const session = createSession({ kind: "memory", bytes: source });
+      recordBytesReadBeforeFirstPaint(source.byteLength);
+      const session = createSession({ kind: 'memory', bytes: source });
       markFastOpenComplete();
       return createHandle(session);
     }
 
     // Blob (direct) → async lazy path
     if (source instanceof Blob) {
-      const reader = createBlobReader(source);
-      const archiveSource: ArchiveByteSource = { kind: "blob", blob: source, size: source.size };
+      const reader = createTrackedBlobReader(source);
+      const archiveSource: ArchiveByteSource = { kind: 'blob', blob: source, size: source.size };
       const session = await createSessionAsync(reader, archiveSource);
       markFastOpenComplete();
       return createHandle(session);
     }
 
     // ArchiveByteSource variants
-    if (source.kind === "memory") {
+    if (source.kind === 'memory') {
+      recordBytesReadBeforeFirstPaint(source.bytes.byteLength);
       const session = createSession(source);
       markFastOpenComplete();
       return createHandle(session);
     }
 
-    if (source.kind === "blob") {
-      const reader = createBlobReader(source.blob);
+    if (source.kind === 'blob') {
+      const reader = createTrackedBlobReader(source.blob);
       const session = await createSessionAsync(reader, source);
       markFastOpenComplete();
       return createHandle(session);
     }
 
-    if (source.kind === "range-reader") {
-      const reader: AsyncArchiveReader = {
-        size: source.size,
-        async read(start: number, end: number) {
-          return source.read({ start, endExclusive: end });
-        },
-      };
+    if (source.kind === 'range-reader') {
+      const reader = createTrackedRangeReader(source);
       const session = await createSessionAsync(reader, source);
       markFastOpenComplete();
       return createHandle(session);
@@ -73,13 +68,33 @@ export async function open(
   }
 }
 
-/** Create an AsyncArchiveReader from a Blob. */
-function createBlobReader(blob: Blob): AsyncArchiveReader {
+/** Create an AsyncArchiveReader from a Blob and track bytes read cumulatively. */
+function createTrackedBlobReader(blob: Blob): AsyncArchiveReader {
+  let bytesRead = 0;
+
   return {
     size: blob.size,
     async read(start: number, end: number): Promise<Uint8Array> {
       const slice = blob.slice(start, end);
-      return new Uint8Array(await slice.arrayBuffer());
+      const bytes = new Uint8Array(await slice.arrayBuffer());
+      bytesRead += bytes.byteLength;
+      recordBytesReadBeforeFirstPaint(bytesRead);
+      return bytes;
+    },
+  };
+}
+
+/** Create an AsyncArchiveReader from a range source and track bytes read cumulatively. */
+function createTrackedRangeReader(source: Extract<ArchiveByteSource, { kind: 'range-reader' }>): AsyncArchiveReader {
+  let bytesRead = 0;
+
+  return {
+    size: source.size,
+    async read(start: number, end: number): Promise<Uint8Array> {
+      const bytes = await source.read({ start, endExclusive: end });
+      bytesRead += bytes.byteLength;
+      recordBytesReadBeforeFirstPaint(bytesRead);
+      return bytes;
     },
   };
 }

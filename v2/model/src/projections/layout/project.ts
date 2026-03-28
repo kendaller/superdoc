@@ -7,16 +7,21 @@
 // children are projected directly). Preserved blocks are skipped.
 // ---------------------------------------------------------------------------
 
-import type { SemanticModel } from "../../model.js";
-import type { Entity } from "../../entities/types.js";
-import type { EntityRef } from "../../identity/types.js";
-import type { FlowBlock } from "./types.js";
-import { createProjectionIdAllocator, type ProjectionIdAllocator } from "./block-id.js";
-import { projectParagraph } from "./paragraph-projector.js";
-import { projectTable } from "./table-projector.js";
-import { projectSection } from "./section-projector.js";
-import type { StyleResolver } from "../../resolve/style-resolver.js";
-import { startProjectionSpan, recordBlocksProjected } from "../../perf.js";
+import type { SemanticModel } from '../../model.js';
+import type { Entity } from '../../entities/types.js';
+import type { EntityRef } from '../../identity/types.js';
+import type { FlowBlock } from './types.js';
+import { createProjectionIdAllocator, type ProjectionIdAllocator } from './block-id.js';
+import { projectParagraph } from './paragraph-projector.js';
+import { projectTable } from './table-projector.js';
+import { projectSection } from './section-projector.js';
+import type { StyleResolver } from '../../resolve/style-resolver.js';
+import {
+  startProjectionSpan,
+  recordBlocksProjected,
+  markProjectionFirstWindowStart,
+  markProjectionFirstWindowComplete,
+} from '../../perf.js';
 
 /** Options for the layout projection. */
 export type ProjectOptions = {
@@ -46,19 +51,18 @@ export type ProjectionResult = {
  * Returns a ProjectionResult with both the blocks and a map linking
  * block IDs → source entity refs (the projection leg of the trace chain).
  */
-export function projectToFlowBlocks(
-  model: SemanticModel,
-  options?: ProjectOptions,
-): ProjectionResult {
+export function projectToFlowBlocks(model: SemanticModel, options?: ProjectOptions): ProjectionResult {
+  markProjectionFirstWindowStart();
   const endProjection = startProjectionSpan();
 
-  const prefix = options?.prefix ?? "v2-";
+  const prefix = options?.prefix ?? 'v2-';
   const ids = createProjectionIdAllocator(prefix);
 
   const mainStory = model.mainStory();
   if (!mainStory) {
     endProjection();
     recordBlocksProjected(0);
+    markProjectionFirstWindowComplete(0);
     return { blocks: [], blockToEntityRef: ids.blockToEntityRef };
   }
 
@@ -69,8 +73,8 @@ export function projectToFlowBlocks(
   for (const entity of blockEntities) {
     projectEntity(entity, model, ids, blocks, options?.resolver);
 
-    if (entity.kind === "paragraph") {
-      const raw = (entity as Entity<"paragraph">).raw();
+    if (entity.kind === 'paragraph') {
+      const raw = (entity as Entity<'paragraph'>).raw();
       if (raw.hasSectPr) {
         const sectionEntity = sectionMap.get(entity.ref.id);
         if (sectionEntity) {
@@ -91,6 +95,7 @@ export function projectToFlowBlocks(
 
   endProjection();
   recordBlocksProjected(blocks.length);
+  markProjectionFirstWindowComplete(blocks.length);
 
   return { blocks, blockToEntityRef: ids.blockToEntityRef };
 }
@@ -100,24 +105,18 @@ export function projectToFlowBlocks(
  * that carry inline sectPr. This links sectPr-bearing paragraphs to
  * their corresponding section entities so breaks are emitted in-flow.
  */
-function buildSectionMap(
-  model: SemanticModel,
-): Map<string, Entity<"section">> {
-  const map = new Map<string, Entity<"section">>();
+function buildSectionMap(model: SemanticModel): Map<string, Entity<'section'>> {
+  const map = new Map<string, Entity<'section'>>();
   const mainStory = model.mainStory();
   if (!mainStory) return map;
 
   const sections = model.sections();
-  const paragraphs = model.blockEntities(mainStory.ref).filter(
-    (e) => e.kind === "paragraph",
-  );
+  const paragraphs = model.blockEntities(mainStory.ref).filter((e) => e.kind === 'paragraph');
 
   // Sections are derived from sectPr elements. Inline sectPr lives inside
   // a paragraph's pPr. Match section entities to their owning paragraphs
   // by checking which paragraphs have hasSectPr=true, in order.
-  const sectPrParagraphs = paragraphs.filter(
-    (p) => (p as Entity<"paragraph">).raw().hasSectPr,
-  );
+  const sectPrParagraphs = paragraphs.filter((p) => (p as Entity<'paragraph'>).raw().hasSectPr);
 
   for (let i = 0; i < Math.min(sectPrParagraphs.length, sections.length); i++) {
     map.set(sectPrParagraphs[i].ref.id, sections[i]);
@@ -141,19 +140,15 @@ function projectEntity(
   resolver?: StyleResolver,
 ): void {
   switch (entity.kind) {
-    case "paragraph":
-      output.push(
-        projectParagraph(entity as Entity<"paragraph">, model, ids, resolver),
-      );
+    case 'paragraph':
+      output.push(projectParagraph(entity as Entity<'paragraph'>, model, ids, resolver));
       break;
 
-    case "table":
-      output.push(
-        projectTable(entity as Entity<"table">, model, ids, resolver),
-      );
+    case 'table':
+      output.push(projectTable(entity as Entity<'table'>, model, ids, resolver));
       break;
 
-    case "contentControl": {
+    case 'contentControl': {
       // Transparent wrapper: project children directly
       const children = model.blockEntities(entity.ref);
       for (const child of children) {
@@ -162,8 +157,8 @@ function projectEntity(
       break;
     }
 
-    case "preservedBlock":
-    case "drawing":
+    case 'preservedBlock':
+    case 'drawing':
       // Skip — no layout representation yet
       break;
 

@@ -114,6 +114,29 @@ export class PerfTimeline {
     }
   }
 
+  /**
+   * Record a completed span when the duration is already known.
+   *
+   * This keeps instrumentation readable in callers that can compute a phase
+   * duration directly, such as wrappers around `incrementalLayout()` where the
+   * measurement and pagination sub-phases are derived after the call returns.
+   */
+  recordSpan(name: string, durationMs: number, detail?: Record<string, unknown>): void {
+    if (!this.#enabled) return;
+
+    const safeDurationMs = Math.max(0, durationMs);
+    const endOffsetMs = now() - this.#originMs;
+    const startOffsetMs = Math.max(0, endOffsetMs - safeDurationMs);
+
+    this.#spans.push({
+      name,
+      startOffsetMs,
+      endOffsetMs,
+      durationMs: safeDurationMs,
+      detail,
+    });
+  }
+
   /** Increment a named counter. No-op when disabled. */
   count(name: string, increment = 1): void {
     if (!this.#enabled) return;
@@ -169,7 +192,7 @@ const NOOP = (): void => {};
 
 /** High-resolution timer, safe for both browser and Node. */
 function now(): number {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
 /**

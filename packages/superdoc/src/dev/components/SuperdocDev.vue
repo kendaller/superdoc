@@ -16,6 +16,7 @@ import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
 import SidebarSearch from './sidebar/SidebarSearch.vue';
 import SidebarFieldAnnotations from './sidebar/SidebarFieldAnnotations.vue';
 import SidebarLayout from './sidebar/SidebarLayout.vue';
+import { createSuperdocDevBenchmarkBridge } from '../benchmark/SuperdocDevBenchmarkBridge.js';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
@@ -26,6 +27,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.mi
 /* For local dev */
 const superdoc = shallowRef(null);
 const activeEditor = shallowRef(null);
+const benchmarkBridge = createSuperdocDevBenchmarkBridge();
 
 const title = ref('initial title');
 const currentFile = ref(null);
@@ -920,6 +922,7 @@ const init = async () => {
   };
 
   superdoc.value = new SuperDoc(config);
+  benchmarkBridge.attachSuperdoc(superdoc.value);
   superdoc.value?.on('ready', () => {
     superdoc.value.addCommentsList(commentsPanel.value);
   });
@@ -932,6 +935,7 @@ const init = async () => {
   });
 
   window.superdoc = superdoc.value;
+  window.__SUPERDOC_DEV_BENCHMARK__ = benchmarkBridge;
 
   // const ydoc = superdoc.value.ydoc;
   // const metaMap = ydoc.getMap('meta');
@@ -1197,6 +1201,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   applyDevTheme('default');
+  benchmarkBridge.detach();
+  delete window.__SUPERDOC_DEV_BENCHMARK__;
   detachWordOverlayListener();
   removeWordOverlay();
 

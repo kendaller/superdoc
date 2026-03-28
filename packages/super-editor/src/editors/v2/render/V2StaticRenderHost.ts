@@ -1,11 +1,10 @@
 import { EventEmitter } from 'eventemitter3';
 import { measureBlock } from '@superdoc/measuring-dom';
-import { incrementalLayout } from '@superdoc/layout-bridge';
 import { createDomPainter } from '@superdoc/painter-dom';
 import { projectToFlowBlocks } from '@superdoc/v2-model';
 import type { FlowBlock, Layout, Measure } from '@superdoc/contracts';
-import type { FlowBlock as V2ProjectedFlowBlock } from '@superdoc/v2-model';
 import type { LayoutEngineOptions, TrackedChangesOverrides } from '../../v1/core/presentation-editor/types.js';
+import { runInstrumentedIncrementalLayout } from '../../../core/perf/runInstrumentedIncrementalLayout.js';
 import {
   V2DocumentRuntime,
   type V2DocumentApiAdapter as PresentationV2DocumentApiAdapter,
@@ -16,10 +15,7 @@ import {
 import {
   v2PerfTimeline,
   SPAN_RENDER,
-  SPAN_MEASUREMENT,
-  SPAN_PAGINATION,
   SPAN_PAINT,
-  LAYOUT_BLOCKS_MEASURED_BEFORE_FIRST_PAINT,
   LAYOUT_PAGES_MOUNTED_AT_FIRST_PAINT,
   PAINT_FIRST_PAGE_MOUNTED,
 } from '@superdoc/v2-perf';
@@ -90,9 +86,7 @@ export class V2StaticRenderHost extends EventEmitter {
   #runtime = new V2DocumentRuntime();
   #viewportHost: HTMLDivElement;
   #painterHost: HTMLDivElement;
-  #domPainter:
-    | ReturnType<typeof createDomPainter>
-    | null = null;
+  #domPainter: ReturnType<typeof createDomPainter> | null = null;
   #layoutEngineOptions: LayoutEngineOptions;
   #documentMode: DocumentMode;
   #disableContextMenu: boolean;
@@ -141,68 +135,64 @@ export class V2StaticRenderHost extends EventEmitter {
 
   async render(): Promise<void> {
     const endRender = v2PerfTimeline.startSpan(SPAN_RENDER);
+    try {
+      const semanticModel = this.#runtime.semanticModel;
+      if (!semanticModel) {
+        throw new Error('Cannot render before the semantic model is initialized');
+      }
 
-    const semanticModel = this.#runtime.semanticModel;
-    if (!semanticModel) {
+      // Phase 1: Projection (instrumented inside projectToFlowBlocks)
+      const projection = projectToFlowBlocks(semanticModel, {
+        resolver: this.#runtime.styleResolver,
+      });
+      const layoutBlocks = toContractBlocks(projection.blocks);
+      const layoutOptions = this.#resolveLayoutInput(semanticModel);
+      const previousSnapshot = this.#layoutSnapshot;
+
+      // Phase 2+3: Measurement and pagination (via incrementalLayout)
+      const { result } = await runInstrumentedIncrementalLayout({
+        previousBlocks: previousSnapshot.blocks,
+        previousLayout: previousSnapshot.layout,
+        nextBlocks: layoutBlocks,
+        layoutOptions,
+        measureBlock: (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) =>
+          measureBlock(block, constraints),
+        previousMeasures: previousSnapshot.measures,
+      });
+
+      result.layout.pageGap = getEffectivePageGap(this.#layoutEngineOptions);
+
+      // Phase 4: Paint
+      const endPaint = v2PerfTimeline.startSpan(SPAN_PAINT);
+      try {
+        const painter = this.#ensurePainter(layoutBlocks, result.measures);
+        painter.setData?.(layoutBlocks, result.measures);
+        painter.paint(result.layout, this.#painterHost);
+      } finally {
+        endPaint();
+      }
+
+      v2PerfTimeline.mark(PAINT_FIRST_PAGE_MOUNTED);
+      v2PerfTimeline.gauge(LAYOUT_PAGES_MOUNTED_AT_FIRST_PAINT, countMountedPages(this.#painterHost));
+
+      this.#layoutSnapshot = {
+        blocks: layoutBlocks,
+        measures: result.measures,
+        layout: result.layout,
+      };
+
+      this.#applyZoom();
+
+      const payload: V2StaticLayoutPayload = {
+        blocks: layoutBlocks,
+        measures: result.measures,
+        layout: result.layout,
+      };
+      this.emit('layoutUpdated', payload);
+      this.emit('paginationUpdate', payload);
+    } finally {
       endRender();
-      throw new Error('Cannot render before the semantic model is initialized');
     }
-
-    // Phase 1: Projection (instrumented inside projectToFlowBlocks)
-    const projection = projectToFlowBlocks(semanticModel, {
-      resolver: this.#runtime.styleResolver,
-    });
-    const layoutBlocks = toContractBlocks(projection.blocks);
-    const layoutOptions = this.#resolveLayoutInput(semanticModel);
-    const previousSnapshot = this.#layoutSnapshot;
-
-    // Phase 2+3: Measurement and pagination (via incrementalLayout)
-    const endMeasureAndPaginate = v2PerfTimeline.startSpan(SPAN_MEASUREMENT);
-    let blocksMeasured = 0;
-    const result = await incrementalLayout(
-      previousSnapshot.blocks,
-      previousSnapshot.layout,
-      layoutBlocks,
-      layoutOptions,
-      (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) => {
-        blocksMeasured++;
-        return measureBlock(block, constraints);
-      },
-      undefined,
-      previousSnapshot.measures,
-    );
-    endMeasureAndPaginate();
-
-    v2PerfTimeline.gauge(LAYOUT_BLOCKS_MEASURED_BEFORE_FIRST_PAINT, blocksMeasured);
-
-    result.layout.pageGap = getEffectivePageGap(this.#layoutEngineOptions);
-
-    // Phase 4: Paint
-    const endPaint = v2PerfTimeline.startSpan(SPAN_PAINT);
-    const painter = this.#ensurePainter(layoutBlocks, result.measures);
-    painter.setData?.(layoutBlocks, result.measures);
-    painter.paint(result.layout, this.#painterHost);
-    endPaint();
-
-    v2PerfTimeline.mark(PAINT_FIRST_PAGE_MOUNTED);
-    v2PerfTimeline.gauge(LAYOUT_PAGES_MOUNTED_AT_FIRST_PAINT, result.layout.pages?.length ?? 0);
-
-    this.#layoutSnapshot = {
-      blocks: layoutBlocks,
-      measures: result.measures,
-      layout: result.layout,
-    };
-
-    this.#applyZoom();
-
-    const payload: V2StaticLayoutPayload = {
-      blocks: layoutBlocks,
-      measures: result.measures,
-      layout: result.layout,
-    };
-    this.emit('layoutUpdated', payload);
-    this.emit('paginationUpdate', payload);
-    endRender();
   }
 
   updateLayoutEngineOptions(nextOptions?: LayoutEngineOptions): void {
@@ -254,7 +244,9 @@ export class V2StaticRenderHost extends EventEmitter {
     return () => this.off('layoutUpdated', handler);
   }
 
-  onLayoutError(handler: (error: { phase: 'initialization' | 'render'; error: Error; timestamp: number }) => void): () => void {
+  onLayoutError(
+    handler: (error: { phase: 'initialization' | 'render'; error: Error; timestamp: number }) => void,
+  ): () => void {
     this.on('layoutError', handler);
     return () => this.off('layoutError', handler);
   }
@@ -343,34 +335,38 @@ export class V2StaticRenderHost extends EventEmitter {
 
     const pageSize = {
       w:
-        normalizeSectionTwips(firstSectionRaw?.pageWidth)
-        ?? this.#layoutEngineOptions.pageSize?.w
-        ?? DEFAULT_PAGE_SIZE.w,
+        normalizeSectionTwips(firstSectionRaw?.pageWidth) ??
+        this.#layoutEngineOptions.pageSize?.w ??
+        DEFAULT_PAGE_SIZE.w,
       h:
-        normalizeSectionTwips(firstSectionRaw?.pageHeight)
-        ?? this.#layoutEngineOptions.pageSize?.h
-        ?? DEFAULT_PAGE_SIZE.h,
+        normalizeSectionTwips(firstSectionRaw?.pageHeight) ??
+        this.#layoutEngineOptions.pageSize?.h ??
+        DEFAULT_PAGE_SIZE.h,
     };
 
     const margins = {
       top:
-        normalizeSectionTwips(firstSectionRaw?.marginTop)
-        ?? this.#layoutEngineOptions.margins?.top
-        ?? DEFAULT_MARGINS.top,
+        normalizeSectionTwips(firstSectionRaw?.marginTop) ??
+        this.#layoutEngineOptions.margins?.top ??
+        DEFAULT_MARGINS.top,
       right:
-        normalizeSectionTwips(firstSectionRaw?.marginRight)
-        ?? this.#layoutEngineOptions.margins?.right
-        ?? DEFAULT_MARGINS.right,
+        normalizeSectionTwips(firstSectionRaw?.marginRight) ??
+        this.#layoutEngineOptions.margins?.right ??
+        DEFAULT_MARGINS.right,
       bottom:
-        normalizeSectionTwips(firstSectionRaw?.marginBottom)
-        ?? this.#layoutEngineOptions.margins?.bottom
-        ?? DEFAULT_MARGINS.bottom,
+        normalizeSectionTwips(firstSectionRaw?.marginBottom) ??
+        this.#layoutEngineOptions.margins?.bottom ??
+        DEFAULT_MARGINS.bottom,
       left:
-        normalizeSectionTwips(firstSectionRaw?.marginLeft)
-        ?? this.#layoutEngineOptions.margins?.left
-        ?? DEFAULT_MARGINS.left,
-      ...(this.#layoutEngineOptions.margins?.header != null ? { header: this.#layoutEngineOptions.margins.header } : {}),
-      ...(this.#layoutEngineOptions.margins?.footer != null ? { footer: this.#layoutEngineOptions.margins.footer } : {}),
+        normalizeSectionTwips(firstSectionRaw?.marginLeft) ??
+        this.#layoutEngineOptions.margins?.left ??
+        DEFAULT_MARGINS.left,
+      ...(this.#layoutEngineOptions.margins?.header != null
+        ? { header: this.#layoutEngineOptions.margins.header }
+        : {}),
+      ...(this.#layoutEngineOptions.margins?.footer != null
+        ? { footer: this.#layoutEngineOptions.margins.footer }
+        : {}),
     };
 
     const columns =
@@ -445,10 +441,7 @@ export class V2StaticRenderHost extends EventEmitter {
     }
 
     const pages = layout?.pages ?? [];
-    const fallbackPageSize = resolveFallbackPageSize(
-      layout?.pageSize,
-      this.#layoutEngineOptions.pageSize,
-    );
+    const fallbackPageSize = resolveFallbackPageSize(layout?.pageSize, this.#layoutEngineOptions.pageSize);
     const layoutMode = this.#layoutEngineOptions.layoutMode ?? DEFAULT_LAYOUT_MODE;
     const pageGap = getEffectivePageGap(this.#layoutEngineOptions);
 
@@ -653,12 +646,7 @@ function validateZoom(zoom: number): void {
   }
 }
 
-function resolveSemanticMargins(margins: {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-}): {
+function resolveSemanticMargins(margins: { top: number; right: number; bottom: number; left: number }): {
   top: number;
   right: number;
   bottom: number;
@@ -685,6 +673,12 @@ function normalizeSectionTwips(value: number | undefined): number | undefined {
   return (value / TWIPS_PER_INCH) * PX_PER_INCH;
 }
 
-function toContractBlocks(blocks: readonly V2ProjectedFlowBlock[]): FlowBlock[] {
+function countMountedPages(container: ParentNode): number {
+  return container.querySelectorAll('.superdoc-page').length;
+}
+
+function toContractBlocks(
+  blocks: ReadonlyArray<ReturnType<typeof projectToFlowBlocks>['blocks'][number]>,
+): FlowBlock[] {
   return blocks as unknown as FlowBlock[];
 }

@@ -101,6 +101,7 @@
     "@superdoc-dev/superdoc-yjs-collaboration": "workspace:*",
     "@superdoc/common": "workspace:*",
     "@superdoc/super-editor": "workspace:*",
+    "@superdoc/v2-perf": "workspace:*",
     "@vitejs/plugin-vue": "catalog:",
     "@vue/test-utils": "catalog:",
     "concurrently": "catalog:",

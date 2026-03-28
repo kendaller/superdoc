@@ -72,6 +72,7 @@ perf-baseline-results.json
 plans/
 
 tests/layout-snapshots
+tests/perf/results/
 tests/layout/candidate/
 tests/layout/reference/
 tests/layout/reports/

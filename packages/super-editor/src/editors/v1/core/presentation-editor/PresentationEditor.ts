@@ -42,6 +42,7 @@ import { createLayoutMetrics as createLayoutMetricsFromHelper } from './layout/P
 import { buildFootnotesInput } from './layout/FootnotesBuilder.js';
 import { safeCleanup } from './utils/SafeCleanup.js';
 import { createHiddenHost } from './dom/HiddenHost.js';
+import { runInstrumentedIncrementalLayout } from '../../../../core/perf/runInstrumentedIncrementalLayout.js';
 import { RemoteCursorManager, type RenderDependencies } from './remote-cursors/RemoteCursorManager.js';
 import { EditorInputManager } from './pointer-events/EditorInputManager.js';
 import { SelectionSyncCoordinator } from './selection/SelectionSyncCoordinator.js';
@@ -77,7 +78,6 @@ import { HeaderFooterSessionManager } from './header-footer/HeaderFooterSessionM
 import { toFlowBlocks, ConverterContext, FlowBlockCache } from '@superdoc/pm-adapter';
 import { readSettingsRoot, readDefaultTableStyle } from '../../document-api-adapters/document-settings.js';
 import {
-  incrementalLayout,
   selectionToRects,
   getFragmentAtPosition,
   extractIdentifierFromConverter,
@@ -129,6 +129,16 @@ import { splitRunsAtDecorationBoundaries } from './layout/SplitRunsAtDecorationB
 
 import type { ResolveRangeOutput, DocumentApi } from '@superdoc/document-api';
 import type { SelectionHandle } from '../selection-state.js';
+import {
+  v2PerfTimeline,
+  PROJECTION_FIRST_WINDOW_START,
+  PROJECTION_FIRST_WINDOW_COMPLETE,
+  PROJECTION_BLOCKS_PROJECTED_BEFORE_FIRST_PAINT,
+  LAYOUT_PAGES_MOUNTED_AT_FIRST_PAINT,
+  PAINT_FIRST_PAGE_MOUNTED,
+  SPAN_PROJECTION,
+  SPAN_PAINT,
+} from '@superdoc/v2-perf';
 
 const DOCUMENT_RELS_PART_ID = 'word/_rels/document.xml.rels';
 
@@ -226,6 +236,8 @@ const perfLog = (...args: unknown[]): void => {
   if (!layoutDebugEnabled) return;
   console.log(...args);
 };
+
+const countMountedPages = (container: ParentNode): number => container.querySelectorAll('.superdoc-page').length;
 /** Budget for header/footer initialization before warning (milliseconds) */
 const HEADER_FOOTER_INIT_BUDGET_MS = 200;
 /** Maximum zoom level before warning */
@@ -4159,42 +4171,52 @@ export class PresentationEditor extends EventEmitter {
         const commentsEnabled =
           this.#documentMode !== 'viewing' || this.#layoutOptions.enableCommentsInViewing === true;
         const toFlowBlocksStart = perfNow();
-        const mediaFiles = (this.#editor?.storage?.image as { media?: Record<string, string | Uint8Array> })?.media;
-        const pmAdapterOptions = {
-          mediaFiles,
-          emitSectionBreaks: true,
-          sectionMetadata,
-          trackedChangesMode: this.#trackedChangesMode,
-          enableTrackedChanges: this.#trackedChangesEnabled,
-          enableComments: commentsEnabled,
-          enableRichHyperlinks: true,
-          themeColors: this.#editor?.converter?.themeColors ?? undefined,
-          converterContext,
-          flowBlockCache: this.#flowBlockCache,
-          ...(positionMap ? { positions: positionMap } : {}),
-          ...(atomNodeTypes.length > 0 ? { atomNodeTypes } : {}),
-        };
-
+        v2PerfTimeline.mark(PROJECTION_FIRST_WINDOW_START);
+        const endProjectionSpan = v2PerfTimeline.startSpan(SPAN_PROJECTION);
         let result: { blocks: FlowBlock[]; bookmarks?: Map<string, number> };
 
-        const useV2Adapter = this.#isV2ModelAdapterEnabled();
-        if (useV2Adapter && this.#v2Bridge.isActive()) {
-          // Shadow PM projection remains active in v2 mode so bookmark and PM-range
-          // metadata can be carried forward while the v2 blocks drive rendering.
-          const shadowPmResult = toFlowBlocks(docJson, pmAdapterOptions);
-          result = this.#v2Bridge.projectFlowBlocks({
-            shadowBlocks: shadowPmResult.blocks as FlowBlock[],
-            shadowBookmarks: shadowPmResult.bookmarks,
+        try {
+          const mediaFiles = (this.#editor?.storage?.image as { media?: Record<string, string | Uint8Array> })?.media;
+          const pmAdapterOptions = {
             mediaFiles,
-          });
-        } else {
-          result = toFlowBlocks(docJson, pmAdapterOptions);
+            emitSectionBreaks: true,
+            sectionMetadata,
+            trackedChangesMode: this.#trackedChangesMode,
+            enableTrackedChanges: this.#trackedChangesEnabled,
+            enableComments: commentsEnabled,
+            enableRichHyperlinks: true,
+            themeColors: this.#editor?.converter?.themeColors ?? undefined,
+            converterContext,
+            flowBlockCache: this.#flowBlockCache,
+            ...(positionMap ? { positions: positionMap } : {}),
+            ...(atomNodeTypes.length > 0 ? { atomNodeTypes } : {}),
+          };
+
+          const useV2Adapter = this.#isV2ModelAdapterEnabled();
+          if (useV2Adapter && this.#v2Bridge.isActive()) {
+            // Shadow PM projection remains active in v2 mode so bookmark and PM-range
+            // metadata can be carried forward while the v2 blocks drive rendering.
+            const shadowPmResult = toFlowBlocks(docJson, pmAdapterOptions);
+            result = this.#v2Bridge.projectFlowBlocks({
+              shadowBlocks: shadowPmResult.blocks as FlowBlock[],
+              shadowBookmarks: shadowPmResult.bookmarks,
+              mediaFiles,
+            });
+          } else {
+            result = toFlowBlocks(docJson, pmAdapterOptions);
+          }
+        } finally {
+          endProjectionSpan();
         }
 
         const toFlowBlocksEnd = perfNow();
         perfLog(
           `[Perf] toFlowBlocks: ${(toFlowBlocksEnd - toFlowBlocksStart).toFixed(2)}ms (blocks=${result.blocks.length})`,
         );
+        v2PerfTimeline.mark(PROJECTION_FIRST_WINDOW_COMPLETE, {
+          blockCount: result.blocks.length,
+        });
+        v2PerfTimeline.gauge(PROJECTION_BLOCKS_PROJECTED_BEFORE_FIRST_PAINT, result.blocks.length);
         blocks = result.blocks;
         bookmarks = result.bookmarks ?? new Map();
       } catch (error) {
@@ -4250,15 +4272,16 @@ export class PresentationEditor extends EventEmitter {
       const headerFooterInput = this.#buildHeaderFooterInput();
       try {
         const incrementalLayoutStart = perfNow();
-        const result = await incrementalLayout(
+        const { result } = await runInstrumentedIncrementalLayout({
           previousBlocks,
           previousLayout,
-          blocksForLayout,
+          nextBlocks: blocksForLayout,
           layoutOptions,
-          (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) => measureBlock(block, constraints),
-          headerFooterInput ?? undefined,
+          measureBlock: (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) =>
+            measureBlock(block, constraints),
+          headerFooter: headerFooterInput ?? undefined,
           previousMeasures,
-        );
+        });
         const incrementalLayoutEnd = perfNow();
         perfLog(`[Perf] incrementalLayout: ${(incrementalLayoutEnd - incrementalLayoutStart).toFixed(2)}ms`);
 
@@ -4428,7 +4451,15 @@ export class PresentationEditor extends EventEmitter {
         footerBlocks: footerBlocks.length > 0 ? footerBlocks : undefined,
         footerMeasures: footerMeasures.length > 0 ? footerMeasures : undefined,
       };
-      painter.paint(paintInput, this.#painterHost, mapping ?? undefined);
+      const endPaintSpan = v2PerfTimeline.startSpan(SPAN_PAINT);
+      try {
+        painter.paint(paintInput, this.#painterHost, mapping ?? undefined);
+      } finally {
+        endPaintSpan();
+      }
+      const mountedPages = countMountedPages(this.#painterHost);
+      v2PerfTimeline.mark(PAINT_FIRST_PAGE_MOUNTED, { mountedPages });
+      v2PerfTimeline.gauge(LAYOUT_PAGES_MOUNTED_AT_FIRST_PAINT, mountedPages);
       const painterPaintEnd = perfNow();
       perfLog(`[Perf] painter.paint: ${(painterPaintEnd - painterPaintStart).toFixed(2)}ms`);
       const painterPostStart = perfNow();

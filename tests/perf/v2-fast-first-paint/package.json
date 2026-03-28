@@ -5,7 +5,10 @@
   "type": "module",
   "description": "Benchmark harness for v2 fast-first-paint pipeline.",
   "scripts": {
-    "bench": "vitest run --config vitest.config.ts",
+    "bench": "playwright test --config playwright.config.ts",
+    "bench:all": "pnpm run bench:model && pnpm run bench:browser",
+    "bench:browser": "playwright test --config playwright.config.ts",
+    "bench:model": "vitest run --config vitest.config.ts",
     "bench:watch": "vitest --config vitest.config.ts"
   },
   "dependencies": {
@@ -13,6 +16,7 @@
     "@superdoc/v2-perf": "workspace:*"
   },
   "devDependencies": {
+    "@playwright/test": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

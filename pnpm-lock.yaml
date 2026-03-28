@@ -2625,6 +2625,9 @@ importers:
       '@superdoc/super-editor':
         specifier: workspace:*
         version: link:../super-editor
+      '@superdoc/v2-perf':
+        specifier: workspace:*
+        version: link:../../v2/perf
       '@vitejs/plugin-vue':
         specifier: 'catalog:'
         version: 6.0.2(rolldown-vite@7.3.1(@types/node@25.5.0)(esbuild@0.27.4)(jiti@2.6.1)(less@4.4.2)(sass@1.97.3)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))(vue@3.5.25(typescript@5.9.3))
@@ -2842,6 +2845,9 @@ importers:
         specifier: workspace:*
         version: link:../../../v2/perf
     devDependencies:
+      '@playwright/test':
+        specifier: 'catalog:'
+        version: 1.58.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
