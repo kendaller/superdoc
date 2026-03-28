@@ -111,5 +111,19 @@ export async function openInWorker(worker: Worker, bytes: Uint8Array): Promise<D
           'Use a main-thread handle for semantic model access.',
       );
     },
+
+    async materializeParts() {
+      throw new Error(
+        'materializeParts() is not available on worker-proxied handles. ' +
+          'Use WorkerProxyV2 for background enrichment support.',
+      );
+    },
+
+    async resolveBinaryPart() {
+      throw new Error(
+        'resolveBinaryPart() is not available on worker-proxied handles. ' +
+          'Use WorkerProxyV2 for background enrichment support.',
+      );
+    },
   };
 }

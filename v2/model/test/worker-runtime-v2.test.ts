@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { installWorkerHostV2, WorkerProxyV2 } from '../src/runtime/index.js';
 import type { WorkerMessageEnvelope, WorkerRequestV2, WorkerResponseV2 } from '../src/runtime/worker-protocol.js';
 import { createMinimalDocx } from './helpers/create-test-docx.js';
+import { createInlineImageDocx } from './helpers/create-rich-docx.js';
 
 type FakeWorkerScope = {
   onmessage: ((event: MessageEvent) => void) | null;
@@ -58,6 +59,34 @@ describe('worker runtime v2', () => {
       },
     });
     expect(renderShell?.sections.length).toBeGreaterThan(0);
+
+    await runtime.close();
+  });
+
+  it('passes manifest-backed image enrichment through the worker runtime', async () => {
+    const { mainThreadWorker, workerScope } = createWorkerLoopback();
+    installWorkerHostV2(workerScope);
+
+    const runtime = new WorkerProxyV2(mainThreadWorker);
+    await runtime.openSource(createInlineImageDocx());
+    await runtime.ready('render-shell');
+
+    const result = await runtime.enrich('images', {
+      ids: ['rId5'],
+      manifest: {
+        headerFooterRefs: [],
+        footnoteRefs: [],
+        endnoteRefs: [],
+        commentRefs: [],
+        imageRefs: [{ relationshipId: 'rId5', sourcePartUri: '/word/document.xml' }],
+        hyperlinkRefs: [],
+      },
+    });
+
+    expect(result.target).toBe('images');
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].mimeType).toBe('image/png');
+    expect(result.items[0].data).toBeInstanceOf(ArrayBuffer);
 
     await runtime.close();
   });

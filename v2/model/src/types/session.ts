@@ -49,6 +49,18 @@ export type DocumentHandle = {
    * Returns undefined if the session is not yet at the "structure" stage.
    */
   semanticModel(): import('../model.js').SemanticModel | undefined;
+  /**
+   * Materialize and index specific XML parts for background enrichment.
+   * Does NOT advance the session stage. Used by enrichment executors to
+   * access annotation/header/footer parts without requiring full structure.
+   */
+  materializeParts(partUris: Set<string>, signal?: AbortSignal): Promise<void>;
+  /**
+   * Resolve the raw bytes for a binary part by URI.
+   * Falls back to async reader for lazy sessions.
+   * Returns undefined if the part doesn't exist or bytes can't be resolved.
+   */
+  resolveBinaryPart(partUri: string): Promise<{ bytes: Uint8Array; contentType: string } | undefined>;
 };
 
 /** Bundle of all typed views for a .docx package. */

@@ -13,6 +13,8 @@ import type { ArchiveByteSource } from '../types/package.js';
 import type { RenderShellSnapshot } from '../render-shell/index.js';
 import type { ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
 import type { WindowedProjectionResult } from '../projections/layout/index.js';
+import type { EnrichmentResult } from '../enrichment/enrichment-results.js';
+import type { EnrichmentRequest, SerializableEnrichmentRequest } from '../enrichment/enrichment-request.js';
 import type {
   TaskId,
   TaskPriority,
@@ -34,6 +36,7 @@ type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   generation: number;
+  cleanupAbort?: () => void;
 };
 
 type EventHandler = (event: WorkerEventV2) => void;
@@ -93,8 +96,19 @@ export class WorkerProxyV2 {
     await this.#send('advanceStructure', {}, 'background');
   }
 
-  async enrich(target: EnrichmentTarget): Promise<unknown> {
-    return this.#send('enrich', { target }, 'background');
+  async enrich(target: EnrichmentTarget, request?: EnrichmentRequest): Promise<EnrichmentResult> {
+    const serializableRequest = toSerializableEnrichmentRequest(request);
+
+    return this.#send(
+      'enrich',
+      {
+        target,
+        ...(serializableRequest ? { request: serializableRequest } : {}),
+      },
+      'background',
+      undefined,
+      request?.signal,
+    ) as Promise<EnrichmentResult>;
   }
 
   cancelTask(taskId: TaskId): void {
@@ -159,6 +173,7 @@ export class WorkerProxyV2 {
       const entry = this.#pending.get(resp.id);
       if (!entry) return;
       this.#pending.delete(resp.id);
+      entry.cleanupAbort?.();
 
       // Stale result suppression
       if (entry.generation !== this.#generation) return;
@@ -189,7 +204,17 @@ export class WorkerProxyV2 {
 
   // ---- Private: send --------------------------------------------------------
 
-  #send(method: string, params: unknown, priority: TaskPriority, transfer?: Transferable[]): Promise<unknown> {
+  #send(
+    method: string,
+    params: unknown,
+    priority: TaskPriority,
+    transfer?: Transferable[],
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (signal?.aborted) {
+      return Promise.reject(createAbortError('Request aborted before dispatch'));
+    }
+
     const id = createRequestId();
     const taskId = createTaskId();
 
@@ -202,7 +227,23 @@ export class WorkerProxyV2 {
     } as WorkerRequestV2;
 
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject, generation: this.#generation });
+      const pending: PendingRequest = {
+        resolve,
+        reject,
+        generation: this.#generation,
+      };
+
+      if (signal) {
+        const onAbort = () => {
+          this.cancelTask(taskId);
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending.cleanupAbort = () => {
+          signal.removeEventListener('abort', onAbort);
+        };
+      }
+
+      this.#pending.set(id, pending);
 
       const envelope: WorkerMessageEnvelope = { version: 2, payload: req };
       if (transfer?.length) {
@@ -268,6 +309,7 @@ export class WorkerProxyV2 {
     for (const [id, entry] of this.#pending) {
       if (entry.generation < this.#generation) {
         this.#pending.delete(id);
+        entry.cleanupAbort?.();
         entry.reject(new Error(reason));
       }
     }
@@ -279,4 +321,26 @@ export class WorkerProxyV2 {
       this.#cleanupRangeReader = null;
     }
   }
+}
+
+function toSerializableEnrichmentRequest(request?: EnrichmentRequest): SerializableEnrichmentRequest | undefined {
+  if (!request) {
+    return undefined;
+  }
+
+  const serializableRequest: SerializableEnrichmentRequest = {};
+  if (request.ids) {
+    serializableRequest.ids = request.ids;
+  }
+  if (request.manifest) {
+    serializableRequest.manifest = request.manifest;
+  }
+
+  return Object.keys(serializableRequest).length > 0 ? serializableRequest : undefined;
+}
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
 }

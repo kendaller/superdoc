@@ -15,7 +15,10 @@ import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type { DocumentHandle, ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
 import type { DocumentRuntime, RuntimeEventHandler } from './runtime-interface.js';
 import type { TaskId, EnrichmentTarget, ProjectWindowParams, WindowContinuation } from './worker-protocol.js';
+import type { EnrichmentResult } from '../enrichment/enrichment-results.js';
+import type { EnrichmentRequest } from '../enrichment/enrichment-request.js';
 import { open } from '../session/open.js';
+import { executeEnrichment } from '../enrichment/executors/index.js';
 import { WindowProjectionController } from './window-projection-controller.js';
 
 export class InProcessRuntimeV2 implements DocumentRuntime {
@@ -77,8 +80,10 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
     await this.#handle!.ready('structure');
   }
 
-  async enrich(_target: EnrichmentTarget): Promise<unknown> {
-    throw new Error('enrich not yet implemented — requires workstream 06');
+  async enrich(target: EnrichmentTarget, request?: EnrichmentRequest): Promise<EnrichmentResult> {
+    this.#assertOpen();
+    await this.#handle!.ready('render-shell', request?.signal);
+    return executeEnrichment(this.#handle!, target, request?.ids, request?.manifest, request?.signal);
   }
 
   // ---- Task control ---------------------------------------------------------

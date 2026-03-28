@@ -13,7 +13,7 @@ function createRuntimeStub(overrides?: Partial<DocumentRuntime>): DocumentRuntim
     projectNextWindow: vi.fn(),
     prefetchWindow: vi.fn().mockResolvedValue(undefined),
     advanceStructure: vi.fn().mockResolvedValue(undefined),
-    enrich: vi.fn().mockResolvedValue(undefined),
+    enrich: vi.fn().mockResolvedValue({ target: 'comments', mergePolicy: 'overlay-only', items: [] }),
     cancelTask: vi.fn(),
     status: vi.fn().mockResolvedValue({ stage: 'fast-open' }),
     save: vi.fn().mockResolvedValue(new Uint8Array()),

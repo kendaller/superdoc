@@ -19,7 +19,7 @@ export type DependencyManifest = {
   readonly commentRefs: ReadonlyArray<{ commentId: string }>;
   readonly imageRefs: ReadonlyArray<{
     relationshipId: string;
-    partUri: string;
+    sourcePartUri: string;
   }>;
   readonly hyperlinkRefs: ReadonlyArray<{ relationshipId: string }>;
 };
@@ -31,7 +31,7 @@ export type DependencyCollector = {
   addFootnote(footnoteId: string): void;
   addEndnote(endnoteId: string): void;
   addComment(commentId: string): void;
-  addImage(relationshipId: string, partUri: string): void;
+  addImage(relationshipId: string, sourcePartUri: string): void;
   addHyperlink(relationshipId: string): void;
   finalize(): DependencyManifest;
 };
@@ -44,7 +44,7 @@ export function createDependencyCollector(): DependencyCollector {
   const footnotes = new Set<string>();
   const endnotes = new Set<string>();
   const comments = new Set<string>();
-  const images = new Map<string, string>(); // relId → partUri
+  const images = new Map<string, string>(); // relId → sourcePartUri
   const hyperlinks = new Set<string>();
 
   return {
@@ -60,8 +60,8 @@ export function createDependencyCollector(): DependencyCollector {
     addComment(id) {
       comments.add(id);
     },
-    addImage(relId, partUri) {
-      images.set(relId, partUri);
+    addImage(relId, sourcePartUri) {
+      images.set(relId, sourcePartUri);
     },
     addHyperlink(relId) {
       hyperlinks.add(relId);
@@ -72,9 +72,9 @@ export function createDependencyCollector(): DependencyCollector {
         footnoteRefs: [...footnotes].map((footnoteId) => ({ footnoteId })),
         endnoteRefs: [...endnotes].map((endnoteId) => ({ endnoteId })),
         commentRefs: [...comments].map((commentId) => ({ commentId })),
-        imageRefs: [...images.entries()].map(([relationshipId, partUri]) => ({
+        imageRefs: [...images.entries()].map(([relationshipId, sourcePartUri]) => ({
           relationshipId,
-          partUri,
+          sourcePartUri,
         })),
         hyperlinkRefs: [...hyperlinks].map((relationshipId) => ({
           relationshipId,

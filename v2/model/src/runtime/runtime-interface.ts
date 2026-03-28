@@ -17,6 +17,8 @@ import type {
   WindowContinuation,
   WorkerEventV2,
 } from './worker-protocol.js';
+import type { EnrichmentResult } from '../enrichment/enrichment-results.js';
+import type { EnrichmentRequest } from '../enrichment/enrichment-request.js';
 
 export type RuntimeEventHandler = (event: WorkerEventV2) => void;
 
@@ -42,7 +44,7 @@ export interface DocumentRuntime {
   projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult>;
   prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void>;
   advanceStructure(): Promise<void>;
-  enrich(target: EnrichmentTarget): Promise<unknown>;
+  enrich(target: EnrichmentTarget, request?: EnrichmentRequest): Promise<EnrichmentResult>;
 
   // ---- Task control ---------------------------------------------------------
 

@@ -135,7 +135,7 @@ function createMockRuntime(overrides?: Partial<DocumentRuntime>): DocumentRuntim
     projectNextWindow: vi.fn().mockResolvedValue(makeWindowResult([makeBlock('b4'), makeBlock('b5')], 5, 10)),
     prefetchWindow: vi.fn().mockResolvedValue(undefined),
     advanceStructure: vi.fn().mockResolvedValue(undefined),
-    enrich: vi.fn().mockResolvedValue(undefined),
+    enrich: vi.fn().mockResolvedValue({ target: 'comments', mergePolicy: 'overlay-only', items: [] }),
     cancelTask: vi.fn(),
     status: vi.fn().mockResolvedValue({ stage: 'render-shell' }),
     save: vi.fn().mockResolvedValue(new Uint8Array()),

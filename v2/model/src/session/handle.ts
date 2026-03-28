@@ -21,7 +21,8 @@ import { createCommentsView, createFootnotesView, createEndnotesView } from '../
 import { createThemeView } from '../word/theme-view.js';
 import { createFontTableView } from '../word/font-table-view.js';
 import { createContentTypesView, createRelationshipsView } from '../word/content-types-view.js';
-import { advanceToStage, getSessionStatus } from './session.js';
+import { advanceToStage, getSessionStatus, materializePartsForEnrichment } from './session.js';
+import { resolveBinaryPartBytesAsync } from './part-bytes.js';
 import { savePackage } from './save.js';
 import { SemanticModel } from '../model.js';
 import { createRenderShellDocument, type RenderShellDocument } from '../render-shell/index.js';
@@ -106,6 +107,22 @@ export function createHandle(session: PackageSession): DocumentHandle {
         };
       }
       return cachedViews;
+    },
+
+    async materializeParts(partUris: Set<string>, signal?: AbortSignal): Promise<void> {
+      assertOpen();
+      await materializePartsForEnrichment(session, partUris, signal);
+    },
+
+    async resolveBinaryPart(partUri: string): Promise<{ bytes: Uint8Array; contentType: string } | undefined> {
+      assertOpen();
+      const part = session.parts.get(partUri);
+      if (!part || part.kind !== 'binary') return undefined;
+
+      const bytes = await resolveBinaryPartBytesAsync(part, session);
+      if (!bytes) return undefined;
+
+      return { bytes, contentType: part.contentType };
     },
   };
 }

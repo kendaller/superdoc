@@ -7,7 +7,7 @@ import type { ArchiveByteSource, AsyncArchiveReader } from '../types/package.js'
 import { fastOpen, fastOpenAsync } from '../opc/package-loader.js';
 import { inflateEntryAsync } from '../opc/zip-reader.js';
 import { nextRevision } from './revision.js';
-import { indexRenderShellParts, indexXmlParts } from '../xml/index-integration.js';
+import { indexRenderShellParts, indexXmlParts, indexPartOnDemand } from '../xml/index-integration.js';
 import {
   startFastOpenSpan,
   startAdvanceToRenderShellSpan,
@@ -185,6 +185,34 @@ async function materializeXmlParts(
 
   recordXmlPartsMaterialized(materializedCount);
   endMaterialize();
+}
+
+/**
+ * Materialize specific XML parts for background enrichment.
+ *
+ * Unlike advanceToRenderShell/advanceToStructure, this does NOT change the
+ * session stage. It materializes and indexes only the requested parts so
+ * enrichment executors can read annotation/header/footer content without
+ * requiring the full structure stage.
+ */
+export async function materializePartsForEnrichment(
+  session: PackageSession,
+  partUris: Set<string>,
+  signal?: AbortSignal,
+): Promise<void> {
+  // Materialize bytes for lazy sessions
+  if (session.asyncReader) {
+    await materializeXmlParts(session, partUris, signal);
+  }
+
+  // Index each requested part so views can use it
+  for (const uri of partUris) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const part = session.parts.get(uri);
+    if (part && part.kind === 'xml' && !part.lexicalIndex) {
+      indexPartOnDemand(part, session, signal);
+    }
+  }
 }
 
 /** Compute current session status. */

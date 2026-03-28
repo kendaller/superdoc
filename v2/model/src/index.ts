@@ -210,3 +210,13 @@ export {
 
 // Performance instrumentation (re-export shared timeline for consumer access)
 export { v2PerfTimeline } from '@superdoc/v2-perf';
+
+// Enrichment
+export type {
+  EnrichmentRequest,
+  SerializableEnrichmentRequest,
+  EnrichmentResult,
+  MergePolicy,
+  MergeAction,
+} from './enrichment/index.js';
+export { executeEnrichment, classifyMergeAction, scheduleEnrichment } from './enrichment/index.js';

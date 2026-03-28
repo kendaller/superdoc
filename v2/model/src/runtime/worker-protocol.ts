@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ReadyStage, SaveOptions } from '../types/session.js';
+import type { SerializableEnrichmentRequest } from '../enrichment/enrichment-request.js';
 
 // ===== V1 Protocol (legacy, preserved for backward compatibility) ===========
 
@@ -101,7 +102,13 @@ export type WorkerRequestV2 =
       priority: TaskPriority;
     }
   | { id: string; taskId: TaskId; method: 'advanceStructure'; params: Record<string, never>; priority: TaskPriority }
-  | { id: string; taskId: TaskId; method: 'enrich'; params: { target: EnrichmentTarget }; priority: TaskPriority }
+  | {
+      id: string;
+      taskId: TaskId;
+      method: 'enrich';
+      params: { target: EnrichmentTarget; request?: SerializableEnrichmentRequest };
+      priority: TaskPriority;
+    }
   | { id: string; taskId: TaskId; method: 'cancelTask'; params: { taskId: TaskId }; priority: TaskPriority }
   | { id: string; taskId: TaskId; method: 'status'; params: Record<string, never>; priority: TaskPriority }
   | { id: string; taskId: TaskId; method: 'save'; params: { options?: SaveOptions }; priority: TaskPriority }

@@ -8,6 +8,7 @@
 
 import type { DocumentHandle } from '../types/session.js';
 import { createRenderShellSnapshot } from '../render-shell/index.js';
+import { executeEnrichment } from '../enrichment/executors/index.js';
 import type {
   WorkerRequest,
   WorkerResponse,
@@ -256,6 +257,10 @@ export function installWorkerHostV2(scope: WorkerScope): void {
         // Transfer Uint8Array results
         if (result instanceof Uint8Array) {
           sendV2Response(scope, req, result, [result.buffer as ArrayBuffer]);
+        } else if (isImageEnrichmentResult(result)) {
+          // Transfer image ArrayBuffers to avoid copying
+          const transferables = result.items.map((item: { data: ArrayBuffer }) => item.data);
+          sendV2Response(scope, req, result, transferables);
         } else {
           sendV2Response(scope, req, result);
         }
@@ -311,8 +316,14 @@ export function installWorkerHostV2(scope: WorkerScope): void {
 
       case 'enrich': {
         if (!handle) throw new Error('No session open');
-        // Workstream 06 stub — background enrichment not yet available
-        throw new Error(`enrich("${req.params.target}") not yet implemented — requires workstream 06`);
+        await handle.ready('render-shell', signal);
+        return executeEnrichment(
+          handle,
+          req.params.target,
+          req.params.request?.ids,
+          req.params.request?.manifest,
+          signal,
+        );
       }
 
       case 'save': {
@@ -413,4 +424,13 @@ function sendV2Error(scope: WorkerScope, req: WorkerRequestV2, err: unknown): vo
 
 function emitEvent(scope: WorkerScope, event: WorkerEventV2): void {
   scope.postMessage({ version: 2, payload: event } satisfies WorkerMessageEnvelope);
+}
+
+function isImageEnrichmentResult(result: unknown): result is { target: 'images'; items: { data: ArrayBuffer }[] } {
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    (result as { target?: string }).target === 'images' &&
+    Array.isArray((result as { items?: unknown }).items)
+  );
 }

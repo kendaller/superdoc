@@ -869,7 +869,7 @@ function mergeDependencyManifests(
   const footnoteRefs = new Map<string, { footnoteId: string }>();
   const endnoteRefs = new Map<string, { endnoteId: string }>();
   const commentRefs = new Map<string, { commentId: string }>();
-  const imageRefs = new Map<string, { relationshipId: string; partUri: string }>();
+  const imageRefs = new Map<string, { relationshipId: string; sourcePartUri: string }>();
   const hyperlinkRefs = new Map<string, { relationshipId: string }>();
 
   for (const entry of existingManifest.headerFooterRefs) {
@@ -901,10 +901,10 @@ function mergeDependencyManifests(
   }
 
   for (const entry of existingManifest.imageRefs) {
-    imageRefs.set(`${entry.partUri}:${entry.relationshipId}`, entry);
+    imageRefs.set(`${entry.sourcePartUri}:${entry.relationshipId}`, entry);
   }
   for (const entry of nextManifest.imageRefs) {
-    imageRefs.set(`${entry.partUri}:${entry.relationshipId}`, entry);
+    imageRefs.set(`${entry.sourcePartUri}:${entry.relationshipId}`, entry);
   }
 
   for (const entry of existingManifest.hyperlinkRefs) {
