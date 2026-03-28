@@ -9,10 +9,17 @@
 
 import type { XmlElementNode } from '../../types/xml.js';
 import type { DrawingRawProperties } from '../../entities/types.js';
-import type { ProjectionFeeder, FeederNode, FeederNodeKind, RawPropertiesForFeederKind } from './feeder.js';
+import type {
+  ProjectionFeeder,
+  FeederNode,
+  FeederNodeKind,
+  RawPropertiesForFeederKind,
+  DisplayRunSource,
+} from './feeder.js';
 import type { SourceAnchor } from './source-anchor.js';
 import type { FieldRegionMap } from './paragraph-classifier.js';
 import { elementToSourceAnchor } from './source-anchor.js';
+import { extractDisplayRunSources } from './display-runs.js';
 import { extractParagraphProperties } from '../../extract/paragraph.js';
 import { extractRunProperties } from '../../extract/run.js';
 import { extractTableProperties, extractTableRowProperties, extractTableCellProperties } from '../../extract/table.js';
@@ -129,6 +136,11 @@ export function createRenderShellFeeder(
       const runs: FeederNode<'run'>[] = [];
       collectRunsFromElement(element, runs, partUri, node.sourceAnchor.sourceNodePath, fieldRegions?.instructionRunIds);
       return runs;
+    },
+
+    paragraphDisplayRuns(node: FeederNode<'paragraph'>, instructionRunIds: ReadonlySet<string>): DisplayRunSource[] {
+      const element = getElement(node);
+      return extractDisplayRunSources(element, instructionRunIds);
     },
 
     tableRows(node: FeederNode<'table'>): FeederNode<'tableRow'>[] {

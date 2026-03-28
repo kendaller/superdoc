@@ -60,6 +60,10 @@ export type FeederNode<K extends FeederNodeKind = FeederNodeKind> = {
   raw(): RawPropertiesForFeederKind[K];
 };
 
+export type DisplayRunSource = {
+  readonly raw: Pick<RunRawProperties, 'formatting' | 'segments'>;
+};
+
 // ---- Projection feeder interface --------------------------------------------
 
 /**
@@ -70,6 +74,14 @@ export type FeederNode<K extends FeederNodeKind = FeederNodeKind> = {
 export type ProjectionFeeder = {
   /** Iterate runs within a paragraph node. */
   paragraphRuns(node: FeederNode<'paragraph'>): FeederNode<'run'>[];
+
+  /**
+   * Iterate visible result runs within a paragraph node.
+   *
+   * This is the display-first fast path used for field-heavy paragraphs such
+   * as TOC entries. Instruction-only runs must be omitted by the caller.
+   */
+  paragraphDisplayRuns(node: FeederNode<'paragraph'>, instructionRunIds: ReadonlySet<string>): DisplayRunSource[];
 
   /** Iterate rows within a table node. */
   tableRows(node: FeederNode<'table'>): FeederNode<'tableRow'>[];

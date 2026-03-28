@@ -28,7 +28,12 @@ import type {
 } from '../src/projections/layout/types.js';
 import type { RenderShellDocument } from '../src/render-shell/render-shell-document.js';
 import { createMinimalDocx, createMultiParagraphDocx } from './helpers/create-test-docx.js';
-import { createSectionBreakDocx, createSdtDocx, createTableDocx } from './helpers/create-rich-docx.js';
+import {
+  createSectionBreakDocx,
+  createSdtDocx,
+  createTableDocx,
+  createTocFieldDocx,
+} from './helpers/create-rich-docx.js';
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -455,6 +460,38 @@ describe('projectWindowToFlowBlocks', () => {
     expect(paragraphs.length).toBeGreaterThanOrEqual(1);
 
     await close();
+  });
+
+  it('projects TOC-style field paragraphs through the display fast path without changing visible text', async () => {
+    const bytes = createTocFieldDocx();
+
+    const fullHandle = await open(bytes);
+    await fullHandle.ready('structure');
+    const fullResult = projectToFlowBlocks(fullHandle.semanticModel()!);
+
+    const windowHandle = await open(bytes);
+    await windowHandle.ready('render-shell');
+    const shell = windowHandle.renderShell()!;
+    const windowResult = projectWindowToFlowBlocks(shell, {
+      startBodyChildIndex: 0,
+      maxBodyChildCount: 10,
+    });
+
+    const fullParagraphs = paragraphBlocks(fullResult.blocks);
+    const windowParagraphs = paragraphBlocks(windowResult.blocks);
+    expect(windowParagraphs).toHaveLength(fullParagraphs.length);
+
+    for (let index = 0; index < windowParagraphs.length; index += 1) {
+      expect(paragraphText(windowParagraphs[index])).toBe(paragraphText(fullParagraphs[index]));
+      expect(windowParagraphs[index].id).toBe(fullParagraphs[index].id);
+    }
+
+    expect(windowResult.projectionStats?.displayFastPathParagraphs).toBe(2);
+    expect(windowResult.projectionStats?.tocDisplayParagraphs).toBe(2);
+    expect(windowResult.projectionStats?.displayFastPathRuns).toBeGreaterThan(0);
+
+    await fullHandle.close();
+    await windowHandle.close();
   });
 });
 

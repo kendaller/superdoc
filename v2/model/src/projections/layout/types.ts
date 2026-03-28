@@ -322,6 +322,12 @@ export type ProjectionStats = {
   complexParagraphs: number;
   /** Runs skipped by the field-display fast path. */
   runsSkipped: number;
+  /** Field-display paragraphs projected through the display-first fast path. */
+  displayFastPathParagraphs: number;
+  /** TOC-like paragraphs projected through the display-first fast path. */
+  tocDisplayParagraphs: number;
+  /** Layout runs emitted by the display-first fast path. */
+  displayFastPathRuns: number;
 };
 
 /** Result of a windowed projection. */

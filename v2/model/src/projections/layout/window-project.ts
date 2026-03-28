@@ -24,6 +24,7 @@ import {
   stashFieldRegions,
 } from './render-shell-feeder.js';
 import { projectParagraphFromFeeder } from './paragraph-projector.js';
+import { createParagraphRenderPlan } from './paragraph-render-plan.js';
 import { projectTableFromFeeder } from './table-projector.js';
 import { projectSectionFromFeeder } from './section-projector.js';
 import { createPageEstimateLimiter, type LayoutPageGeometry } from './page-estimate.js';
@@ -74,6 +75,9 @@ export function projectWindowToFlowBlocks(
     plainParagraphs: 0,
     complexParagraphs: 0,
     runsSkipped: 0,
+    displayFastPathParagraphs: 0,
+    tocDisplayParagraphs: 0,
+    displayFastPathRuns: 0,
   };
   let lastProjectedIndex = windowSpec.startBodyChildIndex - 1;
 
@@ -166,12 +170,19 @@ function projectBodyChild(
       // Classify paragraph field regions for the display-first fast path.
       // Stashing the result lets the feeder skip instruction-region runs.
       const fieldRegions = classifyParagraphFieldRegions(el);
+      const renderPlan = createParagraphRenderPlan(fieldRegions);
       switch (fieldRegions.complexity) {
         case 'field-display':
           stashFieldRegions(node, fieldRegions);
           if (stats) {
             stats.fieldHeavyParagraphs++;
             stats.runsSkipped += fieldRegions.instructionRunIds.size;
+            if (renderPlan.mode === 'display-fast-path') {
+              stats.displayFastPathParagraphs++;
+              if (renderPlan.displayKind === 'toc') {
+                stats.tocDisplayParagraphs++;
+              }
+            }
           }
           break;
         case 'plain':
@@ -186,7 +197,11 @@ function projectBodyChild(
           break;
       }
 
-      blocks.push(projectParagraphFromFeeder(node, feeder, ids, resolver, deps));
+      const paragraphBlock = projectParagraphFromFeeder(node, feeder, ids, resolver, deps, renderPlan);
+      if (stats && renderPlan.mode === 'display-fast-path') {
+        stats.displayFastPathRuns += paragraphBlock.runs.length;
+      }
+      blocks.push(paragraphBlock);
 
       // Check for inline sectPr in this paragraph
       const raw = node.raw();

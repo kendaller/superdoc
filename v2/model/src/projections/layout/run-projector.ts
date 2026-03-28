@@ -31,6 +31,7 @@ const EMUS_PER_PIXEL = 9525;
  * over the entity's raw formatting for style-resolved rendering.
  */
 export type ResolvedRunProperties = Partial<RunFormatting>;
+export type ProjectableRunRaw = Pick<RunRawProperties, 'formatting' | 'segments'>;
 
 /**
  * Project a run entity's inline segments to layout-compatible Run objects.
@@ -89,6 +90,31 @@ export function projectRunSegmentsFromFeeder(
   return runs;
 }
 
+/**
+ * Project already-extracted run properties that do not require feeder/model
+ * lookups for drawings.
+ *
+ * This is used by the display-first paragraph fast path, which extracts only
+ * visible field-result runs and intentionally excludes complex drawing-backed
+ * content.
+ */
+export function projectExtractedRunSegments(raw: ProjectableRunRaw, resolved?: ResolvedRunProperties): Run[] {
+  const formatting = resolved ?? raw.formatting;
+  const marks = buildRunMarks(formatting);
+  const fontFamily = formatting.fontFamily ?? DEFAULT_FONT_FAMILY;
+  const fontSize = formatting.fontSize !== undefined ? halfPointsToLayoutPx(formatting.fontSize) : DEFAULT_FONT_SIZE;
+  const runs: Run[] = [];
+
+  for (const segment of raw.segments) {
+    const projected = projectExtractedSegment(segment, marks, fontFamily, fontSize);
+    if (projected !== undefined) {
+      runs.push(projected);
+    }
+  }
+
+  return runs;
+}
+
 function projectSegmentFromFeeder(
   runNode: FeederNode<'run'>,
   segment: InlineSegment,
@@ -119,6 +145,38 @@ function projectSegmentFromFeeder(
       return projectTextSegment('\u00AD', marks, fontFamily, fontSize);
     case 'noBreakHyphen':
       return projectTextSegment('\u2011', marks, fontFamily, fontSize);
+    case 'fieldChar':
+    case 'instrText':
+    case 'deletedText':
+    case 'preserved':
+      return undefined;
+  }
+}
+
+function projectExtractedSegment(
+  segment: InlineSegment,
+  marks: RunMarks,
+  fontFamily: string,
+  fontSize: number,
+): Run | undefined {
+  switch (segment.segmentKind) {
+    case 'text':
+      return projectTextSegment(segment.text, marks, fontFamily, fontSize);
+    case 'tab':
+      return projectTabSegment(marks);
+    case 'break':
+      return projectBreakSegment(segment.breakType);
+    case 'symbol':
+      return projectTextSegment(segment.char, marks, segment.font ?? fontFamily, fontSize);
+    case 'footnoteRef':
+      return projectFootnoteRef(segment.footnoteId, marks, fontFamily, fontSize);
+    case 'endnoteRef':
+      return projectEndnoteRef(segment.endnoteId, marks, fontFamily, fontSize);
+    case 'softHyphen':
+      return projectTextSegment('\u00AD', marks, fontFamily, fontSize);
+    case 'noBreakHyphen':
+      return projectTextSegment('\u2011', marks, fontFamily, fontSize);
+    case 'drawing':
     case 'fieldChar':
     case 'instrText':
     case 'deletedText':

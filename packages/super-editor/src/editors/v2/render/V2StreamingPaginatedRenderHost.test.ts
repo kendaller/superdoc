@@ -716,6 +716,9 @@ describe('V2StreamingPaginatedRenderHost', () => {
             plainParagraphs: 2,
             complexParagraphs: 0,
             runsSkipped: 24,
+            displayFastPathParagraphs: 8,
+            tocDisplayParagraphs: 8,
+            displayFastPathRuns: 16,
           });
         }
 

@@ -56,6 +56,11 @@ function tabRun(): XmlElementNode {
   return el('r', [el('rPr'), el('tab')]);
 }
 
+/** Build a `w:r` with a `w:drawing`. */
+function drawingRun(): XmlElementNode {
+  return el('r', [el('rPr'), el('drawing')]);
+}
+
 /** Build a `w:r` with a `w:fldChar`. */
 function fldCharRun(charType: 'begin' | 'separate' | 'end'): XmlElementNode {
   return el('r', [el('rPr'), el('fldChar', [], { 'w:fldCharType': charType })]);
@@ -95,6 +100,8 @@ describe('classifyParagraphFieldRegions', () => {
 
     expect(result.complexity).toBe('plain');
     expect(result.instructionRunIds.size).toBe(0);
+    expect(result.displayKind).toBe('none');
+    expect(result.canUseDisplayFastPath).toBe(false);
   });
 
   it('returns plain for a paragraph with only tabs', () => {
@@ -103,6 +110,8 @@ describe('classifyParagraphFieldRegions', () => {
 
     expect(result.complexity).toBe('plain');
     expect(result.instructionRunIds.size).toBe(0);
+    expect(result.displayKind).toBe('none');
+    expect(result.canUseDisplayFastPath).toBe(false);
   });
 
   it('classifies a simple field as field-display', () => {
@@ -116,6 +125,8 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('field-display');
+    expect(result.displayKind).toBe('field-result');
+    expect(result.canUseDisplayFastPath).toBe(true);
     // begin, instrText, separate, and end runs should be in instructionRunIds
     expect(result.instructionRunIds.has(beginRun.id)).toBe(true);
     expect(result.instructionRunIds.has(instrRun.id)).toBe(true);
@@ -148,6 +159,8 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('field-display');
+    expect(result.displayKind).toBe('toc');
+    expect(result.canUseDisplayFastPath).toBe(true);
     // Field machinery is skippable
     expect(result.instructionRunIds.has(beginRun.id)).toBe(true);
     expect(result.instructionRunIds.has(instrRun.id)).toBe(true);
@@ -170,6 +183,8 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('field-display');
+    expect(result.displayKind).toBe('field-result');
+    expect(result.canUseDisplayFastPath).toBe(true);
     expect(result.instructionRunIds.has(beginRun.id)).toBe(true);
     expect(result.instructionRunIds.has(instrRun.id)).toBe(true);
     expect(result.instructionRunIds.has(separateRun.id)).toBe(true);
@@ -188,6 +203,7 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('field-display');
+    expect(result.canUseDisplayFastPath).toBe(true);
     expect(result.instructionRunIds.has(beginRun.id)).toBe(true);
     expect(result.instructionRunIds.has(displayRun.id)).toBe(false);
   });
@@ -204,6 +220,8 @@ describe('classifyParagraphFieldRegions', () => {
 
     expect(result.complexity).toBe('complex');
     expect(result.instructionRunIds.size).toBe(0);
+    expect(result.displayKind).toBe('none');
+    expect(result.canUseDisplayFastPath).toBe(false);
   });
 
   it('returns complex for separate without begin', () => {
@@ -211,6 +229,7 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('complex');
+    expect(result.canUseDisplayFastPath).toBe(false);
   });
 
   it('returns complex for end without begin', () => {
@@ -218,6 +237,7 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('complex');
+    expect(result.canUseDisplayFastPath).toBe(false);
   });
 
   it('handles multiple adjacent fields in one paragraph', () => {
@@ -240,6 +260,8 @@ describe('classifyParagraphFieldRegions', () => {
     const result = classifyParagraphFieldRegions(p);
 
     expect(result.complexity).toBe('field-display');
+    expect(result.displayKind).toBe('field-result');
+    expect(result.canUseDisplayFastPath).toBe(true);
     // All field machinery is skippable
     expect(result.instructionRunIds.has(begin1.id)).toBe(true);
     expect(result.instructionRunIds.has(instr1.id)).toBe(true);
@@ -271,6 +293,7 @@ describe('classifyParagraphFieldRegions', () => {
     expect(result.instructionRunIds.has(textBefore.id)).toBe(false);
     expect(result.instructionRunIds.has(displayRun.id)).toBe(false);
     expect(result.instructionRunIds.has(textAfter.id)).toBe(false);
+    expect(result.canUseDisplayFastPath).toBe(true);
   });
 
   it('handles empty paragraph', () => {
@@ -279,6 +302,25 @@ describe('classifyParagraphFieldRegions', () => {
 
     expect(result.complexity).toBe('plain');
     expect(result.instructionRunIds.size).toBe(0);
+    expect(result.displayKind).toBe('none');
+    expect(result.canUseDisplayFastPath).toBe(false);
+  });
+
+  it('keeps field-display paragraphs with drawings on the normal projection path', () => {
+    const p = paragraph([
+      fldCharRun('begin'),
+      instrTextRun(' PAGEREF _Toc123456 \\h '),
+      fldCharRun('separate'),
+      textRun('Section One'),
+      tabRun(),
+      drawingRun(),
+      fldCharRun('end'),
+    ]);
+    const result = classifyParagraphFieldRegions(p);
+
+    expect(result.complexity).toBe('field-display');
+    expect(result.displayKind).toBe('toc');
+    expect(result.canUseDisplayFastPath).toBe(false);
   });
 
   it('returns the same singleton for plain paragraphs (referential identity)', () => {

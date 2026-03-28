@@ -2,12 +2,12 @@
 // Test fixture: create .docx files with rich content for semantic model tests
 // ---------------------------------------------------------------------------
 
-import { buildZipArchive } from "../../src/opc/zip-writer.js";
-import type { ZipNewEntry } from "../../src/opc/zip-writer.js";
+import { buildZipArchive } from '../../src/opc/zip-writer.js';
+import type { ZipNewEntry } from '../../src/opc/zip-writer.js';
 
 function entry(name: string, content: string): ZipNewEntry {
   return {
-    kind: "new",
+    kind: 'new',
     name,
     uncompressedBytes: new TextEncoder().encode(content),
   };
@@ -15,7 +15,7 @@ function entry(name: string, content: string): ZipNewEntry {
 
 function binaryEntry(name: string, bytes: Uint8Array): ZipNewEntry {
   return {
-    kind: "new",
+    kind: 'new',
     name,
     uncompressedBytes: bytes,
   };
@@ -75,14 +75,14 @@ function wrapDocx(
   },
 ): Uint8Array {
   return buildZipArchive([
-    entry("[Content_Types].xml", CONTENT_TYPES),
-    entry("_rels/.rels", ROOT_RELS),
-    entry("word/_rels/document.xml.rels", WORD_RELS),
-    entry("word/document.xml", documentXml),
-    entry("word/styles.xml", options?.stylesXml ?? EMPTY_STYLES),
-    entry("word/settings.xml", EMPTY_SETTINGS),
-    entry("word/numbering.xml", options?.numberingXml ?? NUMBERING),
-    entry("word/fontTable.xml", EMPTY_FONTS),
+    entry('[Content_Types].xml', CONTENT_TYPES),
+    entry('_rels/.rels', ROOT_RELS),
+    entry('word/_rels/document.xml.rels', WORD_RELS),
+    entry('word/document.xml', documentXml),
+    entry('word/styles.xml', options?.stylesXml ?? EMPTY_STYLES),
+    entry('word/settings.xml', EMPTY_SETTINGS),
+    entry('word/numbering.xml', options?.numberingXml ?? NUMBERING),
+    entry('word/fontTable.xml', EMPTY_FONTS),
   ]);
 }
 
@@ -262,6 +262,51 @@ export function createInlineSegmentsDocx(): Uint8Array {
 </w:document>`);
 }
 
+/** Docx with TOC-like PAGEREF paragraphs and visible tab-led page numbers. */
+export function createTocFieldDocx(): Uint8Array {
+  return wrapDocx(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:tabs>
+          <w:tab w:val="right" w:leader="dot" w:pos="9000"/>
+        </w:tabs>
+      </w:pPr>
+      <w:hyperlink r:id="rId10">
+        <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+        <w:r><w:instrText xml:space="preserve"> PAGEREF _Toc123456 \\h </w:instrText></w:r>
+        <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+        <w:r><w:t>Section One</w:t></w:r>
+        <w:r><w:tab/></w:r>
+        <w:r><w:t>15</w:t></w:r>
+        <w:r><w:fldChar w:fldCharType="end"/></w:r>
+      </w:hyperlink>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:tabs>
+          <w:tab w:val="right" w:leader="dot" w:pos="9000"/>
+        </w:tabs>
+      </w:pPr>
+      <w:hyperlink r:id="rId11">
+        <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+        <w:r><w:instrText xml:space="preserve"> PAGEREF _Toc654321 \\h </w:instrText></w:r>
+        <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+        <w:r><w:t>Section Two</w:t></w:r>
+        <w:r><w:tab/></w:r>
+        <w:r><w:t>22</w:t></w:r>
+        <w:r><w:fldChar w:fldCharType="end"/></w:r>
+      </w:hyperlink>
+    </w:p>
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`);
+}
+
 /** Docx with a hyperlink wrapper containing runs. */
 export function createHyperlinkDocx(): Uint8Array {
   return wrapDocx(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -404,22 +449,21 @@ export function createInlineImageDocx(): Uint8Array {
 </w:document>`;
 
   const onePixelPng = new Uint8Array([
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
-    0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137,
-    0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 248, 15, 0, 1, 1,
-    1, 0, 24, 221, 141, 177, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196,
+    137, 0, 0, 0, 10, 73, 68, 65, 84, 120, 156, 99, 248, 15, 0, 1, 1, 1, 0, 24, 221, 141, 177, 0, 0, 0, 0, 73, 69, 78,
+    68, 174, 66, 96, 130,
   ]);
 
   return buildZipArchive([
-    entry("[Content_Types].xml", contentTypes),
-    entry("_rels/.rels", ROOT_RELS),
-    entry("word/_rels/document.xml.rels", wordRels),
-    entry("word/document.xml", documentXml),
-    entry("word/styles.xml", EMPTY_STYLES),
-    entry("word/settings.xml", EMPTY_SETTINGS),
-    entry("word/numbering.xml", NUMBERING),
-    entry("word/fontTable.xml", EMPTY_FONTS),
-    binaryEntry("word/media/image1.png", onePixelPng),
+    entry('[Content_Types].xml', contentTypes),
+    entry('_rels/.rels', ROOT_RELS),
+    entry('word/_rels/document.xml.rels', wordRels),
+    entry('word/document.xml', documentXml),
+    entry('word/styles.xml', EMPTY_STYLES),
+    entry('word/settings.xml', EMPTY_SETTINGS),
+    entry('word/numbering.xml', NUMBERING),
+    entry('word/fontTable.xml', EMPTY_FONTS),
+    binaryEntry('word/media/image1.png', onePixelPng),
   ]);
 }
 
@@ -471,7 +515,8 @@ export function createStyleResolvedParagraphDocx(): Uint8Array {
   </w:style>
 </w:styles>`;
 
-  return wrapDocx(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  return wrapDocx(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
     <w:p>
@@ -482,7 +527,9 @@ export function createStyleResolvedParagraphDocx(): Uint8Array {
       <w:pgSz w:w="12240" w:h="15840"/>
     </w:sectPr>
   </w:body>
-</w:document>`, { stylesXml });
+</w:document>`,
+    { stylesXml },
+  );
 }
 
 /** Docx whose table and first-row cell styling comes only from a table style. */
@@ -510,7 +557,8 @@ export function createStyledTableDocx(): Uint8Array {
   </w:style>
 </w:styles>`;
 
-  return wrapDocx(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  return wrapDocx(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:body>
     <w:tbl>
@@ -535,5 +583,7 @@ export function createStyledTableDocx(): Uint8Array {
       <w:pgSz w:w="12240" w:h="15840"/>
     </w:sectPr>
   </w:body>
-</w:document>`, { stylesXml });
+</w:document>`,
+    { stylesXml },
+  );
 }

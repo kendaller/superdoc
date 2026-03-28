@@ -11,7 +11,12 @@
 // ---------------------------------------------------------------------------
 
 import type { SemanticModel } from '../../model.js';
-import type { ParagraphEntity, ParagraphRawProperties, TabStop as EntityTabStop } from '../../entities/types.js';
+import type {
+  ParagraphEntity,
+  ParagraphRawProperties,
+  RunFormatting,
+  TabStop as EntityTabStop,
+} from '../../entities/types.js';
 import type { StyleResolver } from '../../resolve/style-resolver.js';
 import type {
   ParagraphProperties as ResolvedParagraphProperties,
@@ -27,13 +32,15 @@ import type {
   ParagraphShading,
   TabStop,
   Run,
+  TextRun,
 } from './types.js';
 import type { ProjectionIdAllocator } from './block-id.js';
 import type { StableIdAllocator } from './stable-id.js';
-import type { ProjectionFeeder, FeederNode } from './feeder.js';
+import type { ProjectionFeeder, FeederNode, DisplayRunSource } from './feeder.js';
 import type { DependencyCollector } from './dependency-manifest.js';
-import { projectRuns, projectRunSegmentsFromFeeder } from './run-projector.js';
+import { projectRuns, projectRunSegmentsFromFeeder, projectExtractedRunSegments } from './run-projector.js';
 import type { ResolvedRunProperties } from './run-projector.js';
+import type { ParagraphRenderPlan } from './paragraph-render-plan.js';
 import {
   normalizeColor,
   rawParagraphToStyleEngine,
@@ -104,6 +111,7 @@ export function projectParagraphFromFeeder(
   ids: StableIdAllocator,
   resolver?: StyleResolver,
   deps?: DependencyCollector,
+  renderPlan?: ParagraphRenderPlan,
 ): ParagraphBlock {
   const raw = node.raw();
   const resolvedParagraph = resolver ? resolver.resolveParagraphProperties(rawParagraphToStyleEngine(raw)) : undefined;
@@ -113,9 +121,24 @@ export function projectParagraphFromFeeder(
   return {
     kind: 'paragraph',
     id: ids.blockId('paragraph', node.sourceAnchor),
-    runs: collectRunsFromFeeder(node, feeder, resolver, resolvedParagraph, deps),
+    runs: collectParagraphRuns(node, feeder, resolver, resolvedParagraph, deps, renderPlan),
     ...(attrs ? { attrs } : {}),
   };
+}
+
+function collectParagraphRuns(
+  paragraphNode: FeederNode<'paragraph'>,
+  feeder: ProjectionFeeder,
+  resolver: StyleResolver | undefined,
+  resolvedParagraph: ResolvedParagraphProperties | undefined,
+  deps?: DependencyCollector,
+  renderPlan?: ParagraphRenderPlan,
+): Run[] {
+  if (renderPlan?.mode === 'display-fast-path') {
+    return collectDisplayRunsFromFeeder(paragraphNode, feeder, resolver, resolvedParagraph, renderPlan);
+  }
+
+  return collectRunsFromFeeder(paragraphNode, feeder, resolver, resolvedParagraph, deps);
 }
 
 function collectRunsFromFeeder(
@@ -141,6 +164,128 @@ function collectRunsFromFeeder(
   }
 
   return projectedRuns;
+}
+
+function collectDisplayRunsFromFeeder(
+  paragraphNode: FeederNode<'paragraph'>,
+  feeder: ProjectionFeeder,
+  resolver: StyleResolver | undefined,
+  resolvedParagraph: ResolvedParagraphProperties | undefined,
+  renderPlan: ParagraphRenderPlan,
+): Run[] {
+  const projectedRuns: Run[] = [];
+  const resolvedFormattingCache = new Map<string, ResolvedRunProperties | null>();
+
+  for (const displayRun of feeder.paragraphDisplayRuns(paragraphNode, renderPlan.instructionRunIds)) {
+    const resolvedFormatting = resolveDisplayRunFormatting(
+      displayRun,
+      resolver,
+      resolvedParagraph,
+      resolvedFormattingCache,
+    );
+
+    for (const projectedRun of projectExtractedRunSegments(displayRun.raw, resolvedFormatting)) {
+      pushCoalescedRun(projectedRuns, projectedRun);
+    }
+  }
+
+  return projectedRuns;
+}
+
+function resolveDisplayRunFormatting(
+  displayRun: DisplayRunSource,
+  resolver: StyleResolver | undefined,
+  resolvedParagraph: ResolvedParagraphProperties | undefined,
+  cache: Map<string, ResolvedRunProperties | null>,
+): ResolvedRunProperties | undefined {
+  if (!resolver) {
+    return undefined;
+  }
+
+  const signature = runFormattingSignature(displayRun.raw.formatting);
+  if (cache.has(signature)) {
+    return cache.get(signature) ?? undefined;
+  }
+
+  const resolved = styleEngineRunToFormatting(
+    resolver.resolveRunProperties(rawRunToStyleEngine(displayRun.raw.formatting), resolvedParagraph),
+  );
+  cache.set(signature, resolved ?? null);
+  return resolved;
+}
+
+function pushCoalescedRun(target: Run[], nextRun: Run): void {
+  const previousRun = target[target.length - 1];
+  if (!previousRun) {
+    target.push(nextRun);
+    return;
+  }
+
+  if (isTextLikeRun(previousRun) && isTextLikeRun(nextRun) && canCoalesceTextRuns(previousRun, nextRun)) {
+    previousRun.text += nextRun.text;
+    return;
+  }
+
+  target.push(nextRun);
+}
+
+function canCoalesceTextRuns(previousRun: TextRun, nextRun: TextRun): boolean {
+  return (
+    previousRun.fontFamily === nextRun.fontFamily &&
+    previousRun.fontSize === nextRun.fontSize &&
+    previousRun.bold === nextRun.bold &&
+    previousRun.italic === nextRun.italic &&
+    previousRun.letterSpacing === nextRun.letterSpacing &&
+    previousRun.color === nextRun.color &&
+    previousRun.strike === nextRun.strike &&
+    previousRun.highlight === nextRun.highlight &&
+    previousRun.textTransform === nextRun.textTransform &&
+    previousRun.vertAlign === nextRun.vertAlign &&
+    previousRun.baselineShift === nextRun.baselineShift &&
+    underlineSignature(previousRun.underline) === underlineSignature(nextRun.underline)
+  );
+}
+
+function isTextLikeRun(run: Run): run is TextRun {
+  return run.kind === undefined || run.kind === 'text';
+}
+
+function underlineSignature(underline: TextRun['underline']): string {
+  if (!underline) {
+    return '';
+  }
+
+  return `${underline.style ?? ''}:${underline.color ?? ''}`;
+}
+
+function runFormattingSignature(formatting: Partial<RunFormatting>): string {
+  return [
+    formatting.rStyle ?? '',
+    formatting.bold ? '1' : '0',
+    formatting.boldCs ? '1' : '0',
+    formatting.italic ? '1' : '0',
+    formatting.italicCs ? '1' : '0',
+    formatting.underline ?? '',
+    formatting.strike ? '1' : '0',
+    formatting.dstrike ? '1' : '0',
+    formatting.fontSize ?? '',
+    formatting.fontSizeCs ?? '',
+    formatting.fontFamily ?? '',
+    formatting.fontFamilyCs ?? '',
+    formatting.color ?? '',
+    formatting.highlight ?? '',
+    formatting.vertAlign ?? '',
+    formatting.caps ? '1' : '0',
+    formatting.smallCaps ? '1' : '0',
+    formatting.vanish ? '1' : '0',
+    formatting.lang ?? '',
+    formatting.spacing ?? '',
+    formatting.kern ?? '',
+    formatting.position ?? '',
+    formatting.shading?.fill ?? '',
+    formatting.shading?.color ?? '',
+    formatting.shading?.val ?? '',
+  ].join('|');
 }
 
 function buildParagraphAttrs(
