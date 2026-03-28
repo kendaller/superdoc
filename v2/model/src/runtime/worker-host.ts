@@ -21,6 +21,7 @@ import { open } from '../session/open.js';
 import { TaskQueue, type QueuedTask } from './task-queue.js';
 import { createPortBackedReader, closePortBackedReader } from './range-reader-proxy.js';
 import type { ArchiveByteSource } from '../types/package.js';
+import { WindowProjectionController } from './window-projection-controller.js';
 
 // ---- Shared worker scope type -----------------------------------------------
 
@@ -107,6 +108,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
   let handle: DocumentHandle | null = null;
   let rangeReaderPort: MessagePort | null = null;
   const queue = new TaskQueue();
+  const windowProjection = new WindowProjectionController();
 
   // Wire task lifecycle events to worker event messages
   queue.onLifecycle((event) => {
@@ -169,7 +171,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
           break;
         case 'status':
           if (!handle) throw new Error('No session open');
-          result = handle.status();
+          result = await handle.status();
           break;
         case 'save': {
           if (!handle) throw new Error('No session open');
@@ -219,6 +221,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
       case 'close':
         queue.cancelAll('document-close');
         cleanupRangeReaderPort();
+        windowProjection.clear();
         if (handle) {
           void closeOpenHandle(req);
         } else {
@@ -231,6 +234,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
     if (req.method === 'openSource') {
       queue.cancelAll('new-document-open');
       cleanupRangeReaderPort();
+      windowProjection.clear();
       if (handle) {
         void handle.close();
         handle = null;
@@ -285,18 +289,18 @@ export function installWorkerHostV2(scope: WorkerScope): void {
 
       case 'projectWindow': {
         if (!handle) throw new Error('No session open');
-        // Workstream 04 stub — windowed projection not yet available
-        throw new Error('projectWindow not yet implemented — requires workstream 04');
+        return windowProjection.projectWindow(handle, req.params);
       }
 
       case 'projectNextWindow': {
         if (!handle) throw new Error('No session open');
-        throw new Error('projectNextWindow not yet implemented — requires workstream 04');
+        return windowProjection.projectNextWindow(handle, req.params.continuation);
       }
 
       case 'prefetchWindow': {
         if (!handle) throw new Error('No session open');
-        throw new Error('prefetchWindow not yet implemented — requires workstream 04');
+        windowProjection.prefetchWindow(handle, req.params);
+        return null;
       }
 
       case 'advanceStructure': {
@@ -367,6 +371,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
     try {
       await handle!.close();
       handle = null;
+      windowProjection.clear();
       sendV2Response(scope, req, null);
     } catch (err) {
       sendV2Error(scope, req, err);

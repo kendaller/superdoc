@@ -70,6 +70,17 @@ export type {
   SectionShell,
 } from './render-shell/index.js';
 
+// ---- Runtime interface ----------------------------------------------------
+
+export type { DocumentRuntime, RuntimeEventHandler } from './runtime/runtime-interface.js';
+export type {
+  EnrichmentTarget,
+  ProjectWindowParams,
+  WindowContinuation,
+  TaskId,
+  TaskPriority,
+} from './runtime/worker-protocol.js';
+
 // ---- Semantic model -------------------------------------------------------
 
 export { SemanticModel } from './model.js';
@@ -162,7 +173,15 @@ export { resolveField, parseFieldInstruction } from './resolve/index.js';
 
 // Layout projection (Layer 4: semantic → FlowBlock[])
 export { projectToFlowBlocks } from './projections/layout/index.js';
-export type { ProjectionResult } from './projections/layout/index.js';
+export { projectWindowToFlowBlocks } from './projections/layout/index.js';
+export type {
+  ProjectionResult,
+  WindowSpec,
+  WindowContinuation as ProjectionWindowContinuation,
+  WindowedProjectionResult,
+  SectionMetadataDelta,
+  DependencyManifest,
+} from './projections/layout/index.js';
 
 // Analysis projection (Layer 4: occurrences + traceability)
 export { projectToOccurrences } from './projections/analysis/index.js';

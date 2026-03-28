@@ -9,6 +9,7 @@
 import type { ArchiveByteSource } from '../types/package.js';
 import type { RenderShellSnapshot } from '../render-shell/index.js';
 import type { ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
+import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type {
   TaskId,
   EnrichmentTarget,
@@ -37,8 +38,8 @@ export interface DocumentRuntime {
 
   ready(stage: ReadyStage): Promise<void>;
   getRenderShell(): Promise<RenderShellSnapshot | undefined>;
-  projectWindow(params: ProjectWindowParams): Promise<unknown>;
-  projectNextWindow(continuation: WindowContinuation): Promise<unknown>;
+  projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult>;
+  projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult>;
   prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void>;
   advanceStructure(): Promise<void>;
   enrich(target: EnrichmentTarget): Promise<unknown>;

@@ -11,14 +11,17 @@
 
 import type { ArchiveByteSource } from '../types/package.js';
 import { createRenderShellSnapshot } from '../render-shell/index.js';
+import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type { DocumentHandle, ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
 import type { DocumentRuntime, RuntimeEventHandler } from './runtime-interface.js';
 import type { TaskId, EnrichmentTarget, ProjectWindowParams, WindowContinuation } from './worker-protocol.js';
 import { open } from '../session/open.js';
+import { WindowProjectionController } from './window-projection-controller.js';
 
 export class InProcessRuntimeV2 implements DocumentRuntime {
   #handle: DocumentHandle | null = null;
   #eventHandlers = new Map<string, Set<RuntimeEventHandler>>();
+  #windowProjection = new WindowProjectionController();
 
   // ---- Lifecycle ------------------------------------------------------------
 
@@ -28,6 +31,7 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
       await this.#handle.close();
       this.#handle = null;
     }
+    this.#windowProjection.clear();
 
     this.#handle = await open(source);
     return { sessionId: this.#handle.sessionId };
@@ -38,6 +42,7 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
       await this.#handle.close();
       this.#handle = null;
     }
+    this.#windowProjection.clear();
   }
 
   // ---- Render pipeline ------------------------------------------------------
@@ -52,16 +57,19 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
     return createRenderShellSnapshot(this.#handle!.renderShell());
   }
 
-  async projectWindow(_params: ProjectWindowParams): Promise<unknown> {
-    throw new Error('projectWindow not yet implemented — requires workstream 04');
+  async projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult> {
+    this.#assertOpen();
+    return this.#windowProjection.projectWindow(this.#handle!, params);
   }
 
-  async projectNextWindow(_continuation: WindowContinuation): Promise<unknown> {
-    throw new Error('projectNextWindow not yet implemented — requires workstream 04');
+  async projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult> {
+    this.#assertOpen();
+    return this.#windowProjection.projectNextWindow(this.#handle!, continuation);
   }
 
-  async prefetchWindow(_params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void> {
-    throw new Error('prefetchWindow not yet implemented — requires workstream 04');
+  async prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void> {
+    this.#assertOpen();
+    this.#windowProjection.prefetchWindow(this.#handle!, params);
   }
 
   async advanceStructure(): Promise<void> {

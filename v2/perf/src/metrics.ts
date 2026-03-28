@@ -76,6 +76,12 @@ export const SPAN_WORKER_OPEN_SOURCE = 'runtime.worker.openSource' as const;
 export const SPAN_WORKER_RENDER_SHELL = 'runtime.worker.getRenderShell' as const;
 export const SPAN_WORKER_PROJECT_WINDOW = 'runtime.worker.projectWindow' as const;
 
+// ---- Streaming host --------------------------------------------------------
+
+export const SPAN_STREAMING_APPEND = 'streaming.append' as const;
+export const SPAN_STREAMING_TOTAL = 'streaming.total' as const;
+export const STREAMING_STATE_TRANSITION = 'streaming.stateTransition' as const;
+
 // ---- Aggregate type for all metric names -----------------------------------
 
 export type OpenMetricName =
@@ -134,4 +140,6 @@ export type SpanName =
   | typeof SPAN_RUNTIME_INIT
   | typeof SPAN_WORKER_OPEN_SOURCE
   | typeof SPAN_WORKER_RENDER_SHELL
-  | typeof SPAN_WORKER_PROJECT_WINDOW;
+  | typeof SPAN_WORKER_PROJECT_WINDOW
+  | typeof SPAN_STREAMING_APPEND
+  | typeof SPAN_STREAMING_TOTAL;

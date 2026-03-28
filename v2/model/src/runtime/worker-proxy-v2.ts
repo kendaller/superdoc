@@ -12,6 +12,7 @@
 import type { ArchiveByteSource } from '../types/package.js';
 import type { RenderShellSnapshot } from '../render-shell/index.js';
 import type { ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
+import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type {
   TaskId,
   TaskPriority,
@@ -72,12 +73,16 @@ export class WorkerProxyV2 {
     return this.#send('getRenderShell', {}, 'critical') as Promise<RenderShellSnapshot | undefined>;
   }
 
-  async projectWindow(params: ProjectWindowParams): Promise<unknown> {
-    return this.#send('projectWindow', params, params.startBodyChildIndex === 0 ? 'critical' : 'near-viewport');
+  async projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult> {
+    return this.#send(
+      'projectWindow',
+      params,
+      params.startBodyChildIndex === 0 ? 'critical' : 'near-viewport',
+    ) as Promise<WindowedProjectionResult>;
   }
 
-  async projectNextWindow(continuation: WindowContinuation): Promise<unknown> {
-    return this.#send('projectNextWindow', { continuation }, 'near-viewport');
+  async projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult> {
+    return this.#send('projectNextWindow', { continuation }, 'near-viewport') as Promise<WindowedProjectionResult>;
   }
 
   async prefetchWindow(params: { startBodyChildIndex: number; maxBodyChildCount: number }): Promise<void> {
