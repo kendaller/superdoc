@@ -82,6 +82,7 @@ function makeWindowResult(
   blocks: ReturnType<typeof makeBlock>[],
   nextBodyChildIndex: number,
   totalBodyChildCount: number,
+  projectionStats?: WindowedProjectionResult['projectionStats'],
 ): WindowedProjectionResult {
   return {
     blocks,
@@ -99,6 +100,7 @@ function makeWindowResult(
         margins: { top: 96, right: 96, bottom: 96, left: 96 },
       },
     },
+    ...(projectionStats ? { projectionStats } : {}),
   };
 }
 
@@ -689,6 +691,55 @@ describe('V2StreamingPaginatedRenderHost', () => {
       );
 
       expect(runtime.prefetchWindow).not.toHaveBeenCalled();
+    });
+
+    it('shrinks the next append batch after a slow field-heavy append', async () => {
+      let nowMs = 0;
+      const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => nowMs);
+
+      const runtime = createMockRuntime();
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(40));
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
+        makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 40),
+      );
+
+      let appendCallCount = 0;
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockImplementation(async (continuation) => {
+        appendCallCount++;
+
+        if (appendCallCount === 1) {
+          nowMs = 300;
+          return makeWindowResult([makeBlock('b4'), makeBlock('b5')], 16, 40, {
+            fieldHeavyParagraphs: 8,
+            plainParagraphs: 2,
+            complexParagraphs: 0,
+            runsSkipped: 24,
+          });
+        }
+
+        return makeWindowResult([makeBlock('b6'), makeBlock('b7')], continuation.nextBodyChildIndex + 2, 40);
+      });
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 50,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(
+        () => {
+          expect(runtime.projectNextWindow).toHaveBeenCalledWith({
+            nextBodyChildIndex: 16,
+            maxBodyChildCount: 6,
+            stopAfterPageEstimate: 2,
+          });
+        },
+        { timeout: 2000 },
+      );
+
+      nowSpy.mockRestore();
     });
 
     it('stops appending once the viewport has enough buffered pages', async () => {

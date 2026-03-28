@@ -519,6 +519,35 @@ describe('equivalence: windowed vs semantic-model projection', () => {
     await handle2.close();
   });
 
+  it('produces stable IDs for append windows compared with the full semantic projection', async () => {
+    const bytes = createMultiParagraphDocx(['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']);
+
+    const fullHandle = await open(bytes);
+    await fullHandle.ready('structure');
+    const fullResult = projectToFlowBlocks(fullHandle.semanticModel()!);
+    const fullParagraphs = paragraphBlocks(fullResult.blocks);
+
+    const shellHandle = await open(bytes);
+    await shellHandle.ready('render-shell');
+    const shell = shellHandle.renderShell()!;
+    const appendWindowResult = projectWindowToFlowBlocks(shell, {
+      startBodyChildIndex: 2,
+      maxBodyChildCount: 2,
+    });
+    const appendParagraphs = paragraphBlocks(appendWindowResult.blocks);
+
+    const expectedGamma = fullParagraphs.find((block) => paragraphText(block) === 'Gamma');
+    const expectedDelta = fullParagraphs.find((block) => paragraphText(block) === 'Delta');
+    const actualGamma = appendParagraphs.find((block) => paragraphText(block) === 'Gamma');
+    const actualDelta = appendParagraphs.find((block) => paragraphText(block) === 'Delta');
+
+    expect(actualGamma?.id).toBe(expectedGamma?.id);
+    expect(actualDelta?.id).toBe(expectedDelta?.id);
+
+    await fullHandle.close();
+    await shellHandle.close();
+  });
+
   it('produces same table structure for table doc', async () => {
     const bytes = createTableDocx();
 

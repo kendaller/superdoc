@@ -11,6 +11,7 @@ import type { XmlElementNode } from '../../types/xml.js';
 import type { DrawingRawProperties } from '../../entities/types.js';
 import type { ProjectionFeeder, FeederNode, FeederNodeKind, RawPropertiesForFeederKind } from './feeder.js';
 import type { SourceAnchor } from './source-anchor.js';
+import type { FieldRegionMap } from './paragraph-classifier.js';
 import { elementToSourceAnchor } from './source-anchor.js';
 import { extractParagraphProperties } from '../../extract/paragraph.js';
 import { extractRunProperties } from '../../extract/run.js';
@@ -45,6 +46,26 @@ function getElement(node: FeederNode): XmlElementNode {
   }
 
   return element;
+}
+
+// ---- Field region stash -----------------------------------------------------
+
+/**
+ * Side-channel for attaching a FieldRegionMap to a paragraph FeederNode.
+ * The classifier runs in window-project.ts before calling the feeder's
+ * paragraphRuns(), and the feeder uses the stashed map to skip instruction
+ * runs. This keeps the ProjectionFeeder interface unchanged.
+ */
+const fieldRegionsMap = new WeakMap<FeederNode, FieldRegionMap>();
+
+/** Attach a field-region classification to a paragraph FeederNode. */
+export function stashFieldRegions(node: FeederNode<'paragraph'>, regions: FieldRegionMap): void {
+  fieldRegionsMap.set(node, regions);
+}
+
+/** Retrieve a previously stashed field-region classification. */
+export function getStashedFieldRegions(node: FeederNode<'paragraph'>): FieldRegionMap | undefined {
+  return fieldRegionsMap.get(node);
 }
 
 // ---- Node factory -----------------------------------------------------------
@@ -104,8 +125,9 @@ export function createRenderShellFeeder(
   return {
     paragraphRuns(node: FeederNode<'paragraph'>): FeederNode<'run'>[] {
       const element = getElement(node);
+      const fieldRegions = getStashedFieldRegions(node);
       const runs: FeederNode<'run'>[] = [];
-      collectRunsFromElement(element, runs, partUri, node.sourceAnchor.sourceNodePath);
+      collectRunsFromElement(element, runs, partUri, node.sourceAnchor.sourceNodePath, fieldRegions?.instructionRunIds);
       return runs;
     },
 
@@ -288,6 +310,7 @@ function collectRunsFromElement(
   result: FeederNode<'run'>[],
   partUri: string,
   elementPath?: string,
+  skipRunIds?: ReadonlySet<string>,
 ): void {
   for (const child of element.children) {
     if (child.kind !== 'element') {
@@ -295,6 +318,7 @@ function collectRunsFromElement(
     }
 
     if (child.localName === 'r' && child.prefix === 'w') {
+      if (skipRunIds?.has(child.id)) continue;
       result.push(
         makeNode('run', child, partUri, extractRunProperties, deriveChildAnchor(element, elementPath, child, partUri)),
       );
@@ -305,6 +329,7 @@ function collectRunsFromElement(
       const hyperlinkPath = deriveChildPathIfKnown(element, elementPath, child);
       for (const hyperlinkChild of child.children) {
         if (hyperlinkChild.kind === 'element' && hyperlinkChild.localName === 'r' && hyperlinkChild.prefix === 'w') {
+          if (skipRunIds?.has(hyperlinkChild.id)) continue;
           result.push(
             makeNode(
               'run',
@@ -322,7 +347,13 @@ function collectRunsFromElement(
     if (child.localName === 'sdt' && child.prefix === 'w') {
       const sdtContent = findChildElement(child, 'sdtContent', 'w');
       if (sdtContent) {
-        collectRunsFromElement(sdtContent, result, partUri, deriveDescendantPath(element, elementPath, sdtContent));
+        collectRunsFromElement(
+          sdtContent,
+          result,
+          partUri,
+          deriveDescendantPath(element, elementPath, sdtContent),
+          skipRunIds,
+        );
       }
       continue;
     }
@@ -337,6 +368,7 @@ function collectRunsFromElement(
       const trackedChangePath = deriveChildPathIfKnown(element, elementPath, child);
       for (const trackedChild of child.children) {
         if (trackedChild.kind === 'element' && trackedChild.localName === 'r' && trackedChild.prefix === 'w') {
+          if (skipRunIds?.has(trackedChild.id)) continue;
           result.push(
             makeNode(
               'run',

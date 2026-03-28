@@ -27,19 +27,27 @@ export type RenderShellSnapshot = {
   };
 };
 
+export type RenderShellSnapshotOptions = {
+  /**
+   * Include full section shells in the snapshot.
+   *
+   * This is intentionally optional because enumerating every section can force
+   * a whole-document body walk for large DOCX files. The default critical-path
+   * snapshot keeps render-shell transport cheap and relies on primary page
+   * geometry plus window-local section extraction during projection.
+   */
+  includeSections?: boolean;
+};
+
 export function createRenderShellSnapshot(
   renderShell: RenderShellDocument | undefined,
+  options: RenderShellSnapshotOptions = {},
 ): RenderShellSnapshot | undefined {
   if (!renderShell) {
     return undefined;
   }
 
-  const sections = renderShell.sectionShells().map((section) => ({
-    index: section.index,
-    pageGeometry: cloneRequiredPageGeometry(section.pageGeometry),
-    headerRefs: [...section.headerRefs],
-    footerRefs: [...section.footerRefs],
-  }));
+  const sections = options.includeSections === true ? cloneSectionSnapshots(renderShell) : [];
 
   return {
     bodyChildCount: renderShell.bodyChildCount(),
@@ -51,6 +59,15 @@ export function createRenderShellSnapshot(
       settings: renderShell.settingsShell() !== undefined,
     },
   };
+}
+
+function cloneSectionSnapshots(renderShell: RenderShellDocument): RenderShellSectionSnapshot[] {
+  return renderShell.sectionShells().map((section) => ({
+    index: section.index,
+    pageGeometry: cloneRequiredPageGeometry(section.pageGeometry),
+    headerRefs: [...section.headerRefs],
+    footerRefs: [...section.footerRefs],
+  }));
 }
 
 function clonePageGeometry(pageGeometry: PageGeometry | undefined): PageGeometry | undefined {

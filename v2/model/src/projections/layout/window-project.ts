@@ -12,18 +12,24 @@
 import type { RenderShellDocument, SectionShell } from '../../render-shell/render-shell-document.js';
 import type { BodyChildDescriptor } from '../../word/document-view.js';
 import type { StyleResolver } from '../../resolve/style-resolver.js';
-import type { FlowBlock, SectionBreakBlock, WindowSpec, WindowedProjectionResult } from './types.js';
+import type { FlowBlock, ProjectionStats, SectionBreakBlock, WindowSpec, WindowedProjectionResult } from './types.js';
 import type { ProjectionFeeder } from './feeder.js';
 import type { DependencyCollector } from './dependency-manifest.js';
 import { createStableIdAllocator, type StableIdAllocator } from './stable-id.js';
 import { createDependencyCollector } from './dependency-manifest.js';
-import { createRenderShellFeeder, bodyChildToFeederNode, sectionElementToFeederNode } from './render-shell-feeder.js';
+import {
+  createRenderShellFeeder,
+  bodyChildToFeederNode,
+  sectionElementToFeederNode,
+  stashFieldRegions,
+} from './render-shell-feeder.js';
 import { projectParagraphFromFeeder } from './paragraph-projector.js';
 import { projectTableFromFeeder } from './table-projector.js';
 import { projectSectionFromFeeder } from './section-projector.js';
 import { createPageEstimateLimiter, type LayoutPageGeometry } from './page-estimate.js';
-import { computePathFromRoot, qualifiedName } from '../../graph/source-path.js';
-import { findChildElement } from '../../word/tree-helpers.js';
+import { classifyParagraphFieldRegions } from './paragraph-classifier.js';
+import { computePathFromRoot } from '../../graph/source-path.js';
+import { findChildElement, getAttr } from '../../word/tree-helpers.js';
 import { twipsToLayoutPx } from './measurement-conversions.js';
 
 export type WindowProjectOptions = {
@@ -60,17 +66,15 @@ export function projectWindowToFlowBlocks(
 
   // Get the body-child window from the render-shell
   const descriptors = renderShell.bodyChildWindow(windowSpec.startBodyChildIndex, windowSpec.maxBodyChildCount);
-  const bodyChildPathByIndex = buildBodyChildPathMap(renderShell, descriptors.at(-1)?.index);
-
-  // Build section shell lookup by body-child index
-  const sectionShells = renderShell.sectionShells();
-  const sectionByIndex = new Map<number, SectionShell>();
-  for (const shell of sectionShells) {
-    sectionByIndex.set(shell.index, shell);
-  }
 
   const blocks: FlowBlock[] = [];
   const sectionBreaks: SectionBreakBlock[] = [];
+  const stats: ProjectionStats = {
+    fieldHeavyParagraphs: 0,
+    plainParagraphs: 0,
+    complexParagraphs: 0,
+    runsSkipped: 0,
+  };
   let lastProjectedIndex = windowSpec.startBodyChildIndex - 1;
 
   for (const desc of descriptors) {
@@ -86,10 +90,10 @@ export function projectWindowToFlowBlocks(
       ids,
       blocks,
       sectionBreaks,
-      sectionByIndex,
-      bodyChildPathByIndex.get(desc.index),
+      renderShell.bodyChildPath(desc.index),
       options?.resolver,
       deps,
+      stats,
     );
     lastProjectedIndex = desc.index;
 
@@ -115,6 +119,7 @@ export function projectWindowToFlowBlocks(
       ...(primaryGeometry ? { primaryPageGeometry: primaryGeometry } : {}),
     },
     ...(deps ? { dependencyManifest: deps.finalize() } : {}),
+    projectionStats: stats,
   };
 }
 
@@ -146,10 +151,10 @@ function projectBodyChild(
   ids: StableIdAllocator,
   blocks: FlowBlock[],
   sectionBreaks: SectionBreakBlock[],
-  sectionByIndex: Map<number, SectionShell>,
   bodyChildPath: string | undefined,
   resolver?: StyleResolver,
   deps?: DependencyCollector,
+  stats?: ProjectionStats,
 ): void {
   const el = desc.element;
 
@@ -158,12 +163,35 @@ function projectBodyChild(
       const node = bodyChildToFeederNode(el, partUri, bodyChildPath);
       if (!node || node.kind !== 'paragraph') break;
 
+      // Classify paragraph field regions for the display-first fast path.
+      // Stashing the result lets the feeder skip instruction-region runs.
+      const fieldRegions = classifyParagraphFieldRegions(el);
+      switch (fieldRegions.complexity) {
+        case 'field-display':
+          stashFieldRegions(node, fieldRegions);
+          if (stats) {
+            stats.fieldHeavyParagraphs++;
+            stats.runsSkipped += fieldRegions.instructionRunIds.size;
+          }
+          break;
+        case 'plain':
+          if (stats) {
+            stats.plainParagraphs++;
+          }
+          break;
+        case 'complex':
+          if (stats) {
+            stats.complexParagraphs++;
+          }
+          break;
+      }
+
       blocks.push(projectParagraphFromFeeder(node, feeder, ids, resolver, deps));
 
       // Check for inline sectPr in this paragraph
       const raw = node.raw();
       if (raw.hasSectPr) {
-        const shell = sectionByIndex.get(desc.index);
+        const shell = resolveSectionShell(desc);
         if (shell) {
           const sectionNode = sectionElementToFeederNode(
             shell.sectPr,
@@ -209,10 +237,10 @@ function projectBodyChild(
           ids,
           blocks,
           sectionBreaks,
-          sectionByIndex,
           bodyChildPath ? computePathFromRoot(el, bodyChildPath, child) : undefined,
           resolver,
           deps,
+          stats,
         );
       }
       break;
@@ -225,7 +253,7 @@ function projectBodyChild(
       blocks.push(sectionBlock);
       sectionBreaks.push(sectionBlock);
 
-      const shell = sectionByIndex.get(desc.index);
+      const shell = resolveSectionShell(desc);
       if (shell) {
         collectSectionDeps(shell, deps);
       }
@@ -240,6 +268,85 @@ function projectBodyChild(
 
 // ---- Section dependency collection ------------------------------------------
 
+function resolveSectionShell(desc: BodyChildDescriptor): SectionShell | undefined {
+  const sectPr = findSectionElement(desc.element);
+  if (!sectPr) {
+    return undefined;
+  }
+
+  const headerRefs: string[] = [];
+  const footerRefs: string[] = [];
+
+  for (const child of sectPr.children) {
+    if (child.kind !== 'element') {
+      continue;
+    }
+
+    if (child.localName === 'headerReference' && child.prefix === 'w') {
+      const relationshipId = getAttr(child, 'id', 'r');
+      if (typeof relationshipId === 'string' && relationshipId.length > 0) {
+        headerRefs.push(relationshipId);
+      }
+    }
+
+    if (child.localName === 'footerReference' && child.prefix === 'w') {
+      const relationshipId = getAttr(child, 'id', 'r');
+      if (typeof relationshipId === 'string' && relationshipId.length > 0) {
+        footerRefs.push(relationshipId);
+      }
+    }
+  }
+
+  return {
+    index: desc.index,
+    sectPr,
+    pageGeometry: {
+      width: parseTwipsAttr(sectPr, 'pgSz', 'w', 'w', 12240),
+      height: parseTwipsAttr(sectPr, 'pgSz', 'h', 'w', 15840),
+      margins: {
+        top: parseTwipsAttr(sectPr, 'pgMar', 'top', 'w', 1440),
+        right: parseTwipsAttr(sectPr, 'pgMar', 'right', 'w', 1440),
+        bottom: parseTwipsAttr(sectPr, 'pgMar', 'bottom', 'w', 1440),
+        left: parseTwipsAttr(sectPr, 'pgMar', 'left', 'w', 1440),
+      },
+    },
+    headerRefs,
+    footerRefs,
+  };
+}
+
+function findSectionElement(
+  bodyChildElement: BodyChildDescriptor['element'],
+): BodyChildDescriptor['element'] | undefined {
+  if (bodyChildElement.localName === 'sectPr' && bodyChildElement.prefix === 'w') {
+    return bodyChildElement;
+  }
+
+  if (bodyChildElement.localName !== 'p' || bodyChildElement.prefix !== 'w') {
+    return undefined;
+  }
+
+  const pPr = findChildElement(bodyChildElement, 'pPr', 'w');
+  return pPr ? findChildElement(pPr, 'sectPr', 'w') : undefined;
+}
+
+function parseTwipsAttr(
+  sectPr: BodyChildDescriptor['element'],
+  childLocalName: string,
+  attrName: string,
+  attrPrefix: string,
+  fallback: number,
+): number {
+  const child = findChildElement(sectPr, childLocalName, 'w');
+  if (!child) {
+    return fallback;
+  }
+
+  const rawValue = getAttr(child, attrName, attrPrefix);
+  const parsed = typeof rawValue === 'string' ? Number.parseInt(rawValue, 10) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function collectSectionDeps(shell: SectionShell, deps?: DependencyCollector): void {
   if (!deps) return;
 
@@ -249,26 +356,4 @@ function collectSectionDeps(shell: SectionShell, deps?: DependencyCollector): vo
   for (const ref of shell.footerRefs) {
     deps.addHeaderFooter(ref, 'footer');
   }
-}
-
-function buildBodyChildPathMap(
-  renderShell: RenderShellDocument,
-  lastIndexInWindow: number | undefined,
-): Map<number, string> {
-  if (lastIndexInWindow === undefined || lastIndexInWindow < 0) {
-    return new Map<number, string>();
-  }
-
-  const bodyChildren = renderShell.bodyChildWindow(0, lastIndexInWindow + 1);
-  const siblingCountByQualifiedName = new Map<string, number>();
-  const pathByIndex = new Map<number, string>();
-
-  for (const bodyChild of bodyChildren) {
-    const qname = qualifiedName(bodyChild.element);
-    const nextSiblingIndex = (siblingCountByQualifiedName.get(qname) ?? 0) + 1;
-    siblingCountByQualifiedName.set(qname, nextSiblingIndex);
-    pathByIndex.set(bodyChild.index, `w:body/${qname}[${nextSiblingIndex}]`);
-  }
-
-  return pathByIndex;
 }

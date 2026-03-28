@@ -20,7 +20,7 @@ import { createDocumentView } from '../word/document-view.js';
 import { createStylesView } from '../word/styles-view.js';
 import { createNumberingView } from '../word/numbering-view.js';
 import { createSettingsView } from '../word/settings-view.js';
-import { getAttr } from '../word/tree-helpers.js';
+import { findChildElement, getAttr } from '../word/tree-helpers.js';
 import { resolveRelationshipTarget as resolveRelTargetFromOpc } from '../opc/relationships.js';
 
 // ---- Public types -----------------------------------------------------------
@@ -52,6 +52,8 @@ export type RenderShellDocument = {
   bodyChildCount(): number;
   /** Get a window of body children by start index and count. */
   bodyChildWindow(start: number, count: number): BodyChildDescriptor[];
+  /** Get the stable xpath-like source path for a specific body child. */
+  bodyChildPath(index: number): string | undefined;
   /** Enumerate section shells with page geometry. */
   sectionShells(): SectionShell[];
   /** Get page geometry for the first (primary) section. */
@@ -76,6 +78,7 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
   let cachedStylesView: StylesView | undefined;
   let cachedNumberingView: NumberingView | undefined;
   let cachedSettingsView: SettingsView | undefined;
+  let cachedSectionShells: SectionShell[] | undefined;
 
   function docView(): DocumentView | undefined {
     if (!cachedDocView) {
@@ -105,31 +108,29 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
       return result;
     },
 
-    sectionShells(): SectionShell[] {
-      const dv = docView();
-      if (!dv) return [];
+    bodyChildPath(index: number): string | undefined {
+      return docView()?.bodyChildPath(index);
+    },
 
-      return dv.sections().map((sec) => ({
-        index: sec.index,
-        sectPr: sec.sectPr,
-        pageGeometry: extractPageGeometry(sec.sectPr),
-        headerRefs: sec.headerRefs,
-        footerRefs: sec.footerRefs,
-      }));
+    sectionShells(): SectionShell[] {
+      if (!cachedSectionShells) {
+        const dv = docView();
+        if (!dv) return [];
+
+        cachedSectionShells = dv.sections().map((sec) => ({
+          index: sec.index,
+          sectPr: sec.sectPr,
+          pageGeometry: extractPageGeometry(sec.sectPr),
+          headerRefs: sec.headerRefs,
+          footerRefs: sec.footerRefs,
+        }));
+      }
+      return cachedSectionShells;
     },
 
     primaryPageGeometry(): PageGeometry | undefined {
-      const dv = docView();
-      if (!dv) return undefined;
-
-      const sections = dv.sections();
-      if (sections.length === 0) return undefined;
-
-      // The last sectPr in the document body is the "primary" (document-level) section.
-      // In OOXML, section breaks in the body define earlier sections;
-      // the final sectPr is the document's default section.
-      const lastSection = sections[sections.length - 1];
-      return extractPageGeometry(lastSection.sectPr);
+      const primarySectPr = resolvePrimarySectionElement(docView());
+      return primarySectPr ? extractPageGeometry(primarySectPr) : undefined;
     },
 
     styleShell(): StylesView | undefined {
@@ -174,6 +175,28 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
 }
 
 // ---- Helpers ----------------------------------------------------------------
+
+function resolvePrimarySectionElement(docView: DocumentView | undefined): XmlElementNode | undefined {
+  if (!docView) {
+    return undefined;
+  }
+
+  const lastBodyChild = docView.bodyChild(docView.bodyChildCount() - 1)?.element;
+  if (!lastBodyChild) {
+    return undefined;
+  }
+
+  if (lastBodyChild.localName === 'sectPr' && lastBodyChild.prefix === 'w') {
+    return lastBodyChild;
+  }
+
+  if (lastBodyChild.localName === 'p' && lastBodyChild.prefix === 'w') {
+    const pPr = findChildElement(lastBodyChild, 'pPr', 'w');
+    return pPr ? findChildElement(pPr, 'sectPr', 'w') : undefined;
+  }
+
+  return undefined;
+}
 
 function extractPageGeometry(sectPr: XmlElementNode): PageGeometry {
   let width = 12240; // Letter width default (twips)

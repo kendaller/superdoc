@@ -12,6 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { open } from '../src/session/open.js';
+import { createRenderShellSnapshot } from '../src/render-shell/render-shell-snapshot.js';
 import { createMinimalDocx, createMultiParagraphDocx, createComplexDocx } from './helpers/create-test-docx.js';
 
 describe('render-shell stage', () => {
@@ -177,6 +178,35 @@ describe('render-shell page geometry', () => {
     expect(sections.length).toBeGreaterThan(0);
     expect(sections[0].pageGeometry).toBeDefined();
     expect(sections[0].pageGeometry.width).toBe(12240);
+
+    await handle.close();
+  });
+});
+
+describe('render-shell snapshot transport', () => {
+  it('keeps the default snapshot cheap by omitting full section shells', async () => {
+    const handle = await open(createMinimalDocx());
+    await handle.ready('render-shell');
+
+    const snapshot = createRenderShellSnapshot(handle.renderShell());
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.bodyChildCount).toBeGreaterThan(0);
+    expect(snapshot?.sections).toEqual([]);
+    expect(snapshot?.primaryPageGeometry?.width).toBe(12240);
+
+    await handle.close();
+  });
+
+  it('can opt into section shells for non-critical callers', async () => {
+    const handle = await open(createMinimalDocx());
+    await handle.ready('render-shell');
+
+    const snapshot = createRenderShellSnapshot(handle.renderShell(), { includeSections: true });
+
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.sections.length).toBeGreaterThan(0);
+    expect(snapshot?.sections[0].pageGeometry.width).toBe(12240);
 
     await handle.close();
   });

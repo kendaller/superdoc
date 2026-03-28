@@ -312,6 +312,18 @@ export type SectionMetadataDelta = {
   };
 };
 
+/** Classification statistics from a windowed projection pass. */
+export type ProjectionStats = {
+  /** Paragraphs classified as field-display (fast-pathed). */
+  fieldHeavyParagraphs: number;
+  /** Paragraphs classified as plain (no fields). */
+  plainParagraphs: number;
+  /** Paragraphs that contain field markup but are too irregular for the fast path. */
+  complexParagraphs: number;
+  /** Runs skipped by the field-display fast path. */
+  runsSkipped: number;
+};
+
 /** Result of a windowed projection. */
 export type WindowedProjectionResult = {
   /** The projected FlowBlocks for this window. */
@@ -330,4 +342,6 @@ export type WindowedProjectionResult = {
    * Only populated when WindowSpec.includeDependencyManifest is true.
    */
   readonly dependencyManifest?: DependencyManifest;
+  /** Classification statistics from the fast-path paragraph classifier. */
+  readonly projectionStats?: ProjectionStats;
 };

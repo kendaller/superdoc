@@ -19,6 +19,10 @@ import {
   PROJECTION_FIRST_WINDOW_START,
   PROJECTION_FIRST_WINDOW_COMPLETE,
   PROJECTION_APPEND_WINDOW_COUNT,
+  PROJECTION_FIELD_HEAVY_PARAGRAPHS,
+  PROJECTION_PLAIN_PARAGRAPHS,
+  PROJECTION_COMPLEX_PARAGRAPHS,
+  PROJECTION_RUNS_SKIPPED_BY_FAST_PATH,
   LAYOUT_PAGES_MOUNTED_AT_FIRST_PAINT,
   PAINT_FIRST_PAGE_MOUNTED,
 } from '@superdoc/v2-perf';
@@ -227,6 +231,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       v2PerfTimeline.mark(PROJECTION_FIRST_WINDOW_COMPLETE);
 
       this.#accumulateWindow(windowResult, 0);
+      this.#recordProjectionStats(windowResult);
       this.#transition('firstWindowProjected');
 
       // Phase 3: Measure + paginate + paint
@@ -521,6 +526,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
       const windowIndex = this.#accumulated.windowRecords.length;
       this.#accumulateWindow(windowResult, startBodyChildIndex);
+      this.#recordProjectionStats(windowResult);
 
       await this.#measurePaginatePaint();
       if (gen !== this.#generation) return;
@@ -528,10 +534,12 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       const nextPageCount = this.#accumulated.layout?.pages.length ?? prevPageCount;
       const pagesAdded = Math.max(0, nextPageCount - prevPageCount);
       const bodyChildrenConsumed = Math.max(0, this.#accumulated.nextBodyChildIndex - startBodyChildIndex);
+      const fieldHeavyRatio = getFieldHeavyRatio(windowResult.projectionStats);
       this.#appendBatchPolicy = advanceStreamingBatchPolicy(this.#appendBatchPolicy, {
         durationMs: perfNow() - batchStartMs,
         bodyChildrenConsumed,
         pagesAdded,
+        ...(fieldHeavyRatio != null ? { fieldHeavyRatio } : {}),
       });
 
       // Pages from before this append are now body-complete
@@ -586,6 +594,18 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#completeness.markAllBodyComplete();
     this.#completeness.markAllEnrichmentComplete();
     this.#transition('complete');
+  }
+
+  #recordProjectionStats(windowResult: WindowedProjectionResult): void {
+    const stats = windowResult.projectionStats;
+    if (!stats) {
+      return;
+    }
+
+    v2PerfTimeline.gauge(PROJECTION_FIELD_HEAVY_PARAGRAPHS, stats.fieldHeavyParagraphs);
+    v2PerfTimeline.gauge(PROJECTION_PLAIN_PARAGRAPHS, stats.plainParagraphs);
+    v2PerfTimeline.gauge(PROJECTION_COMPLEX_PARAGRAPHS, stats.complexParagraphs);
+    v2PerfTimeline.gauge(PROJECTION_RUNS_SKIPPED_BY_FAST_PATH, stats.runsSkipped);
   }
 
   // ---- Private: Scroll ---------------------------------------------------------
@@ -920,6 +940,19 @@ function toContractFlowBlocks(blocks: WindowedProjectionResult['blocks']): FlowB
 
 function perfNow(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function getFieldHeavyRatio(stats: WindowedProjectionResult['projectionStats']): number | undefined {
+  if (!stats) {
+    return undefined;
+  }
+
+  const ratioDenominator = stats.fieldHeavyParagraphs + stats.plainParagraphs;
+  if (ratioDenominator === 0) {
+    return undefined;
+  }
+
+  return stats.fieldHeavyParagraphs / ratioDenominator;
 }
 
 function normalizeError(error: unknown): Error {

@@ -21,6 +21,10 @@ export const PROJECTION_FIRST_WINDOW_START = 'projection.firstWindowStart' as co
 export const PROJECTION_FIRST_WINDOW_COMPLETE = 'projection.firstWindowComplete' as const;
 export const PROJECTION_BLOCKS_PROJECTED_BEFORE_FIRST_PAINT = 'projection.blocksProjectedBeforeFirstPaint' as const;
 export const PROJECTION_APPEND_WINDOW_COUNT = 'projection.appendWindowCount' as const;
+export const PROJECTION_FIELD_HEAVY_PARAGRAPHS = 'projection.fieldHeavyParagraphsClassified' as const;
+export const PROJECTION_PLAIN_PARAGRAPHS = 'projection.plainParagraphsClassified' as const;
+export const PROJECTION_COMPLEX_PARAGRAPHS = 'projection.complexParagraphsClassified' as const;
+export const PROJECTION_RUNS_SKIPPED_BY_FAST_PATH = 'projection.runsSkippedByFieldFastPath' as const;
 
 // ---- Layout ----------------------------------------------------------------
 
@@ -79,6 +83,9 @@ export const SPAN_WORKER_PROJECT_WINDOW = 'runtime.worker.projectWindow' as cons
 // ---- Streaming host --------------------------------------------------------
 
 export const SPAN_STREAMING_APPEND = 'streaming.append' as const;
+export const SPAN_STREAMING_APPEND_PROJECTION = 'streaming.append.projection' as const;
+export const SPAN_STREAMING_APPEND_LAYOUT = 'streaming.append.layout' as const;
+export const SPAN_STREAMING_APPEND_PAINT = 'streaming.append.paint' as const;
 export const SPAN_STREAMING_TOTAL = 'streaming.total' as const;
 export const STREAMING_STATE_TRANSITION = 'streaming.stateTransition' as const;
 
@@ -108,7 +115,11 @@ export type ProjectionMetricName = typeof PROJECTION_FIRST_WINDOW_START | typeof
 
 export type ProjectionCountName =
   | typeof PROJECTION_BLOCKS_PROJECTED_BEFORE_FIRST_PAINT
-  | typeof PROJECTION_APPEND_WINDOW_COUNT;
+  | typeof PROJECTION_APPEND_WINDOW_COUNT
+  | typeof PROJECTION_FIELD_HEAVY_PARAGRAPHS
+  | typeof PROJECTION_PLAIN_PARAGRAPHS
+  | typeof PROJECTION_COMPLEX_PARAGRAPHS
+  | typeof PROJECTION_RUNS_SKIPPED_BY_FAST_PATH;
 
 export type LayoutMetricName =
   | typeof LAYOUT_FIRST_MEASURE_START
@@ -161,4 +172,7 @@ export type SpanName =
   | typeof SPAN_WORKER_RENDER_SHELL
   | typeof SPAN_WORKER_PROJECT_WINDOW
   | typeof SPAN_STREAMING_APPEND
+  | typeof SPAN_STREAMING_APPEND_PROJECTION
+  | typeof SPAN_STREAMING_APPEND_LAYOUT
+  | typeof SPAN_STREAMING_APPEND_PAINT
   | typeof SPAN_STREAMING_TOTAL;

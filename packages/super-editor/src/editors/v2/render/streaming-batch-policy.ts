@@ -10,6 +10,8 @@ export type StreamingBatchOutcome = {
   durationMs: number;
   bodyChildrenConsumed: PositiveInteger;
   pagesAdded: PositiveInteger;
+  /** Fraction of projected paragraphs classified as field-heavy (0.0–1.0). */
+  fieldHeavyRatio?: number;
 };
 
 const DEFAULT_APPEND_PAGE_ESTIMATE = 2;
@@ -71,12 +73,16 @@ export function advanceStreamingBatchPolicy(
 }
 
 function resolveNextBodyChildLimit(policy: StreamingBatchPolicy, outcome: StreamingBatchOutcome): number {
+  // Field-heavy batches that are slow get a more aggressive shrink since
+  // each body child is more expensive than a plain paragraph.
+  const isFieldHeavy = (outcome.fieldHeavyRatio ?? 0) > 0.5;
+
   if (outcome.durationMs >= AGGRESSIVE_SLOW_APPEND_MS) {
     return shrinkBodyChildLimit(policy, AGGRESSIVE_SHRINK_FACTOR);
   }
 
   if (outcome.durationMs >= SLOW_APPEND_MS) {
-    return shrinkBodyChildLimit(policy, MODERATE_SHRINK_FACTOR);
+    return shrinkBodyChildLimit(policy, isFieldHeavy ? AGGRESSIVE_SHRINK_FACTOR : MODERATE_SHRINK_FACTOR);
   }
 
   const hitBodyChildLimit = outcome.bodyChildrenConsumed >= policy.bodyChildLimit;
