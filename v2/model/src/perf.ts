@@ -9,6 +9,7 @@ import {
   v2PerfTimeline,
   OPEN_START,
   OPEN_FAST_OPEN_COMPLETE,
+  OPEN_RENDER_SHELL_READY,
   OPEN_BYTES_READ_BEFORE_FIRST_PAINT,
   OPEN_STRUCTURE_READY,
   OPEN_XML_PARTS_MATERIALIZED_BEFORE_FIRST_PAINT,
@@ -17,6 +18,7 @@ import {
   SPAN_OPEN,
   SPAN_FAST_OPEN,
   SPAN_MATERIALIZE_XML,
+  SPAN_ADVANCE_TO_RENDER_SHELL,
   SPAN_ADVANCE_TO_STRUCTURE,
   SPAN_INDEX_XML_PARTS,
   SPAN_PROJECTION,
@@ -35,6 +37,10 @@ export function markFastOpenComplete(): void {
   tl.mark(OPEN_FAST_OPEN_COMPLETE);
 }
 
+export function markRenderShellReady(): void {
+  tl.mark(OPEN_RENDER_SHELL_READY);
+}
+
 export function markStructureReady(): void {
   tl.mark(OPEN_STRUCTURE_READY);
 }
@@ -51,6 +57,10 @@ export function startOpenSpan(): () => void {
 
 export function startFastOpenSpan(): () => void {
   return tl.startSpan(SPAN_FAST_OPEN);
+}
+
+export function startAdvanceToRenderShellSpan(): () => void {
+  return tl.startSpan(SPAN_ADVANCE_TO_RENDER_SHELL);
 }
 
 export function startMaterializeXmlSpan(): () => void {

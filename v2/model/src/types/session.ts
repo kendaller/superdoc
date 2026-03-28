@@ -2,7 +2,7 @@
 // Session, handle, and lifecycle types
 // ---------------------------------------------------------------------------
 
-import type { ZipSnapshot } from "./zip.js";
+import type { ZipSnapshot } from './zip.js';
 import type {
   ArchiveByteSource,
   AsyncArchiveReader,
@@ -10,20 +10,20 @@ import type {
   PackagePart,
   PartUri,
   RelationshipIndex,
-} from "./package.js";
-import type { DocumentView } from "../word/document-view.js";
-import type { StylesView } from "../word/styles-view.js";
-import type { NumberingView } from "../word/numbering-view.js";
-import type { SettingsView } from "../word/settings-view.js";
-import type { HeadersFootersView } from "../word/headers-footers-view.js";
-import type { AnnotationCollectionView } from "../word/annotations-view.js";
-import type { ThemeView } from "../word/theme-view.js";
-import type { FontTableView } from "../word/font-table-view.js";
-import type { ContentTypesView, RelationshipsView } from "../word/content-types-view.js";
+} from './package.js';
+import type { DocumentView } from '../word/document-view.js';
+import type { StylesView } from '../word/styles-view.js';
+import type { NumberingView } from '../word/numbering-view.js';
+import type { SettingsView } from '../word/settings-view.js';
+import type { HeadersFootersView } from '../word/headers-footers-view.js';
+import type { AnnotationCollectionView } from '../word/annotations-view.js';
+import type { ThemeView } from '../word/theme-view.js';
+import type { FontTableView } from '../word/font-table-view.js';
+import type { ContentTypesView, RelationshipsView } from '../word/content-types-view.js';
 
 // ---- Ready stages ---------------------------------------------------------
 
-export type ReadyStage = "fast-open" | "structure";
+export type ReadyStage = 'fast-open' | 'render-shell' | 'structure';
 
 // ---- Document handle (public API) -----------------------------------------
 
@@ -38,11 +38,17 @@ export type DocumentHandle = {
   /** Get all typed views for the package. Views are lazily created and cached. */
   views(): PackageViews;
   /**
+   * Get the render-shell surface for fast first paint.
+   * Available after ready("render-shell"). Returns undefined before that stage.
+   * This is a read-only critical-path surface — not a replacement for semanticModel().
+   */
+  renderShell(): import('../render-shell/render-shell-document.js').RenderShellDocument | undefined;
+  /**
    * Get the semantic model for the document.
    * Lazily created on first access; requires ready("structure") first.
    * Returns undefined if the session is not yet at the "structure" stage.
    */
-  semanticModel(): import("../model.js").SemanticModel | undefined;
+  semanticModel(): import('../model.js').SemanticModel | undefined;
 };
 
 /** Bundle of all typed views for a .docx package. */
@@ -79,8 +85,8 @@ export type SessionStatus = {
 
 export type SessionDiagnostic = {
   code: string;
-  severity: "info" | "warning" | "error";
-  stage: ReadyStage | "save";
+  severity: 'info' | 'warning' | 'error';
+  stage: ReadyStage | 'save';
   message: string;
   partUri?: string;
 };
@@ -90,8 +96,8 @@ export type SessionDiagnostic = {
 export type SaveResult = Uint8Array | Blob | ReadableStream<Uint8Array>;
 
 export type SaveOptions = {
-  target?: "bytes" | "blob" | "stream";
-  mode?: "auto" | "original-if-clean" | "rebuild";
+  target?: 'bytes' | 'blob' | 'stream';
+  mode?: 'auto' | 'original-if-clean' | 'rebuild';
 };
 
 // ---- Internal session -----------------------------------------------------

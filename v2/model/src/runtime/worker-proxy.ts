@@ -5,15 +5,9 @@
 // This is what the browser main thread uses to interact with the session.
 // ---------------------------------------------------------------------------
 
-import type {
-  DocumentHandle,
-  ReadyStage,
-  SaveOptions,
-  SaveResult,
-  SessionStatus,
-} from "../types/session.js";
-import type { WorkerRequest, WorkerResponse } from "./worker-protocol.js";
-import { createRequestId } from "./worker-protocol.js";
+import type { DocumentHandle, ReadyStage, SaveOptions, SaveResult, SessionStatus } from '../types/session.js';
+import type { WorkerRequest, WorkerResponse } from './worker-protocol.js';
+import { createRequestId } from './worker-protocol.js';
 
 /**
  * Create a DocumentHandle that proxies all calls to a Web Worker.
@@ -21,14 +15,14 @@ import { createRequestId } from "./worker-protocol.js";
  * @param worker - The Worker instance hosting the session
  * @param bytes - The archive bytes to open (transferred to the worker)
  */
-export async function openInWorker(
-  worker: Worker,
-  bytes: Uint8Array,
-): Promise<DocumentHandle> {
-  const pending = new Map<string, {
-    resolve: (value: unknown) => void;
-    reject: (error: Error) => void;
-  }>();
+export async function openInWorker(worker: Worker, bytes: Uint8Array): Promise<DocumentHandle> {
+  const pending = new Map<
+    string,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+    }
+  >();
 
   worker.onmessage = (e: MessageEvent) => {
     const resp = e.data as WorkerResponse;
@@ -55,10 +49,9 @@ export async function openInWorker(
   }
 
   // Open the document in the worker, transferring the bytes
-  const openResult = (await send(
-    { id: createRequestId(), method: "open", params: { bytes } },
-    [bytes.buffer as ArrayBuffer],
-  )) as { sessionId: string };
+  const openResult = (await send({ id: createRequestId(), method: 'open', params: { bytes } }, [
+    bytes.buffer as ArrayBuffer,
+  ])) as { sessionId: string };
 
   return {
     sessionId: openResult.sessionId,
@@ -66,7 +59,7 @@ export async function openInWorker(
     async ready(stage?: ReadyStage): Promise<void> {
       await send({
         id: createRequestId(),
-        method: "ready",
+        method: 'ready',
         params: { stage },
       });
     },
@@ -74,12 +67,12 @@ export async function openInWorker(
     async status(): Promise<SessionStatus> {
       return (await send({
         id: createRequestId(),
-        method: "status",
+        method: 'status',
       })) as SessionStatus;
     },
 
     async close(): Promise<void> {
-      await send({ id: createRequestId(), method: "close" });
+      await send({ id: createRequestId(), method: 'close' });
       worker.terminate();
     },
 
@@ -87,29 +80,35 @@ export async function openInWorker(
       // Worker transport only supports bytes — host enforces target: "bytes"
       return (await send({
         id: createRequestId(),
-        method: "save",
+        method: 'save',
         params: { options },
       })) as Uint8Array;
     },
 
     documentView() {
       throw new Error(
-        "documentView() is not available on worker-proxied handles. " +
-        "Use a main-thread handle for typed view access.",
+        'documentView() is not available on worker-proxied handles. ' +
+          'Use a main-thread handle for typed view access.',
       );
     },
 
     views() {
       throw new Error(
-        "views() is not available on worker-proxied handles. " +
-        "Use a main-thread handle for typed view access.",
+        'views() is not available on worker-proxied handles. ' + 'Use a main-thread handle for typed view access.',
+      );
+    },
+
+    renderShell() {
+      throw new Error(
+        'renderShell() is not available on worker-proxied handles. ' +
+          'Use a main-thread handle for render-shell access.',
       );
     },
 
     semanticModel() {
       throw new Error(
-        "semanticModel() is not available on worker-proxied handles. " +
-        "Use a main-thread handle for semantic model access.",
+        'semanticModel() is not available on worker-proxied handles. ' +
+          'Use a main-thread handle for semantic model access.',
       );
     },
   };

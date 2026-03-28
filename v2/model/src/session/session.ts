@@ -2,32 +2,29 @@
 // PackageSession — internal mutable session state
 // ---------------------------------------------------------------------------
 
-import type {
-  PackageSession,
-  SessionStatus,
-  ReadyStage,
-} from "../types/session.js";
-import type { ArchiveByteSource, AsyncArchiveReader } from "../types/package.js";
-import { fastOpen, fastOpenAsync } from "../opc/package-loader.js";
-import { inflateEntryAsync } from "../opc/zip-reader.js";
-import { nextRevision } from "./revision.js";
-import { indexXmlParts } from "../xml/index-integration.js";
+import type { PackageSession, SessionStatus, ReadyStage } from '../types/session.js';
+import type { ArchiveByteSource, AsyncArchiveReader } from '../types/package.js';
+import { fastOpen, fastOpenAsync } from '../opc/package-loader.js';
+import { inflateEntryAsync } from '../opc/zip-reader.js';
+import { nextRevision } from './revision.js';
+import { indexRenderShellParts, indexXmlParts } from '../xml/index-integration.js';
 import {
   startFastOpenSpan,
+  startAdvanceToRenderShellSpan,
   startAdvanceToStructureSpan,
   startMaterializeXmlSpan,
   startIndexXmlPartsSpan,
+  markRenderShellReady,
   markStructureReady,
   recordXmlPartsMaterialized,
-} from "../perf.js";
+} from '../perf.js';
 
 let sessionCounter = 0;
 
 /** Create a PackageSession from an in-memory archive byte source. */
 export function createSession(source: ArchiveByteSource): PackageSession {
   const endFastOpen = startFastOpenSpan();
-  const { zip, parts, contentTypes, relationships, mainDocumentUri, diagnostics } =
-    fastOpen(source);
+  const { zip, parts, contentTypes, relationships, mainDocumentUri, diagnostics } = fastOpen(source);
   endFastOpen();
 
   return {
@@ -40,7 +37,7 @@ export function createSession(source: ArchiveByteSource): PackageSession {
     relationships,
     contentTypes,
     diagnostics,
-    currentStage: "fast-open",
+    currentStage: 'fast-open',
   };
 }
 
@@ -54,8 +51,7 @@ export async function createSessionAsync(
   originalSource: ArchiveByteSource,
 ): Promise<PackageSession> {
   const endFastOpen = startFastOpenSpan();
-  const { zip, parts, contentTypes, relationships, mainDocumentUri, diagnostics } =
-    await fastOpenAsync(reader);
+  const { zip, parts, contentTypes, relationships, mainDocumentUri, diagnostics } = await fastOpenAsync(reader);
   endFastOpen();
 
   return {
@@ -68,33 +64,63 @@ export async function createSessionAsync(
     relationships,
     contentTypes,
     diagnostics,
-    currentStage: "fast-open",
+    currentStage: 'fast-open',
     asyncReader: reader,
   };
 }
 
-/** Advance the session to a deeper ready stage. */
-export async function advanceToStage(
-  session: PackageSession,
-  stage: ReadyStage,
-): Promise<void> {
-  const stageOrder: ReadyStage[] = ["fast-open", "structure"];
+const STAGE_ORDER: ReadyStage[] = ['fast-open', 'render-shell', 'structure'];
 
-  const currentIdx = stageOrder.indexOf(session.currentStage);
-  const targetIdx = stageOrder.indexOf(stage);
+/** Advance the session to a deeper ready stage. */
+export async function advanceToStage(session: PackageSession, stage: ReadyStage): Promise<void> {
+  const currentIdx = STAGE_ORDER.indexOf(session.currentStage);
+  const targetIdx = STAGE_ORDER.indexOf(stage);
 
   if (targetIdx <= currentIdx) return; // already at or past this stage
 
+  // Advance through each intermediate stage in order
   if (currentIdx < 1 && targetIdx >= 1) {
+    await advanceToRenderShell(session);
+  }
+  if (currentIdx < 2 && targetIdx >= 2) {
     await advanceToStructure(session);
   }
+}
+
+/** Parts needed for render-shell stage (critical path only). */
+const RENDER_SHELL_PART_URIS = new Set([
+  '/word/document.xml',
+  '/word/styles.xml',
+  '/word/numbering.xml',
+  '/word/settings.xml',
+]);
+
+/**
+ * Advance to render-shell: materialize and index only the critical-path parts
+ * needed for first-window paginated render.
+ */
+async function advanceToRenderShell(session: PackageSession): Promise<void> {
+  const endRenderShell = startAdvanceToRenderShellSpan();
+
+  // For lazy sessions, materialize only the render-shell parts
+  if (session.asyncReader) {
+    await materializeXmlParts(session, RENDER_SHELL_PART_URIS);
+  }
+
+  const endIndex = startIndexXmlPartsSpan();
+  indexRenderShellParts(session);
+  endIndex();
+
+  session.currentStage = 'render-shell';
+  markRenderShellReady();
+  endRenderShell();
 }
 
 /** Build XML lexical indexes for package-critical and major typed-view parts. */
 async function advanceToStructure(session: PackageSession): Promise<void> {
   const endStructure = startAdvanceToStructureSpan();
 
-  // For lazy sessions, pre-materialize XML part bytes before indexing
+  // For lazy sessions, materialize remaining XML part bytes before indexing
   if (session.asyncReader) {
     await materializeXmlParts(session);
   }
@@ -103,17 +129,18 @@ async function advanceToStructure(session: PackageSession): Promise<void> {
   indexXmlParts(session);
   endIndex();
 
-  session.currentStage = "structure";
+  session.currentStage = 'structure';
   markStructureReady();
   endStructure();
 }
 
 /**
- * For lazy sessions, read and inflate all XML part entries from the async reader.
- * After this, each XML part has `originalBytes` set and can be accessed synchronously.
+ * For lazy sessions, read and inflate XML part entries from the async reader.
+ * If `filterUris` is provided, only parts whose URI is in the set are materialized.
+ * Otherwise, all XML parts are materialized.
  * Binary parts remain unmaterialized — their bytes are read on demand.
  */
-async function materializeXmlParts(session: PackageSession): Promise<void> {
+async function materializeXmlParts(session: PackageSession, filterUris?: Set<string>): Promise<void> {
   const reader = session.asyncReader;
   if (!reader) return;
 
@@ -121,16 +148,17 @@ async function materializeXmlParts(session: PackageSession): Promise<void> {
   const zip = session.originalZip;
   let materializedCount = 0;
 
-  for (const part of session.parts.values()) {
-    if (part.kind !== "xml") continue;
+  for (const [uri, part] of session.parts) {
+    if (part.kind !== 'xml') continue;
     if (part.originalBytes) continue;
+    if (filterUris && !filterUris.has(uri)) continue;
 
     const source = part.source;
-    if (source.kind === "archive-slice") {
+    if (source.kind === 'archive-slice') {
       const entry = zip.entryById.get(source.entryId);
       if (entry) {
         part.originalBytes = await inflateEntryAsync(reader, entry);
-        part.source = { kind: "materialized", bytes: part.originalBytes };
+        part.source = { kind: 'materialized', bytes: part.originalBytes };
         materializedCount++;
       }
     }
@@ -148,10 +176,10 @@ export function getSessionStatus(session: PackageSession): SessionStatus {
   let hydratedXmlPartCount = 0;
 
   for (const part of session.parts.values()) {
-    if (part.kind === "xml") {
+    if (part.kind === 'xml') {
       xmlPartCount++;
       if (part.lexicalIndex) indexedXmlPartCount++;
-      if (part.treeState.kind !== "indexed-only") hydratedXmlPartCount++;
+      if (part.treeState.kind !== 'indexed-only') hydratedXmlPartCount++;
     } else {
       binaryPartCount++;
     }
@@ -186,11 +214,11 @@ export function isSessionDirty(session: PackageSession): boolean {
  */
 export function getArchiveBytes(session: PackageSession): Uint8Array {
   const src = session.originalArchive;
-  if (src.kind === "memory") return src.bytes;
+  if (src.kind === 'memory') return src.bytes;
 
   throw new Error(
     `getArchiveBytes() called on a lazy session (source kind: "${src.kind}") — ` +
-    `use session.asyncReader for lazy entry access`,
+      `use session.asyncReader for lazy entry access`,
   );
 }
 
@@ -198,9 +226,7 @@ export function getArchiveBytes(session: PackageSession): Uint8Array {
  * Get archive bytes if available (memory-backed), or undefined for lazy sessions.
  * Used by code that can handle both paths.
  */
-export function getArchiveBytesIfAvailable(
-  session: PackageSession,
-): Uint8Array | undefined {
+export function getArchiveBytesIfAvailable(session: PackageSession): Uint8Array | undefined {
   const src = session.originalArchive;
-  return src.kind === "memory" ? src.bytes : undefined;
+  return src.kind === 'memory' ? src.bytes : undefined;
 }
