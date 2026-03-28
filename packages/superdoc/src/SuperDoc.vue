@@ -30,13 +30,7 @@ import { useSuperdocStore } from '@superdoc/stores/superdoc-store';
 import { useCommentsStore } from '@superdoc/stores/comments-store';
 
 import { DOCX, PDF, HTML } from '@superdoc/common';
-import {
-  SuperEditor,
-  AIWriter,
-  PresentationEditor,
-  V2StaticRenderer,
-  V2StreamingRenderer,
-} from '@superdoc/super-editor';
+import { SuperEditor, AIWriter, PresentationEditor, V2StreamingRenderer } from '@superdoc/super-editor';
 import HtmlViewer from './components/HtmlViewer/HtmlViewer.vue';
 import useComment from './components/CommentsLayer/use-comment';
 import AiLayer from './components/AiLayer/AiLayer.vue';
@@ -47,6 +41,7 @@ import { useUiFontFamily } from './composables/useUiFontFamily.js';
 import { usePasswordPrompt } from './composables/use-password-prompt.js';
 import { useFindReplace } from './composables/use-find-replace.js';
 import SurfaceHost from './components/surfaces/SurfaceHost.vue';
+import { normalizeRenderPipeline } from './core/render-pipeline.js';
 
 const PdfViewer = defineAsyncComponent(() => import('./components/PdfViewer/PdfViewer.vue'));
 const getDocumentLoadPassword = (doc) => doc.password ?? proxy.$superdoc.config.password;
@@ -789,31 +784,15 @@ const buildV2RendererOptions = (doc) => ({
   disableContextMenu: proxy.$superdoc.config.disableContextMenu,
 });
 
-const staticRendererOptions = (doc) => {
-  const baseOptions = buildV2RendererOptions(doc);
-
-  return {
-    ...baseOptions,
-    layoutEngineOptions: {
-      ...baseOptions.layoutEngineOptions,
-      virtualization: {
-        ...(proxy.$superdoc.config.layoutEngineOptions?.virtualization || {}),
-        enabled: false,
-      },
-    },
-  };
-};
-
 const streamingRendererOptions = (doc) => buildV2RendererOptions(doc);
 
 const getDocxRenderPipeline = (doc) => {
   if (!doc || doc.type !== DOCX) return 'legacy';
   if (proxy.$superdoc.config.useLayoutEngine === false) return 'legacy';
-  return proxy.$superdoc.config.renderPipeline ?? 'legacy';
+  return normalizeRenderPipeline(proxy.$superdoc.config.renderPipeline);
 };
 
-const shouldUseV2StaticRenderer = (doc) => getDocxRenderPipeline(doc) === 'v2-static';
-const shouldUseV2StreamingRenderer = (doc) => getDocxRenderPipeline(doc) === 'v2-streaming';
+const shouldUseV2Renderer = (doc) => getDocxRenderPipeline(doc) === 'v2';
 
 /**
  * Trigger a comment-positions location update
@@ -1611,22 +1590,13 @@ const getPDFViewer = () => {
             ref="pdfViewerRef"
           />
 
-          <V2StaticRenderer
-            v-if="shouldUseV2StaticRenderer(doc)"
-            :file-source="doc.data"
-            :document-id="doc.id"
-            :options="staticRendererOptions(doc)"
-            @renderer-ready="onV2RendererReady"
-            @renderer-error="onV2RendererError(doc, 'v2-static-renderer-error', $event)"
-          />
-
           <V2StreamingRenderer
-            v-else-if="shouldUseV2StreamingRenderer(doc)"
+            v-if="shouldUseV2Renderer(doc)"
             :file-source="doc.data"
             :document-id="doc.id"
             :options="streamingRendererOptions(doc)"
             @renderer-ready="onV2RendererReady"
-            @renderer-error="onV2RendererError(doc, 'v2-streaming-renderer-error', $event)"
+            @renderer-error="onV2RendererError(doc, 'v2-renderer-error', $event)"
           />
 
           <SuperEditor

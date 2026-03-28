@@ -20,7 +20,7 @@ import {
   type CorpusEntry,
 } from '@superdoc/v2-perf';
 
-const SUPPORTED_MODEL_BENCHMARK_MODES = new Set<BenchmarkMode>(['v2-static']);
+const SUPPORTED_MODEL_BENCHMARK_MODES = new Set<BenchmarkMode>(['v2']);
 
 /** Options for a single benchmark run. */
 export type BenchmarkRunOptions = {
@@ -39,7 +39,7 @@ export type BenchmarkRunResult = {
 };
 
 /**
- * Run a single v2-static benchmark: open → ready("structure") → project.
+ * Run a single v2 benchmark: open → ready("structure") → project.
  *
  * This exercises the model-layer pipeline without DOM measurement/paint,
  * which requires a browser environment. DOM-level benchmarks use

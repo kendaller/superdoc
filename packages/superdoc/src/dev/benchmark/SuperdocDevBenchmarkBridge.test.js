@@ -99,14 +99,14 @@ describe('SuperdocDevBenchmarkBridge', () => {
       includeActiveEditor: false,
     });
 
-    bridge.prepareRun({ mode: 'v2-static', label: 'store-surface' });
+    bridge.prepareRun({ mode: 'v2', label: 'store-surface' });
     const runPromise = bridge.waitForRun();
     bridge.attachSuperdoc(superdoc);
 
     await vi.runAllTimersAsync();
     const result = await runPromise;
 
-    expect(result.mode).toBe('v2-static');
+    expect(result.mode).toBe('v2');
     expect(result.pageCount).toBe(1);
   });
 

@@ -12,7 +12,7 @@ const DEV_HARNESS_SELECTORS = {
 
 test.describe.configure({ mode: 'serial' });
 
-test('collects browser TTFFP artifacts for PM and v2-static', async ({ page }) => {
+test('collects browser TTFFP artifacts for PM and v2', async ({ page }) => {
   const machine = await detectMachineInfo();
   const git = detectGitInfo();
   const corpusEntries = await loadBrowserBenchmarkEntries();
@@ -117,18 +117,18 @@ function resolveBenchmarkModes(): BenchmarkMode[] {
     .map((mode) => mode.trim())
     .filter(Boolean);
 
-  const normalizedModes = configuredModes?.filter(isBrowserBenchmarkMode) ?? ['pm', 'v2-static'];
-  return normalizedModes.length > 0 ? normalizedModes : ['pm', 'v2-static'];
+  const normalizedModes = configuredModes?.filter(isBrowserBenchmarkMode) ?? ['pm', 'v2'];
+  return normalizedModes.length > 0 ? normalizedModes : ['pm', 'v2'];
 }
 
 function isBrowserBenchmarkMode(mode: string): mode is BenchmarkMode {
-  return mode === 'pm' || mode === 'v2-static';
+  return mode === 'pm' || mode === 'v2';
 }
 
 function resolveDevHarnessUrl(mode: BenchmarkMode): string {
   const searchParams = new URLSearchParams();
-  if (mode === 'v2-static') {
-    searchParams.set('pipeline', 'v2-static');
+  if (mode === 'v2') {
+    searchParams.set('pipeline', 'v2');
   }
 
   const queryString = searchParams.toString();

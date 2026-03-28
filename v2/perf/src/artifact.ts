@@ -5,15 +5,11 @@
 // Artifacts are comparable across runs for regression detection.
 // ---------------------------------------------------------------------------
 
-import type { TimelineSnapshot } from "./timeline.js";
-import type { CorpusEntry, DocumentClass } from "./corpus.js";
+import type { TimelineSnapshot } from './timeline.js';
+import type { CorpusEntry, DocumentClass } from './corpus.js';
 
 /** The rendering pipeline mode under test. */
-export type BenchmarkMode =
-  | "pm"
-  | "v2-static"
-  | "v2-render-shell"
-  | "v2-streaming";
+export type BenchmarkMode = 'pm' | 'v2' | 'v2-render-shell' | 'v2-streaming';
 
 /** Machine metadata for reproducibility. */
 export type MachineInfo = {
@@ -96,8 +92,8 @@ export function createArtifact(
     timings: { ...snapshot.timings },
     counts: { ...snapshot.counts },
     memory: {
-      peakMb: snapshot.counts["runtime.peakMemoryMb"] ?? null,
-      atFirstPaintMb: snapshot.counts["runtime.memoryAtFirstPaintMb"] ?? null,
+      peakMb: snapshot.counts['runtime.peakMemoryMb'] ?? null,
+      atFirstPaintMb: snapshot.counts['runtime.memoryAtFirstPaintMb'] ?? null,
     },
     machine,
     git,
@@ -114,8 +110,8 @@ export function toSummaryRow(artifact: BenchmarkArtifact): BenchmarkSummaryRow {
   const c = artifact.counts;
 
   // TTFP is the render span end, or the sum of open + projection + measurement + pagination + paint
-  const ttfp = t["render"]
-    ?? sumDefined(t["open"], t["projection"], t["layout.measurement"], t["layout.pagination"], t["paint"]);
+  const ttfp =
+    t['render'] ?? sumDefined(t['open'], t['projection'], t['layout.measurement'], t['layout.pagination'], t['paint']);
 
   return {
     documentId: artifact.document.id,
@@ -123,14 +119,14 @@ export function toSummaryRow(artifact: BenchmarkArtifact): BenchmarkSummaryRow {
     label: artifact.document.label,
     mode: artifact.mode,
     ttfpMs: ttfp ?? null,
-    openMs: t["open"] ?? null,
-    projectionMs: t["projection"] ?? null,
-    measurementMs: t["layout.measurement"] ?? null,
-    paginationMs: t["layout.pagination"] ?? null,
-    paintMs: t["paint"] ?? null,
-    blocksProjected: c["projection.blocksProjectedBeforeFirstPaint"] ?? null,
-    blocksMeasured: c["layout.blocksMeasuredBeforeFirstPaint"] ?? null,
-    pagesMounted: c["layout.pagesMountedAtFirstPaint"] ?? null,
+    openMs: t['open'] ?? null,
+    projectionMs: t['projection'] ?? null,
+    measurementMs: t['layout.measurement'] ?? null,
+    paginationMs: t['layout.pagination'] ?? null,
+    paintMs: t['paint'] ?? null,
+    blocksProjected: c['projection.blocksProjectedBeforeFirstPaint'] ?? null,
+    blocksMeasured: c['layout.blocksMeasuredBeforeFirstPaint'] ?? null,
+    pagesMounted: c['layout.pagesMountedAtFirstPaint'] ?? null,
     peakMemoryMb: artifact.memory.peakMb,
   };
 }
@@ -149,22 +145,14 @@ export type ArtifactDelta = {
 };
 
 /** Compare two artifacts for the same document, returning signed deltas. */
-export function compareArtifacts(
-  base: BenchmarkArtifact,
-  compare: BenchmarkArtifact,
-): ArtifactDelta {
+export function compareArtifacts(base: BenchmarkArtifact, compare: BenchmarkArtifact): ArtifactDelta {
   const baseRow = toSummaryRow(base);
   const compareRow = toSummaryRow(compare);
 
-  const ttfpDeltaMs =
-    baseRow.ttfpMs != null && compareRow.ttfpMs != null
-      ? compareRow.ttfpMs - baseRow.ttfpMs
-      : null;
+  const ttfpDeltaMs = baseRow.ttfpMs != null && compareRow.ttfpMs != null ? compareRow.ttfpMs - baseRow.ttfpMs : null;
 
   const ttfpDeltaPercent =
-    ttfpDeltaMs != null && baseRow.ttfpMs != null && baseRow.ttfpMs > 0
-      ? (ttfpDeltaMs / baseRow.ttfpMs) * 100
-      : null;
+    ttfpDeltaMs != null && baseRow.ttfpMs != null && baseRow.ttfpMs > 0 ? (ttfpDeltaMs / baseRow.ttfpMs) * 100 : null;
 
   const timingDeltas = diffRecords(base.timings, compare.timings);
   const countDeltas = diffRecords(base.counts, compare.counts);

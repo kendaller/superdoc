@@ -95,15 +95,6 @@ const SuperEditorStub = defineComponent({
   },
 });
 
-const V2StaticRendererStub = defineComponent({
-  name: 'V2StaticRendererStub',
-  props: ['fileSource', 'documentId', 'options'],
-  emits: ['renderer-ready', 'renderer-error'],
-  setup(props) {
-    return () => h('div', { class: 'v2-static-renderer-stub' }, [JSON.stringify(props.documentId)]);
-  },
-});
-
 const V2StreamingRendererStub = defineComponent({
   name: 'V2StreamingRendererStub',
   props: ['fileSource', 'documentId', 'options'],
@@ -124,7 +115,6 @@ const HtmlViewerStub = stubComponent('HtmlViewer');
 // Mock @superdoc/super-editor with stubs and PresentationEditor class
 vi.mock('@superdoc/super-editor', () => ({
   SuperEditor: SuperEditorStub,
-  V2StaticRenderer: V2StaticRendererStub,
   V2StreamingRenderer: V2StreamingRendererStub,
   AIWriter: AIWriterStub,
   PresentationEditor: class PresentationEditorMock {
@@ -1176,20 +1166,9 @@ describe('SuperDoc.vue', () => {
     expect(presentationEditor.on).toHaveBeenCalledWith('commentPositions', expect.any(Function));
   });
 
-  it('renders the v2 static DOCX branch when renderPipeline is v2-static', async () => {
+  it('renders the v2 DOCX branch when renderPipeline is v2', async () => {
     const superdocStub = createSuperdocStub();
-    superdocStub.config.renderPipeline = 'v2-static';
-
-    const wrapper = await mountComponent(superdocStub);
-    await nextTick();
-
-    expect(wrapper.find('.v2-static-renderer-stub').exists()).toBe(true);
-    expect(wrapper.find('.super-editor-stub').exists()).toBe(false);
-  });
-
-  it('renders the v2 streaming DOCX branch when renderPipeline is v2-streaming', async () => {
-    const superdocStub = createSuperdocStub();
-    superdocStub.config.renderPipeline = 'v2-streaming';
+    superdocStub.config.renderPipeline = 'v2';
 
     const wrapper = await mountComponent(superdocStub);
     await nextTick();
@@ -1198,9 +1177,23 @@ describe('SuperDoc.vue', () => {
     expect(wrapper.find('.super-editor-stub').exists()).toBe(false);
   });
 
-  it('forces virtualization off for the v2 static renderer branch', async () => {
+  it.each(['v2-static', 'v2-streaming'])(
+    'normalizes the legacy %s alias to the v2 renderer branch',
+    async (legacyAlias) => {
+      const superdocStub = createSuperdocStub();
+      superdocStub.config.renderPipeline = legacyAlias;
+
+      const wrapper = await mountComponent(superdocStub);
+      await nextTick();
+
+      expect(wrapper.find('.v2-streaming-renderer-stub').exists()).toBe(true);
+      expect(wrapper.find('.super-editor-stub').exists()).toBe(false);
+    },
+  );
+
+  it('passes layout engine options through to the v2 renderer branch', async () => {
     const superdocStub = createSuperdocStub();
-    superdocStub.config.renderPipeline = 'v2-static';
+    superdocStub.config.renderPipeline = 'v2';
     superdocStub.config.layoutEngineOptions = {
       virtualization: { enabled: true, window: 5, overscan: 1 },
     };
@@ -1208,42 +1201,17 @@ describe('SuperDoc.vue', () => {
     const wrapper = await mountComponent(superdocStub);
     await nextTick();
 
-    const renderer = wrapper.findComponent(V2StaticRendererStub);
-    expect(renderer.props('options').layoutEngineOptions.virtualization).toEqual({
-      enabled: false,
+    const rendererComponent = wrapper.findComponent(V2StreamingRendererStub);
+    expect(rendererComponent.props('options').layoutEngineOptions.virtualization).toEqual({
+      enabled: true,
       window: 5,
       overscan: 1,
     });
   });
 
-  it('handles v2 static renderer ready by storing the render surface and marking the document ready', async () => {
+  it('handles v2 renderer ready by storing the render surface and marking the document ready', async () => {
     const superdocStub = createSuperdocStub();
-    superdocStub.config.renderPipeline = 'v2-static';
-
-    const wrapper = await mountComponent(superdocStub);
-    await nextTick();
-
-    const doc = superdocStoreStub.documents.value[0];
-    const renderer = {
-      setContextMenuDisabled: vi.fn(),
-      on: vi.fn(),
-    };
-
-    wrapper.findComponent(V2StaticRendererStub).vm.$emit('renderer-ready', {
-      renderer,
-      documentId: 'doc-1',
-      container: document.createElement('div'),
-    });
-    await nextTick();
-
-    expect(doc.setPresentationEditor).toHaveBeenCalledWith(renderer);
-    expect(doc.isReady).toBe(true);
-    expect(superdocStub.broadcastRenderSurfaceReady).toHaveBeenCalledWith(renderer);
-  });
-
-  it('handles v2 streaming renderer ready by storing the render surface and marking the document ready', async () => {
-    const superdocStub = createSuperdocStub();
-    superdocStub.config.renderPipeline = 'v2-streaming';
+    superdocStub.config.renderPipeline = 'v2';
 
     const wrapper = await mountComponent(superdocStub);
     await nextTick();

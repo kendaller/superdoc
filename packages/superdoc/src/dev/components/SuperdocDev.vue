@@ -17,6 +17,7 @@ import SidebarSearch from './sidebar/SidebarSearch.vue';
 import SidebarFieldAnnotations from './sidebar/SidebarFieldAnnotations.vue';
 import SidebarLayout from './sidebar/SidebarLayout.vue';
 import { createSuperdocDevBenchmarkBridge } from '../benchmark/SuperdocDevBenchmarkBridge.js';
+import { isV2RenderPipeline, normalizeRenderPipeline, V2_RENDER_PIPELINE } from '../../core/render-pipeline.js';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 
@@ -47,7 +48,8 @@ const userRole = urlParams.get('role') || 'editor';
 const useLayoutEngine = ref(urlParams.get('layout') !== '0');
 const useWebLayout = ref(urlParams.get('view') === 'web');
 const useCollaboration = urlParams.get('collab') === '1';
-const useV2StaticRender = ref(urlParams.get('pipeline') === 'v2-static');
+const initialRenderPipeline = normalizeRenderPipeline(urlParams.get('pipeline'));
+const useV2Render = ref(initialRenderPipeline === V2_RENDER_PIPELINE);
 const collabRoom = urlParams.get('room') || 'superdoc-dev-room';
 const collabUrl = 'ws://localhost:8081/v1/collaboration';
 const useWordOverlay = ref(urlParams.get('wordOverlay') !== '0');
@@ -79,17 +81,17 @@ const superdocLogo = SuperdocLogo;
 const uploadedFileName = ref('');
 const uploadDisplayName = computed(() => uploadedFileName.value || 'No file chosen');
 const currentDocumentSourceKind = ref('blank');
-const isV2StaticSupported = computed(() => currentDocumentSourceKind.value === 'docx' && !useCollaboration);
+const isV2RenderSupported = computed(() => currentDocumentSourceKind.value === 'docx' && !useCollaboration);
 const effectiveRenderPipeline = computed(() =>
-  useV2StaticRender.value && isV2StaticSupported.value ? 'v2-static' : 'legacy',
+  useV2Render.value && isV2RenderSupported.value ? V2_RENDER_PIPELINE : 'legacy',
 );
 const renderPipelineBadge = computed(() =>
-  effectiveRenderPipeline.value === 'v2-static' ? 'Pipeline: V2 STATIC' : 'Pipeline: LEGACY',
+  effectiveRenderPipeline.value === V2_RENDER_PIPELINE ? 'Pipeline: V2' : 'Pipeline: LEGACY',
 );
-const v2StaticToggleLabel = computed(() => {
-  if (useCollaboration) return 'V2 static unavailable in collaboration';
-  if (!isV2StaticSupported.value) return 'V2 static render (DOCX only)';
-  return useV2StaticRender.value ? 'Switch to legacy render' : 'Switch to v2 static render';
+const v2ToggleLabel = computed(() => {
+  if (useCollaboration) return 'V2 unavailable in collaboration';
+  if (!isV2RenderSupported.value) return 'V2 render (DOCX only)';
+  return useV2Render.value ? 'Switch to legacy render' : 'Switch to v2 render';
 });
 
 const DEV_THEME_CLASSES = ['sd-theme-docs', 'sd-theme-word', 'sd-theme-blueprint', 'sd-theme-neon-night'];
@@ -259,8 +261,8 @@ const handleNewFile = async (file) => {
     currentFile.value = await getFileObject(url, file.name, file.type);
   }
 
-  if (!isV2StaticSupported.value) {
-    useV2StaticRender.value = false;
+  if (!isV2RenderSupported.value) {
+    useV2Render.value = false;
   }
 
   // In collab mode, use replaceFile() on the existing editor instead of
@@ -1161,6 +1163,10 @@ const toggleCommentsPanel = () => {
 onMounted(async () => {
   applyDevTheme(selectedTheme.value);
 
+  if (isV2RenderPipeline(urlParams.get('pipeline')) && urlParams.get('pipeline') !== V2_RENDER_PIPELINE) {
+    syncRenderPipelineUrlParam();
+  }
+
   // Initialize collaboration if enabled via ?collab=1
   if (useCollaboration) {
     clearYjsChanges();
@@ -1235,17 +1241,17 @@ const toggleLayoutEngine = () => {
 
 const syncRenderPipelineUrlParam = () => {
   const url = new URL(window.location.href);
-  if (useV2StaticRender.value) {
-    url.searchParams.set('pipeline', 'v2-static');
+  if (useV2Render.value) {
+    url.searchParams.set('pipeline', V2_RENDER_PIPELINE);
   } else {
     url.searchParams.delete('pipeline');
   }
   window.history.replaceState({}, '', url.toString());
 };
 
-const toggleV2StaticRender = async () => {
-  if (!isV2StaticSupported.value) return;
-  useV2StaticRender.value = !useV2StaticRender.value;
+const toggleV2Render = async () => {
+  if (!isV2RenderSupported.value) return;
+  useV2Render.value = !useV2Render.value;
   syncRenderPipelineUrlParam();
   await init();
 };
@@ -1526,11 +1532,11 @@ if (scrollTestMode.value) {
             </button>
             <button
               class="dev-app__header-export-btn"
-              :disabled="!isV2StaticSupported"
-              :title="v2StaticToggleLabel"
-              @click="toggleV2StaticRender"
+              :disabled="!isV2RenderSupported"
+              :title="v2ToggleLabel"
+              @click="toggleV2Render"
             >
-              {{ v2StaticToggleLabel }}
+              {{ v2ToggleLabel }}
             </button>
           </div>
         </div>

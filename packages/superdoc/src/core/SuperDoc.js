@@ -19,6 +19,7 @@ import { isAllowed } from './collaboration/permissions.js';
 import { Whiteboard } from './whiteboard/Whiteboard';
 import { WhiteboardRenderer } from './whiteboard/WhiteboardRenderer';
 import { SurfaceManager } from './surface-manager.js';
+import { normalizeRenderPipeline } from './render-pipeline.js';
 
 const DEFAULT_USER = Object.freeze({
   name: 'Default SuperDoc user',
@@ -189,8 +190,8 @@ export class SuperDoc extends EventEmitter {
 
     // Internal: toggle layout-engine-powered PresentationEditor in dev shells
     useLayoutEngine: true,
-    // Exploratory product-side render switch. `legacy` keeps the PM-backed editor path.
-    // `v2-static` and `v2-streaming` route DOCX rendering through the v2 model pipeline.
+    // Product-side DOCX render switch. `legacy` keeps the PM-backed editor path.
+    // `v2` routes DOCX rendering through the streaming v2 model pipeline.
     renderPipeline: 'legacy',
   };
 
@@ -218,6 +219,7 @@ export class SuperDoc extends EventEmitter {
       ...this.config,
       ...config,
     };
+    this.config.renderPipeline = normalizeRenderPipeline(this.config.renderPipeline);
     if (!this.config.comments || typeof this.config.comments !== 'object') {
       this.config.comments = { visible: false };
     } else if (typeof this.config.comments.visible !== 'boolean') {
