@@ -41,9 +41,9 @@ export function createHandle(session: PackageSession): DocumentHandle {
   return {
     sessionId: session.sessionId,
 
-    async ready(stage: ReadyStage = 'structure'): Promise<void> {
+    async ready(stage: ReadyStage = 'structure', signal?: AbortSignal): Promise<void> {
       assertOpen();
-      await advanceToStage(session, stage);
+      await advanceToStage(session, stage, signal);
     },
 
     async status(): Promise<SessionStatus> {

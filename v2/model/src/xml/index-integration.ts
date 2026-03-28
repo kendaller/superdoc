@@ -6,7 +6,7 @@
 // and can be indexed on demand.
 // ---------------------------------------------------------------------------
 
-import type { PackageSession } from '../types/session.js';
+import type { ReadyStage, PackageSession } from '../types/session.js';
 import type { XmlPart } from '../types/package.js';
 import { resolvePartBytes } from '../session/part-bytes.js';
 import { buildLexicalIndex } from './indexer.js';
@@ -60,11 +60,12 @@ const BOUNDARY_CONFIGS: Record<string, BoundaryConfig> = {
  * Enough to enumerate body-child boundaries, resolve page geometry,
  * and look up styles/numbering/settings for visible-window layout.
  */
-export function indexRenderShellParts(session: PackageSession): void {
+export function indexRenderShellParts(session: PackageSession, signal?: AbortSignal): void {
   for (const [uri, part] of session.parts) {
+    throwIfAborted(signal);
     if (part.kind !== 'xml') continue;
     if (!RENDER_SHELL_PARTS.has(uri)) continue;
-    indexSinglePart(part, session);
+    indexSinglePart(part, session, 'render-shell');
   }
 }
 
@@ -72,8 +73,9 @@ export function indexRenderShellParts(session: PackageSession): void {
  * Index XML parts that are critical for the "structure" stage.
  * Non-critical parts remain indexed-only.
  */
-export function indexXmlParts(session: PackageSession): void {
+export function indexXmlParts(session: PackageSession, signal?: AbortSignal): void {
   for (const [uri, part] of session.parts) {
+    throwIfAborted(signal);
     if (part.kind !== 'xml') continue;
 
     const shouldIndex =
@@ -84,7 +86,7 @@ export function indexXmlParts(session: PackageSession): void {
 
     if (!shouldIndex) continue;
 
-    indexSinglePart(part, session);
+    indexSinglePart(part, session, 'structure');
   }
 }
 
@@ -92,12 +94,13 @@ export function indexXmlParts(session: PackageSession): void {
  * Index a single XML part on demand.
  * Can be called for parts not indexed during the structure stage.
  */
-export function indexPartOnDemand(part: XmlPart, session: PackageSession): void {
+export function indexPartOnDemand(part: XmlPart, session: PackageSession, signal?: AbortSignal): void {
   if (part.lexicalIndex) return;
-  indexSinglePart(part, session);
+  throwIfAborted(signal);
+  indexSinglePart(part, session, 'structure');
 }
 
-function indexSinglePart(part: XmlPart, session: PackageSession): void {
+function indexSinglePart(part: XmlPart, session: PackageSession, stage: ReadyStage): void {
   if (part.lexicalIndex) return;
 
   try {
@@ -110,9 +113,15 @@ function indexSinglePart(part: XmlPart, session: PackageSession): void {
     session.diagnostics.push({
       code: 'XML_INDEX_ERROR',
       severity: 'warning',
-      stage: 'structure',
+      stage,
       message: `Failed to index XML part ${part.uri}: ${err}`,
       partUri: part.uri,
     });
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
   }
 }

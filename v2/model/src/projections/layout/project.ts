@@ -29,6 +29,8 @@ export type ProjectOptions = {
   prefix?: string;
   /** Style resolver for cascaded properties. If omitted, direct formatting only. */
   resolver?: StyleResolver;
+  /** Abort signal for cooperative cancellation (checked after each body-child). */
+  signal?: AbortSignal;
 };
 
 /**
@@ -71,6 +73,11 @@ export function projectToFlowBlocks(model: SemanticModel, options?: ProjectOptio
   const blocks: FlowBlock[] = [];
 
   for (const entity of blockEntities) {
+    if (options?.signal?.aborted) {
+      endProjection();
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
     projectEntity(entity, model, ids, blocks, options?.resolver);
 
     if (entity.kind === 'paragraph') {

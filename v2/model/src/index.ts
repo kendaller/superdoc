@@ -61,7 +61,14 @@ export { buildLexicalIndex } from './xml/index.js';
 // ---- Render shell ---------------------------------------------------------
 
 export { createRenderShellDocument } from './render-shell/index.js';
-export type { RenderShellDocument, PageGeometry, SectionShell } from './render-shell/index.js';
+export { createRenderShellSnapshot } from './render-shell/index.js';
+export type {
+  RenderShellDocument,
+  RenderShellSnapshot,
+  RenderShellSectionSnapshot,
+  PageGeometry,
+  SectionShell,
+} from './render-shell/index.js';
 
 // ---- Semantic model -------------------------------------------------------
 

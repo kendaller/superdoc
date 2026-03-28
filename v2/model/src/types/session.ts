@@ -29,7 +29,7 @@ export type ReadyStage = 'fast-open' | 'render-shell' | 'structure';
 
 export type DocumentHandle = {
   sessionId: string;
-  ready(stage?: ReadyStage): Promise<void>;
+  ready(stage?: ReadyStage, signal?: AbortSignal): Promise<void>;
   status(): Promise<SessionStatus>;
   close(): Promise<void>;
   save(options?: SaveOptions): Promise<SaveResult>;

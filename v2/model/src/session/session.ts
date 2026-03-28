@@ -72,7 +72,7 @@ export async function createSessionAsync(
 const STAGE_ORDER: ReadyStage[] = ['fast-open', 'render-shell', 'structure'];
 
 /** Advance the session to a deeper ready stage. */
-export async function advanceToStage(session: PackageSession, stage: ReadyStage): Promise<void> {
+export async function advanceToStage(session: PackageSession, stage: ReadyStage, signal?: AbortSignal): Promise<void> {
   const currentIdx = STAGE_ORDER.indexOf(session.currentStage);
   const targetIdx = STAGE_ORDER.indexOf(stage);
 
@@ -80,10 +80,10 @@ export async function advanceToStage(session: PackageSession, stage: ReadyStage)
 
   // Advance through each intermediate stage in order
   if (currentIdx < 1 && targetIdx >= 1) {
-    await advanceToRenderShell(session);
+    await advanceToRenderShell(session, signal);
   }
   if (currentIdx < 2 && targetIdx >= 2) {
-    await advanceToStructure(session);
+    await advanceToStructure(session, signal);
   }
 }
 
@@ -99,39 +99,49 @@ const RENDER_SHELL_PART_URIS = new Set([
  * Advance to render-shell: materialize and index only the critical-path parts
  * needed for first-window paginated render.
  */
-async function advanceToRenderShell(session: PackageSession): Promise<void> {
+async function advanceToRenderShell(session: PackageSession, signal?: AbortSignal): Promise<void> {
   const endRenderShell = startAdvanceToRenderShellSpan();
+  try {
+    // For lazy sessions, materialize only the render-shell parts
+    if (session.asyncReader) {
+      await materializeXmlParts(session, RENDER_SHELL_PART_URIS, signal);
+    }
 
-  // For lazy sessions, materialize only the render-shell parts
-  if (session.asyncReader) {
-    await materializeXmlParts(session, RENDER_SHELL_PART_URIS);
+    const endIndex = startIndexXmlPartsSpan();
+    try {
+      indexRenderShellParts(session, signal);
+    } finally {
+      endIndex();
+    }
+
+    session.currentStage = 'render-shell';
+    markRenderShellReady();
+  } finally {
+    endRenderShell();
   }
-
-  const endIndex = startIndexXmlPartsSpan();
-  indexRenderShellParts(session);
-  endIndex();
-
-  session.currentStage = 'render-shell';
-  markRenderShellReady();
-  endRenderShell();
 }
 
 /** Build XML lexical indexes for package-critical and major typed-view parts. */
-async function advanceToStructure(session: PackageSession): Promise<void> {
+async function advanceToStructure(session: PackageSession, signal?: AbortSignal): Promise<void> {
   const endStructure = startAdvanceToStructureSpan();
+  try {
+    // For lazy sessions, materialize remaining XML part bytes before indexing
+    if (session.asyncReader) {
+      await materializeXmlParts(session, undefined, signal);
+    }
 
-  // For lazy sessions, materialize remaining XML part bytes before indexing
-  if (session.asyncReader) {
-    await materializeXmlParts(session);
+    const endIndex = startIndexXmlPartsSpan();
+    try {
+      indexXmlParts(session, signal);
+    } finally {
+      endIndex();
+    }
+
+    session.currentStage = 'structure';
+    markStructureReady();
+  } finally {
+    endStructure();
   }
-
-  const endIndex = startIndexXmlPartsSpan();
-  indexXmlParts(session);
-  endIndex();
-
-  session.currentStage = 'structure';
-  markStructureReady();
-  endStructure();
 }
 
 /**
@@ -140,7 +150,11 @@ async function advanceToStructure(session: PackageSession): Promise<void> {
  * Otherwise, all XML parts are materialized.
  * Binary parts remain unmaterialized — their bytes are read on demand.
  */
-async function materializeXmlParts(session: PackageSession, filterUris?: Set<string>): Promise<void> {
+async function materializeXmlParts(
+  session: PackageSession,
+  filterUris?: Set<string>,
+  signal?: AbortSignal,
+): Promise<void> {
   const reader = session.asyncReader;
   if (!reader) return;
 
@@ -149,6 +163,11 @@ async function materializeXmlParts(session: PackageSession, filterUris?: Set<str
   let materializedCount = 0;
 
   for (const [uri, part] of session.parts) {
+    if (signal?.aborted) {
+      endMaterialize();
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
     if (part.kind !== 'xml') continue;
     if (part.originalBytes) continue;
     if (filterUris && !filterUris.has(uri)) continue;

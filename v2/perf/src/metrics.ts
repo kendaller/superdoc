@@ -51,6 +51,12 @@ export const RUNTIME_WORKER_BUSY_MS_BEFORE_FIRST_PAINT = 'runtime.workerBusyMsBe
 export const RUNTIME_PEAK_MEMORY_MB = 'runtime.peakMemoryMb' as const;
 export const RUNTIME_MEMORY_AT_FIRST_PAINT_MB = 'runtime.memoryAtFirstPaintMb' as const;
 
+// ---- Worker task scheduler --------------------------------------------------
+
+export const RUNTIME_TASK_QUEUE_DEPTH = 'runtime.taskQueueDepth' as const;
+export const RUNTIME_TASK_PREEMPTIONS = 'runtime.taskPreemptions' as const;
+export const RUNTIME_TASK_CANCELLATIONS = 'runtime.taskCancellations' as const;
+
 // ---- Span names (durations, not instants) ----------------------------------
 
 export const SPAN_OPEN = 'open' as const;
@@ -66,6 +72,9 @@ export const SPAN_PAGINATION = 'layout.pagination' as const;
 export const SPAN_PAINT = 'paint' as const;
 export const SPAN_RENDER = 'render' as const;
 export const SPAN_RUNTIME_INIT = 'runtime.initialize' as const;
+export const SPAN_WORKER_OPEN_SOURCE = 'runtime.worker.openSource' as const;
+export const SPAN_WORKER_RENDER_SHELL = 'runtime.worker.getRenderShell' as const;
+export const SPAN_WORKER_PROJECT_WINDOW = 'runtime.worker.projectWindow' as const;
 
 // ---- Aggregate type for all metric names -----------------------------------
 
@@ -104,7 +113,10 @@ export type RuntimeCountName =
   | typeof RUNTIME_MAIN_THREAD_BLOCKED_MS_BEFORE_FIRST_PAINT
   | typeof RUNTIME_WORKER_BUSY_MS_BEFORE_FIRST_PAINT
   | typeof RUNTIME_PEAK_MEMORY_MB
-  | typeof RUNTIME_MEMORY_AT_FIRST_PAINT_MB;
+  | typeof RUNTIME_MEMORY_AT_FIRST_PAINT_MB
+  | typeof RUNTIME_TASK_QUEUE_DEPTH
+  | typeof RUNTIME_TASK_PREEMPTIONS
+  | typeof RUNTIME_TASK_CANCELLATIONS;
 
 export type SpanName =
   | typeof SPAN_OPEN
@@ -119,4 +131,7 @@ export type SpanName =
   | typeof SPAN_PAGINATION
   | typeof SPAN_PAINT
   | typeof SPAN_RENDER
-  | typeof SPAN_RUNTIME_INIT;
+  | typeof SPAN_RUNTIME_INIT
+  | typeof SPAN_WORKER_OPEN_SOURCE
+  | typeof SPAN_WORKER_RENDER_SHELL
+  | typeof SPAN_WORKER_PROJECT_WINDOW;
