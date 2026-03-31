@@ -436,29 +436,30 @@ async function layoutWithPerSectionConstraints(
     const rId = defaultRIdPerSection.get(section.sectionIndex);
     if (!rId || !blocksByRId.has(rId)) continue;
 
-    // Resolve the minimum width needed for tables in this section.
-    // For pct tables, this depends on the section's content width.
-    const contentWidth = buildSectionContentWidth(section, fallbackConstraints);
-    const tableWidthSpec = tableWidthSpecByRId.get(rId);
-    const tableMinWidth = resolveTableMinWidth(tableWidthSpec, contentWidth);
-    const sectionConstraints = buildConstraintsForSection(section, fallbackConstraints, tableMinWidth || undefined);
-    const effectiveWidth = sectionConstraints.width;
-    // Include vertical geometry in the key so sections with different page heights,
-    // vertical margins, or header distance get separate layouts (page-relative anchors
-    // and header band origin resolve differently).
-    const groupKey = `${rId}::w${effectiveWidth}::ph${sectionConstraints.pageHeight ?? ''}::mt${sectionConstraints.margins?.top ?? ''}::mb${sectionConstraints.margins?.bottom ?? ''}::mh${sectionConstraints.margins?.header ?? ''}`;
+      // Resolve the minimum width needed for tables in this section.
+      // For pct tables, this depends on the section's content width.
+      const contentWidth = buildSectionContentWidth(section, fallbackConstraints);
+      const tableWidthSpec = tableWidthSpecByRId.get(rId);
+      const tableMinWidth = resolveTableMinWidth(tableWidthSpec, contentWidth);
+      const sectionConstraints = buildConstraintsForSection(section, fallbackConstraints, tableMinWidth || undefined);
+      const effectiveWidth = sectionConstraints.width;
+      // Include vertical geometry in the key so sections with different page heights,
+      // vertical margins, or header distance get separate layouts (page-relative anchors
+      // and header band origin resolve differently).
+      const groupKey = `${rId}::w${effectiveWidth}::ph${sectionConstraints.pageHeight ?? ''}::mt${sectionConstraints.margins?.top ?? ''}::mb${sectionConstraints.margins?.bottom ?? ''}::mh${sectionConstraints.margins?.header ?? ''}`;
 
-    let group = groups.get(groupKey);
-    if (!group) {
-      group = {
-        sectionConstraints,
-        sectionIndices: [],
-        rId,
-        effectiveWidth,
-      };
-      groups.set(groupKey, group);
+      let group = groups.get(groupKey);
+      if (!group) {
+        group = {
+          sectionConstraints,
+          sectionIndices: [],
+          rId,
+          effectiveWidth,
+        };
+        groups.set(groupKey, group);
+      }
+      group.sectionIndices.push(section.sectionIndex);
     }
-    group.sectionIndices.push(section.sectionIndex);
   }
 
   // Measure and layout each unique (rId, effectiveWidth) group
