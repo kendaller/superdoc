@@ -72,6 +72,10 @@ export type ProjectWindowParams = WindowBatchParams & {
   includeDependencyManifest?: boolean;
 };
 
+export type ProjectPreviewWindowParams = WindowBatchParams & {
+  startBodyChildIndex: number;
+};
+
 export type WindowContinuation = WindowBatchParams & {
   nextBodyChildIndex: number;
 };
@@ -92,6 +96,13 @@ export type WorkerRequestV2 =
     }
   | { id: string; taskId: TaskId; method: 'ready'; params: { stage: ReadyStage }; priority: TaskPriority }
   | { id: string; taskId: TaskId; method: 'getRenderShell'; params: Record<string, never>; priority: TaskPriority }
+  | {
+      id: string;
+      taskId: TaskId;
+      method: 'projectPreviewWindow';
+      params: ProjectPreviewWindowParams;
+      priority: TaskPriority;
+    }
   | { id: string; taskId: TaskId; method: 'projectWindow'; params: ProjectWindowParams; priority: TaskPriority }
   | {
       id: string;

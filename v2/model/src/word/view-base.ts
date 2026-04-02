@@ -155,6 +155,9 @@ export function markPartDirty(
       region.dirty = true;
     }
   }
+  if (part.kind === "xml") {
+    part.documentBodyFastIndex = undefined;
+  }
   session.currentRevision = nextRevision();
 }
 
@@ -174,6 +177,7 @@ export function markRegionDirty(
     }
   }
   part.dirty = true;
+  part.documentBodyFastIndex = undefined;
   session.currentRevision = nextRevision();
 }
 

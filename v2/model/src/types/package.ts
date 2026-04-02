@@ -2,7 +2,7 @@
 // OPC package types
 // ---------------------------------------------------------------------------
 
-import type { XmlLexicalIndex, XmlTreeState, NodeIndex } from "./xml.js";
+import type { XmlDocumentBodyFastIndex, XmlLexicalIndex, XmlTreeState, NodeIndex } from "./xml.js";
 
 /** Opaque part URI string (e.g. "/word/document.xml"). */
 export type PartUri = string;
@@ -44,6 +44,7 @@ export type XmlPart = {
   contentType: string;
   source: ByteSource;
   originalBytes?: Uint8Array;
+  documentBodyFastIndex?: XmlDocumentBodyFastIndex;
   lexicalIndex?: XmlLexicalIndex;
   treeState: XmlTreeState;
   dirty: boolean;

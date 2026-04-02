@@ -27,6 +27,7 @@ export type {
   WorkerEventV2,
   WorkerMessageEnvelope,
   EnrichmentTarget,
+  ProjectPreviewWindowParams,
   ProjectWindowParams,
   WindowContinuation,
 } from './worker-protocol.js';

@@ -12,6 +12,7 @@
 
 import type { PackageSession } from '../types/session.js';
 import type { XmlElementNode } from '../types/xml.js';
+import type { PreviewBodyChildRecord } from './preview-types.js';
 import type { DocumentView, BodyChildDescriptor } from '../word/document-view.js';
 import type { StylesView } from '../word/styles-view.js';
 import type { NumberingView } from '../word/numbering-view.js';
@@ -52,6 +53,10 @@ export type RenderShellDocument = {
   bodyChildCount(): number;
   /** Get a window of body children by start index and count. */
   bodyChildWindow(start: number, count: number): BodyChildDescriptor[];
+  /** Get a preview record for a specific body child without hydrating a tree. */
+  bodyChildPreview(index: number): PreviewBodyChildRecord | undefined;
+  /** Get a window of preview body children. */
+  bodyChildPreviewWindow(start: number, count: number): PreviewBodyChildRecord[];
   /** Get the stable xpath-like source path for a specific body child. */
   bodyChildPath(index: number): string | undefined;
   /** Enumerate section shells with page geometry. */
@@ -114,6 +119,14 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
       return result;
     },
 
+    bodyChildPreview(index: number): PreviewBodyChildRecord | undefined {
+      return docView()?.bodyChildPreview(index);
+    },
+
+    bodyChildPreviewWindow(start: number, count: number): PreviewBodyChildRecord[] {
+      return docView()?.bodyChildPreviewWindow(start, count) ?? [];
+    },
+
     bodyChildPath(index: number): string | undefined {
       return docView()?.bodyChildPath(index);
     },
@@ -135,6 +148,11 @@ export function createRenderShellDocument(session: PackageSession): RenderShellD
     },
 
     primaryPageGeometry(): PageGeometry | undefined {
+      const indexedPrimaryGeometry = docView()?.primaryPageGeometry();
+      if (indexedPrimaryGeometry) {
+        return indexedPrimaryGeometry;
+      }
+
       const primarySectPr = resolvePrimarySectionElement(docView());
       return primarySectPr ? extractPageGeometry(primarySectPr) : undefined;
     },

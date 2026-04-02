@@ -14,6 +14,7 @@ import type {
   TaskId,
   EnrichmentTarget,
   PrefetchWindowParams,
+  ProjectPreviewWindowParams,
   ProjectWindowParams,
   WindowContinuation,
   WorkerEventV2,
@@ -41,6 +42,7 @@ export interface DocumentRuntime {
 
   ready(stage: ReadyStage): Promise<void>;
   getRenderShell(): Promise<RenderShellSnapshot | undefined>;
+  projectPreviewWindow(params: ProjectPreviewWindowParams): Promise<WindowedProjectionResult>;
   projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult>;
   projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult>;
   prefetchWindow(params: PrefetchWindowParams): Promise<void>;

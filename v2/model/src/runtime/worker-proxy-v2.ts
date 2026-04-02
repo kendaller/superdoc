@@ -25,6 +25,7 @@ import type {
   WorkerSourceDescriptor,
   EnrichmentTarget,
   PrefetchWindowParams,
+  ProjectPreviewWindowParams,
   ProjectWindowParams,
   WindowContinuation,
 } from './worker-protocol.js';
@@ -94,11 +95,20 @@ export class WorkerProxyV2 {
     return this.#send('getRenderShell', {}, 'critical') as Promise<RenderShellSnapshot | undefined>;
   }
 
+  async projectPreviewWindow(params: ProjectPreviewWindowParams): Promise<WindowedProjectionResult> {
+    return this.#send('projectPreviewWindow', params, 'critical') as Promise<WindowedProjectionResult>;
+  }
+
   async projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult> {
+    const priority =
+      params.startBodyChildIndex === 0
+        ? (params.stopAfterPageEstimate != null ? 'critical' : 'background')
+        : 'near-viewport';
+
     return this.#send(
       'projectWindow',
       params,
-      params.startBodyChildIndex === 0 ? 'critical' : 'near-viewport',
+      priority,
     ) as Promise<WindowedProjectionResult>;
   }
 

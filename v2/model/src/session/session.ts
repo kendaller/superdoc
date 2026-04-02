@@ -8,6 +8,7 @@ import { fastOpen, fastOpenAsync } from '../opc/package-loader.js';
 import { inflateEntryAsync } from '../opc/zip-reader.js';
 import { nextRevision } from './revision.js';
 import {
+  indexFirstPaintShellParts,
   indexRenderShellParts,
   indexRenderShellSupportParts,
   indexXmlParts,
@@ -100,17 +101,19 @@ export async function advanceToStage(session: PackageSession, stage: ReadyStage,
 /**
  * Parts materialized before first paint.
  *
- * The first visible window may still need styles/numbering/settings for
- * correctness, but only `/word/document.xml` is indexed on the critical path.
- * The supporting parts are materialized here so they can be indexed lazily
- * during first projection without forcing a second archive read.
+ * The preview-first critical path should only pull the main document bytes.
+ * Styles, numbering, and settings are intentionally deferred to the later
+ * render-shell stage so the first visible paint is not blocked on support
+ * parts that the preview path does not require.
  */
-const FIRST_PAINT_SHELL_PART_URIS = new Set([
-  '/word/document.xml',
-  '/word/styles.xml',
-  '/word/numbering.xml',
-  '/word/settings.xml',
-]);
+const FIRST_PAINT_SHELL_PART_URIS = new Set(['/word/document.xml']);
+
+/**
+ * Support parts needed for exact style-aware render-shell projection.
+ *
+ * These are materialized only after the preview window has already painted.
+ */
+const RENDER_SHELL_SUPPORT_PART_URIS = new Set(['/word/styles.xml', '/word/numbering.xml', '/word/settings.xml']);
 
 /**
  * Advance to first-paint-shell: materialize critical-path XML bytes and index
@@ -125,7 +128,7 @@ async function advanceToFirstPaintShell(session: PackageSession, signal?: AbortS
 
     const endIndex = startIndexXmlPartsSpan();
     try {
-      indexRenderShellSupportParts(session, signal);
+      indexFirstPaintShellParts(session, signal);
     } finally {
       endIndex();
     }
@@ -144,9 +147,14 @@ async function advanceToFirstPaintShell(session: PackageSession, signal?: AbortS
 async function advanceToRenderShell(session: PackageSession, signal?: AbortSignal): Promise<void> {
   const endRenderShell = startAdvanceToRenderShellSpan();
   try {
+    if (session.asyncReader) {
+      await materializeXmlParts(session, RENDER_SHELL_SUPPORT_PART_URIS, signal);
+    }
+
     const endIndex = startIndexXmlPartsSpan();
     try {
       indexRenderShellParts(session, signal);
+      indexRenderShellSupportParts(session, signal);
     } finally {
       endIndex();
     }
@@ -262,7 +270,7 @@ export function getSessionStatus(session: PackageSession): SessionStatus {
   for (const part of session.parts.values()) {
     if (part.kind === 'xml') {
       xmlPartCount++;
-      if (part.lexicalIndex) indexedXmlPartCount++;
+      if (part.lexicalIndex || part.documentBodyFastIndex) indexedXmlPartCount++;
       if (part.treeState.kind !== 'indexed-only') hydratedXmlPartCount++;
     } else {
       binaryPartCount++;

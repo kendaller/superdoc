@@ -9,6 +9,7 @@ function createRuntimeStub(overrides?: Partial<DocumentRuntime>): DocumentRuntim
     close: vi.fn().mockResolvedValue(undefined),
     ready: vi.fn().mockResolvedValue(undefined),
     getRenderShell: vi.fn().mockResolvedValue(undefined),
+    projectPreviewWindow: vi.fn(),
     projectWindow: vi.fn(),
     projectNextWindow: vi.fn(),
     prefetchWindow: vi.fn().mockResolvedValue(undefined),

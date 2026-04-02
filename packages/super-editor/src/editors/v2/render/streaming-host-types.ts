@@ -28,6 +28,22 @@ export type StateChangeEvent = {
   degradedInfo?: DegradedInfo;
 };
 
+// ---- Loading overlay -------------------------------------------------------
+
+export type LoadingOverlayTexts = {
+  title: string;
+  openingMessage: string;
+  preparingMessage: string;
+  almostReadyMessage: string;
+};
+
+export type LoadingOverlayState = {
+  visible: boolean;
+  title: string;
+  message: string;
+  progressPercent: number;
+};
+
 // ---- Degraded mode policy ----------------------------------------------------
 
 export type DegradedReason =
@@ -74,6 +90,7 @@ export type WindowRecord = {
   blocks: FlowBlock[];
   sectionMetadataDelta: SectionMetadataDelta;
   dependencyManifest?: DependencyManifest;
+  projectionMode: 'preview' | 'exact';
   status: 'projected' | 'measured' | 'laid-out' | 'failed';
 };
 

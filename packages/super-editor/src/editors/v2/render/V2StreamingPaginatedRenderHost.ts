@@ -36,6 +36,8 @@ import type {
   HostState,
   StateTransitionEntry,
   StateChangeEvent,
+  LoadingOverlayState,
+  LoadingOverlayTexts,
   WindowRecord,
   AccumulatedState,
   V2StreamingLayoutSnapshot,
@@ -53,11 +55,27 @@ const DEFAULT_PAGE_GAP = 24;
 const DEFAULT_HORIZONTAL_PAGE_GAP = 20;
 const DEFAULT_LAYOUT_MODE = 'vertical';
 const DEFAULT_WINDOW_SIZE = 50;
-const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 1;
+const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 2;
 const DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE = 2;
 const BUFFER_AHEAD_PAGES = 10;
 const TWIPS_PER_INCH = 1440;
 const PX_PER_INCH = 96;
+const MAIN_THREAD_YIELD_BUDGET_MS = 12;
+const LOADING_PROGRESS_INITIAL = 4;
+const LOADING_PROGRESS_SOURCE_OPENED = 14;
+const LOADING_PROGRESS_FIRST_PAINT_SHELL_READY = 44;
+const LOADING_PROGRESS_PREVIEW_STARTED = 56;
+const LOADING_PROGRESS_PREVIEW_RANGE_READY = 68;
+const LOADING_PROGRESS_EXACT_FIRST_WINDOW_STARTED = 82;
+const LOADING_PROGRESS_EXACT_FIRST_WINDOW_READY = 92;
+const LOADING_PROGRESS_LAYOUT_STARTED = 97;
+const LOADING_PROGRESS_COMPLETE = 100;
+const DEFAULT_LOADING_TEXTS: LoadingOverlayTexts = {
+  title: 'Loading document',
+  openingMessage: 'Opening document…',
+  preparingMessage: 'Preparing first pages…',
+  almostReadyMessage: 'Almost ready. Your document will appear shortly…',
+};
 
 type DocumentMode = 'editing' | 'viewing' | 'suggesting';
 
@@ -67,11 +85,13 @@ export type V2StreamingPaginatedRenderHostOptions = {
   layoutEngineOptions?: LayoutEngineOptions;
   documentMode?: DocumentMode;
   disableContextMenu?: boolean;
+  showDefaultLoadingOverlay?: boolean;
+  loadingTexts?: Partial<LoadingOverlayTexts>;
   /** The DocumentRuntime to use (worker proxy or in-process). */
   runtime: DocumentRuntime;
   /** Upper bound for how many body children one window may scan. Default: 50. */
   windowSize?: number;
-  /** stopAfterPageEstimate for the first window. Default: 1. */
+  /** stopAfterPageEstimate for the first window. Default: 2. */
   firstWindowPageEstimate?: number;
 };
 
@@ -80,9 +100,11 @@ export type V2StreamingPaginatedRenderHostOptions = {
 /**
  * Streaming paginated host for the v2 rendering pipeline.
  *
- * Programs against the DocumentRuntime interface. Renders the first page
- * from a partial block window, then appends more blocks progressively
- * via incremental layout. Virtualization is enabled by default.
+ * Programs against the DocumentRuntime interface. Uses a preview window only
+ * to choose the opening range, keeps a loading overlay visible, then paints
+ * the first exact paginated window once it is ready. After first paint, it
+ * appends more exact windows progressively via incremental layout.
+ * Virtualization is enabled by default.
  *
  * State machine: idle → opening → renderShellReady → firstWindowProjected →
  * firstPaintComplete → streaming → enriching → complete
@@ -94,6 +116,14 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   #runtime: DocumentRuntime;
   #viewportHost: HTMLDivElement;
   #painterHost: HTMLDivElement;
+  #loadingOverlay: HTMLDivElement;
+  #loadingMessage: HTMLParagraphElement;
+  #loadingProgress: HTMLDivElement;
+  #loadingProgressValue: HTMLSpanElement;
+  #loadingProgressBar: HTMLDivElement;
+  #loadingProgressPercent = 0;
+  #showDefaultLoadingOverlay: boolean;
+  #loadingTexts: LoadingOverlayTexts;
   #domPainter: ReturnType<typeof createDomPainter> | null = null;
   #layoutEngineOptions: LayoutEngineOptions;
   #documentMode: DocumentMode;
@@ -127,6 +157,11 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#layoutEngineOptions = normalizeLayoutEngineOptions(options.layoutEngineOptions);
     this.#documentMode = options.documentMode ?? 'editing';
     this.#disableContextMenu = Boolean(options.disableContextMenu);
+    this.#showDefaultLoadingOverlay = options.showDefaultLoadingOverlay !== false;
+    this.#loadingTexts = {
+      ...DEFAULT_LOADING_TEXTS,
+      ...(options.loadingTexts ?? {}),
+    };
     this.#windowSize = options.windowSize ?? DEFAULT_WINDOW_SIZE;
     this.#firstWindowPageEstimate = options.firstWindowPageEstimate ?? DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE;
     this.#appendBatchPolicy = createInitialStreamingBatchPolicy(this.#windowSize, DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE);
@@ -138,8 +173,15 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#painterHost = document.createElement('div');
     this.#painterHost.className = 'presentation-editor__pages v2-streaming-renderer__pages';
 
+    const { overlay, message, progress, progressValue, progressBar } = createLoadingOverlay(this.#loadingTexts);
+    this.#loadingOverlay = overlay;
+    this.#loadingMessage = message;
+    this.#loadingProgress = progress;
+    this.#loadingProgressValue = progressValue;
+    this.#loadingProgressBar = progressBar;
+
     this.#viewportHost.appendChild(this.#painterHost);
-    this.element.replaceChildren(this.#viewportHost);
+    this.element.replaceChildren(this.#viewportHost, this.#loadingOverlay);
 
     applyHostStyles(
       this.element,
@@ -191,14 +233,19 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     const gen = ++this.#generation;
     this.#resetState();
     this.#transition('opening');
+    this.#showLoadingOverlayWithProgress(this.#loadingTexts.openingMessage, LOADING_PROGRESS_INITIAL);
 
     try {
       // Phase 1: Open + first-paint shell
       await this.#runtime.openSource(source);
       if (gen !== this.#generation) return;
+      this.#setLoadingProgress(LOADING_PROGRESS_SOURCE_OPENED);
 
       await this.#runtime.ready('first-paint-shell');
       if (gen !== this.#generation) return;
+      this.#setLoadingProgress(LOADING_PROGRESS_FIRST_PAINT_SHELL_READY);
+
+      this.#showLoadingOverlayWithProgress(this.#loadingTexts.preparingMessage, LOADING_PROGRESS_PREVIEW_STARTED);
 
       const shell = await this.#runtime.getRenderShell();
       if (gen !== this.#generation) return;
@@ -221,20 +268,33 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
       // Phase 2: First window projection
       v2PerfTimeline.mark(PROJECTION_FIRST_WINDOW_START);
-      const windowResult = await this.#runtime.projectWindow({
-        startBodyChildIndex: 0,
-        maxBodyChildCount: this.#windowSize,
-        stopAfterPageEstimate: this.#firstWindowPageEstimate,
-        includeDependencyManifest: true,
-      });
+      const initialWindow = await this.#projectInitialWindow();
       if (gen !== this.#generation) return;
       v2PerfTimeline.mark(PROJECTION_FIRST_WINDOW_COMPLETE);
+      this.#setLoadingProgress(LOADING_PROGRESS_PREVIEW_RANGE_READY);
 
-      this.#accumulateWindow(windowResult, 0);
-      this.#recordProjectionStats(windowResult);
+      let firstWindowResult = initialWindow.windowResult;
+      let firstWindowMode = initialWindow.projectionMode;
+
+      if (firstWindowMode === 'preview') {
+        this.#showLoadingOverlayWithProgress(
+          this.#loadingTexts.almostReadyMessage,
+          LOADING_PROGRESS_EXACT_FIRST_WINDOW_STARTED,
+        );
+        firstWindowResult = await this.#projectExactInitialWindow(gen, firstWindowResult.continuation.nextBodyChildIndex);
+        if (gen !== this.#generation) return;
+        firstWindowMode = 'exact';
+      }
+
+      this.#setLoadingProgress(LOADING_PROGRESS_EXACT_FIRST_WINDOW_READY);
+
+      this.#accumulateWindow(firstWindowResult, 0, firstWindowMode);
+      this.#recordProjectionStats(firstWindowResult);
       this.#transition('firstWindowProjected');
 
       // Phase 3: Measure + paginate + paint
+      this.#setLoadingProgress(LOADING_PROGRESS_LAYOUT_STARTED);
+      await yieldToBrowser();
       const endRender = v2PerfTimeline.startSpan(SPAN_RENDER);
       try {
         await this.#measurePaginatePaint();
@@ -243,6 +303,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       }
       if (gen !== this.#generation) return;
 
+      this.#setLoadingProgress(LOADING_PROGRESS_COMPLETE);
+      this.#hideLoadingOverlay();
       this.#transition('firstPaintComplete');
 
       v2PerfTimeline.mark(PAINT_FIRST_PAGE_MOUNTED);
@@ -253,7 +315,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       };
       this.emit('firstPaintComplete', firstPaintPayload);
 
-      void this.#advanceRenderShellInBackground(gen);
+      if (firstWindowMode === 'exact') {
+        void this.#advanceRenderShellInBackground(gen);
+      }
 
       // Phase 4: Schedule background streaming or go straight to enriching
       if (this.#accumulated.nextBodyChildIndex < this.#accumulated.totalBodyChildCount) {
@@ -267,6 +331,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     } catch (error) {
       if (gen !== this.#generation) return;
       const normalized = normalizeError(error);
+      this.#hideLoadingOverlay();
       this.#transition('failed');
       this.#emitLayoutError(normalized, 'load');
       throw normalized;
@@ -375,6 +440,11 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     return () => this.off('stateChange', handler);
   }
 
+  onLoadingStateChange(handler: (state: LoadingOverlayState) => void): () => void {
+    this.on('loadingStateChange', handler);
+    return () => this.off('loadingStateChange', handler);
+  }
+
   // ---- Private: State machine --------------------------------------------------
 
   #transition(next: HostState): void {
@@ -396,11 +466,42 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#appendInFlight = false;
     this.#appendBatchPolicy = createInitialStreamingBatchPolicy(this.#windowSize, DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE);
     this.#degradedInfo = null;
+    this.#resetLoadingProgress();
+  }
+
+  async #projectInitialWindow(): Promise<{ projectionMode: 'preview' | 'exact'; windowResult: WindowedProjectionResult }> {
+    try {
+      const previewResult = await this.#runtime.projectPreviewWindow({
+        startBodyChildIndex: 0,
+        maxBodyChildCount: this.#windowSize,
+        stopAfterPageEstimate: this.#firstWindowPageEstimate,
+      });
+
+      return { projectionMode: 'preview', windowResult: previewResult };
+    } catch (error) {
+      if (!isPreviewUnsupportedError(error)) {
+        throw error;
+      }
+
+      await this.#runtime.advanceRenderShell();
+
+      const exactResult = await this.#runtime.projectWindow({
+        startBodyChildIndex: 0,
+        maxBodyChildCount: this.#windowSize,
+        stopAfterPageEstimate: this.#firstWindowPageEstimate,
+        includeDependencyManifest: true,
+      });
+      return { projectionMode: 'exact', windowResult: exactResult };
+    }
   }
 
   // ---- Private: Window accumulation --------------------------------------------
 
-  #accumulateWindow(windowResult: WindowedProjectionResult, startIndex: number): void {
+  #accumulateWindow(
+    windowResult: WindowedProjectionResult,
+    startIndex: number,
+    projectionMode: 'preview' | 'exact',
+  ): void {
     const { blocks, continuation, sectionMetadata, dependencyManifest } = windowResult;
     const bodyChildCount = Math.max(0, continuation.nextBodyChildIndex - startIndex);
     const contractBlocks = toContractFlowBlocks(blocks);
@@ -412,6 +513,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       blockCount: contractBlocks.length,
       blocks: contractBlocks,
       sectionMetadataDelta: sectionMetadata,
+      projectionMode,
       ...(dependencyManifest ? { dependencyManifest } : {}),
       status: 'projected',
     };
@@ -433,6 +535,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   async #measurePaginatePaint(): Promise<void> {
     const layoutOptions = this.#resolveLayoutInput();
     const acc = this.#accumulated;
+    const cooperativeMeasureBlock = createCooperativeMeasureBlock(
+      (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) => measureBlock(block, constraints),
+    );
 
     // Compute previousBlocks for incremental layout.
     // On first paint: previousBlocks is empty, previousLayout is null.
@@ -446,8 +551,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       previousLayout: acc.layout,
       nextBlocks: acc.blocks,
       layoutOptions,
-      measureBlock: (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) =>
-        measureBlock(block, constraints),
+      measureBlock: cooperativeMeasureBlock,
       previousMeasures: acc.measures.length > 0 ? acc.measures : undefined,
     });
 
@@ -463,6 +567,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     }
 
     // Paint
+    await yieldToBrowser();
     const endPaint = v2PerfTimeline.startSpan(SPAN_PAINT);
     try {
       const painter = this.#ensurePainter(acc.blocks, result.measures);
@@ -527,9 +632,10 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       if (gen !== this.#generation) return;
 
       const windowIndex = this.#accumulated.windowRecords.length;
-      this.#accumulateWindow(windowResult, startBodyChildIndex);
+      this.#accumulateWindow(windowResult, startBodyChildIndex, 'exact');
       this.#recordProjectionStats(windowResult);
 
+      await yieldToBrowser();
       await this.#measurePaginatePaint();
       if (gen !== this.#generation) return;
 
@@ -583,6 +689,42 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       }
       this.#handleNonFatalError(error, 'advance-render-shell');
     }
+  }
+
+  async #projectExactInitialWindow(generation: number, previewRangeEnd: number): Promise<WindowedProjectionResult> {
+    if (previewRangeEnd <= 0) {
+      throw new Error('Preview projection did not produce a valid opening range');
+    }
+
+    await this.#runtime.advanceRenderShell();
+    if (generation !== this.#generation) {
+      return makeCancelledWindowResult();
+    }
+
+    const nextShell = await this.#runtime.getRenderShell();
+    if (generation !== this.#generation) {
+      return makeCancelledWindowResult();
+    }
+    if (nextShell) {
+      this.#renderShell = nextShell;
+    }
+
+    const exactResult = await this.#runtime.projectWindow({
+      startBodyChildIndex: 0,
+      maxBodyChildCount: previewRangeEnd,
+      includeDependencyManifest: true,
+    });
+    if (generation !== this.#generation) {
+      return makeCancelledWindowResult();
+    }
+
+    if (exactResult.continuation.nextBodyChildIndex !== previewRangeEnd) {
+      throw new Error(
+        `Preview upgrade projected an unexpected body-child range: expected ${previewRangeEnd}, received ${exactResult.continuation.nextBodyChildIndex}`,
+      );
+    }
+
+    return exactResult;
   }
 
   #completeStreamingIfFinished(): void {
@@ -859,6 +1001,53 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       timestamp: Date.now(),
     });
   }
+
+  #showLoadingOverlayWithProgress(message: string, progressPercent: number): void {
+    this.#loadingMessage.textContent = message;
+    this.#setLoadingProgress(progressPercent);
+    if (this.#showDefaultLoadingOverlay) {
+      this.#loadingOverlay.hidden = false;
+      this.#loadingOverlay.style.display = 'flex';
+      this.#loadingOverlay.setAttribute('aria-hidden', 'false');
+    }
+    this.#emitLoadingStateChange(true, message);
+  }
+
+  #hideLoadingOverlay(): void {
+    if (this.#showDefaultLoadingOverlay) {
+      this.#loadingOverlay.hidden = true;
+      this.#loadingOverlay.style.display = 'none';
+      this.#loadingOverlay.setAttribute('aria-hidden', 'true');
+    }
+    this.#emitLoadingStateChange(false, this.#loadingMessage.textContent ?? '');
+  }
+
+  #setLoadingProgress(progressPercent: number): void {
+    const clampedPercent = clampProgressPercent(progressPercent);
+    const nextPercent = Math.max(this.#loadingProgressPercent, clampedPercent);
+    this.#loadingProgressPercent = nextPercent;
+    this.#loadingProgressValue.textContent = `${nextPercent}%`;
+    this.#loadingProgress.setAttribute('aria-valuenow', String(nextPercent));
+    this.#loadingProgressBar.style.width = `${nextPercent}%`;
+  }
+
+  #resetLoadingProgress(): void {
+    this.#loadingProgressPercent = 0;
+    this.#loadingProgressValue.textContent = '0%';
+    this.#loadingProgress.setAttribute('aria-valuenow', '0');
+    this.#loadingProgressBar.style.width = '0%';
+    this.#loadingMessage.textContent = this.#loadingTexts.openingMessage;
+    this.#emitLoadingStateChange(false, this.#loadingTexts.openingMessage);
+  }
+
+  #emitLoadingStateChange(visible: boolean, message: string): void {
+    this.emit('loadingStateChange', {
+      visible,
+      title: this.#loadingTexts.title,
+      message,
+      progressPercent: this.#loadingProgressPercent,
+    } satisfies LoadingOverlayState);
+  }
 }
 
 // ---- Module-level helpers ----------------------------------------------------
@@ -874,6 +1063,65 @@ function createEmptyAccumulated(): AccumulatedState {
     sectionMetadata: [],
     dependencyManifest: createEmptyDependencyManifest(),
   };
+}
+
+function createLoadingOverlay(loadingTexts: LoadingOverlayTexts): {
+  overlay: HTMLDivElement;
+  message: HTMLParagraphElement;
+  progress: HTMLDivElement;
+  progressValue: HTMLSpanElement;
+  progressBar: HTMLDivElement;
+} {
+  const overlay = document.createElement('div');
+  overlay.className = 'v2-streaming-renderer__loading';
+  overlay.hidden = true;
+  overlay.style.display = 'none';
+  overlay.setAttribute('aria-hidden', 'true');
+
+  const panel = document.createElement('div');
+  panel.className = 'v2-streaming-renderer__loading-panel';
+
+  const title = document.createElement('h2');
+  title.className = 'v2-streaming-renderer__loading-title';
+  title.textContent = loadingTexts.title;
+
+  const message = document.createElement('p');
+  message.className = 'v2-streaming-renderer__loading-message';
+  message.textContent = loadingTexts.openingMessage;
+
+  const meta = document.createElement('div');
+  meta.className = 'v2-streaming-renderer__loading-meta';
+
+  const progressLabel = document.createElement('span');
+  progressLabel.className = 'v2-streaming-renderer__loading-progress-label';
+  progressLabel.textContent = 'Progress';
+
+  const progressValue = document.createElement('span');
+  progressValue.className = 'v2-streaming-renderer__loading-progress-value';
+  progressValue.textContent = '0%';
+
+  meta.append(progressLabel, progressValue);
+
+  const progress = document.createElement('div');
+  progress.className = 'v2-streaming-renderer__loading-progress';
+  progress.setAttribute('role', 'progressbar');
+  progress.setAttribute('aria-label', 'Document loading progress');
+  progress.setAttribute('aria-valuemin', '0');
+  progress.setAttribute('aria-valuemax', '100');
+  progress.setAttribute('aria-valuenow', '0');
+
+  const progressTrack = document.createElement('div');
+  progressTrack.className = 'v2-streaming-renderer__loading-progress-track';
+
+  const progressBar = document.createElement('div');
+  progressBar.className = 'v2-streaming-renderer__loading-progress-bar';
+  progressTrack.appendChild(progressBar);
+  progress.appendChild(progressTrack);
+
+  panel.append(title, message, meta, progress);
+  overlay.appendChild(panel);
+
+  return { overlay, message, progress, progressValue, progressBar };
 }
 
 function normalizeLayoutEngineOptions(options?: LayoutEngineOptions): LayoutEngineOptions {
@@ -915,6 +1163,107 @@ function applyHostStyles(root: HTMLElement, viewport: HTMLElement, painterHost: 
   painterHost.style.position = 'relative';
   painterHost.style.width = '100%';
   painterHost.style.transformOrigin = 'top left';
+
+  const loadingOverlay = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading');
+  if (loadingOverlay) {
+    loadingOverlay.style.position = 'fixed';
+    loadingOverlay.style.top = 'var(--sd-ui-loader-offset-top, 132px)';
+    loadingOverlay.style.left = '50%';
+    loadingOverlay.style.transform = 'translateX(-50%)';
+    loadingOverlay.style.width = 'var(--sd-ui-loader-width, min(420px, calc(100vw - 48px)))';
+    loadingOverlay.style.alignItems = 'center';
+    loadingOverlay.style.justifyContent = 'center';
+    loadingOverlay.style.zIndex = 'var(--sd-ui-loader-z-index, 20)';
+    loadingOverlay.style.pointerEvents = 'none';
+  }
+
+  const loadingPanel = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-panel');
+  if (loadingPanel) {
+    loadingPanel.style.display = 'grid';
+    loadingPanel.style.gap = 'var(--sd-ui-loader-gap, 12px)';
+    loadingPanel.style.width = '100%';
+    loadingPanel.style.padding = 'var(--sd-ui-loader-padding, 20px 24px)';
+    loadingPanel.style.borderRadius = 'var(--sd-ui-loader-radius, 14px)';
+    loadingPanel.style.background =
+      'var(--sd-ui-loader-bg, color-mix(in srgb, var(--sd-ui-bg, #ffffff) 96%, transparent))';
+    loadingPanel.style.boxShadow = 'var(--sd-ui-loader-shadow, var(--sd-ui-shadow, 0 4px 12px rgba(0, 0, 0, 0.12)))';
+    loadingPanel.style.border = '1px solid var(--sd-ui-loader-border, var(--sd-ui-border, #dbdbdb))';
+  }
+
+  const loadingTitle = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-title');
+  if (loadingTitle) {
+    loadingTitle.style.margin = '0';
+    loadingTitle.style.fontSize = 'var(--sd-ui-loader-title-size, 18px)';
+    loadingTitle.style.fontWeight = 'var(--sd-ui-loader-title-weight, 600)';
+    loadingTitle.style.color = 'var(--sd-ui-loader-title-color, var(--sd-ui-text, #47484a))';
+  }
+
+  const loadingMessage = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-message');
+  if (loadingMessage) {
+    loadingMessage.style.margin = '0';
+    loadingMessage.style.fontSize = 'var(--sd-ui-loader-message-size, 14px)';
+    loadingMessage.style.lineHeight = 'var(--sd-ui-loader-message-line-height, 1.5)';
+    loadingMessage.style.color = 'var(--sd-ui-loader-message-color, var(--sd-ui-text-muted, #666666))';
+  }
+
+  const loadingMeta = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-meta');
+  if (loadingMeta) {
+    loadingMeta.style.display = 'flex';
+    loadingMeta.style.alignItems = 'center';
+    loadingMeta.style.justifyContent = 'space-between';
+    loadingMeta.style.gap = 'var(--sd-ui-loader-meta-gap, 12px)';
+  }
+
+  const loadingProgressLabel = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress-label');
+  if (loadingProgressLabel) {
+    loadingProgressLabel.style.fontSize = 'var(--sd-ui-loader-meta-size, 12px)';
+    loadingProgressLabel.style.fontWeight = 'var(--sd-ui-loader-meta-weight, 600)';
+    loadingProgressLabel.style.letterSpacing = '0.02em';
+    loadingProgressLabel.style.textTransform = 'uppercase';
+    loadingProgressLabel.style.color = 'var(--sd-ui-loader-meta-color, var(--sd-ui-text-muted, #666666))';
+  }
+
+  const loadingProgressValue = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress-value');
+  if (loadingProgressValue) {
+    loadingProgressValue.style.fontSize = 'var(--sd-ui-loader-value-size, 13px)';
+    loadingProgressValue.style.fontWeight = 'var(--sd-ui-loader-value-weight, 600)';
+    loadingProgressValue.style.color = 'var(--sd-ui-loader-value-color, var(--sd-ui-text, #47484a))';
+  }
+
+  const loadingProgress = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress');
+  if (loadingProgress) {
+    loadingProgress.style.width = '100%';
+    loadingProgress.style.display = 'block';
+  }
+
+  const loadingProgressTrack = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress-track');
+  if (loadingProgressTrack) {
+    loadingProgressTrack.style.position = 'relative';
+    loadingProgressTrack.style.width = '100%';
+    loadingProgressTrack.style.height = 'var(--sd-ui-loader-progress-height, 8px)';
+    loadingProgressTrack.style.overflow = 'hidden';
+    loadingProgressTrack.style.borderRadius = 'var(--sd-ui-loader-progress-radius, 999px)';
+    loadingProgressTrack.style.background =
+      'var(--sd-ui-loader-progress-track-bg, color-mix(in srgb, var(--sd-ui-border, #dbdbdb) 45%, transparent))';
+  }
+
+  const loadingProgressBar = root.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress-bar');
+  if (loadingProgressBar) {
+    loadingProgressBar.style.height = '100%';
+    loadingProgressBar.style.width = '0%';
+    loadingProgressBar.style.borderRadius = 'var(--sd-ui-loader-progress-radius, 999px)';
+    loadingProgressBar.style.background =
+      'var(--sd-ui-loader-progress-fill, linear-gradient(90deg, var(--sd-ui-action, #1355ff), var(--sd-color-blue-300, #85a5ff)))';
+    loadingProgressBar.style.transition = 'width var(--sd-ui-loader-progress-transition-duration, 220ms) ease';
+  }
+}
+
+function clampProgressPercent(progressPercent: number): number {
+  if (!Number.isFinite(progressPercent)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(progressPercent)));
 }
 
 function getEffectivePageGap(options: LayoutEngineOptions): number {
@@ -981,6 +1330,66 @@ function getFieldHeavyRatio(stats: WindowedProjectionResult['projectionStats']):
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function createCooperativeMeasureBlock(
+  measure: (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) => Promise<Measure>,
+): (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) => Promise<Measure> {
+  let lastYieldAt = perfNow();
+
+  return async (block, constraints) => {
+    if (perfNow() - lastYieldAt >= MAIN_THREAD_YIELD_BUDGET_MS) {
+      await yieldToBrowser();
+      lastYieldAt = perfNow();
+    }
+
+    return measure(block, constraints);
+  };
+}
+
+async function yieldToBrowser(): Promise<void> {
+  const browserScheduler = getBrowserScheduler();
+  if (typeof browserScheduler?.yield === 'function') {
+    await browserScheduler.yield();
+    return;
+  }
+
+  if (typeof requestAnimationFrame === 'function') {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => resolve());
+    });
+    return;
+  }
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+function getBrowserScheduler(): { yield?: () => Promise<void> } | null {
+  const candidate = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  return candidate ?? null;
+}
+
+function makeCancelledWindowResult(): WindowedProjectionResult {
+  return {
+    blocks: [],
+    continuation: {
+      nextBodyChildIndex: 0,
+      hasMore: false,
+      totalBodyChildCount: 0,
+    },
+    blockToSourceRef: new Map(),
+    sectionMetadata: {
+      sectionBreaks: [],
+    },
+  };
+}
+
+function isPreviewUnsupportedError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.name === 'PreviewWindowUnsupportedError' || error.message.startsWith('Preview projection does not support');
 }
 
 function createEmptyDependencyManifest(): DependencyManifest {

@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import type { SourceRef } from '../../identity/types.js';
-import type { XmlElementNode } from '../../types/xml.js';
+import type { SourceSpan, XmlElementNode } from '../../types/xml.js';
 import { makeNodeId } from '../../xml/node-id.js';
 
 /**
@@ -47,6 +47,18 @@ export function elementToSourceAnchor(element: XmlElementNode, partUri: string, 
   return {
     partUri,
     nodeId: resolveCanonicalNodeId(element, partUri),
+    ...(sourceNodePath ? { sourceNodePath } : {}),
+  };
+}
+
+/**
+ * Build a source anchor directly from a source span, without requiring a
+ * hydrated XmlElementNode. Used by the preview-shell projection path.
+ */
+export function sourceSpanToSourceAnchor(partUri: string, sourceSpan: SourceSpan, sourceNodePath?: string): SourceAnchor {
+  return {
+    partUri,
+    nodeId: makeNodeId(partUri, 'element', sourceSpan),
     ...(sourceNodePath ? { sourceNodePath } : {}),
   };
 }

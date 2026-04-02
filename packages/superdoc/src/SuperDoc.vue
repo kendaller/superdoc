@@ -1595,6 +1595,7 @@ const getPDFViewer = () => {
             :file-source="doc.data"
             :document-id="doc.id"
             :options="streamingRendererOptions(doc)"
+            :loading-overlay="proxy.$superdoc.config.modules?.surfaces?.documentLoading"
             @renderer-ready="onV2RendererReady"
             @renderer-error="onV2RendererError(doc, 'v2-renderer-error', $event)"
           />

@@ -1,7 +1,16 @@
 import { StyleResolver } from '../resolve/style-resolver.js';
-import { projectWindowToFlowBlocks, type WindowedProjectionResult } from '../projections/layout/index.js';
+import {
+  projectPreviewWindowToFlowBlocks,
+  projectWindowToFlowBlocks,
+  type WindowedProjectionResult,
+} from '../projections/layout/index.js';
 import type { DocumentHandle } from '../types/session.js';
-import type { PrefetchWindowParams, ProjectWindowParams, WindowContinuation } from './worker-protocol.js';
+import type {
+  PrefetchWindowParams,
+  ProjectPreviewWindowParams,
+  ProjectWindowParams,
+  WindowContinuation,
+} from './worker-protocol.js';
 
 /**
  * Shared windowed-projection helper used by both runtime implementations.
@@ -24,6 +33,15 @@ export class WindowProjectionController {
     }
 
     return this.#projectWindow(handle, params);
+  }
+
+  projectPreviewWindow(handle: DocumentHandle, params: ProjectPreviewWindowParams): WindowedProjectionResult {
+    const renderShell = handle.renderShell();
+    if (!renderShell) {
+      throw new Error('Render shell is not available. Call ready("first-paint-shell") before projecting preview windows.');
+    }
+
+    return projectPreviewWindowToFlowBlocks(renderShell, params);
   }
 
   projectNextWindow(handle: DocumentHandle, continuation: WindowContinuation): WindowedProjectionResult {

@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { open } from '../src/session/open.js';
 import { createRenderShellSnapshot } from '../src/render-shell/render-shell-snapshot.js';
 import { createComplexDocx, createMinimalDocx, createMultiParagraphDocx } from './helpers/create-test-docx.js';
+import { createInlineSegmentsDocx, createTableDocx } from './helpers/create-rich-docx.js';
 
 describe('render-shell stages', () => {
   it('treats first-paint-shell as a valid intermediate stage', async () => {
@@ -135,6 +136,45 @@ describe('render-shell body-child access', () => {
 
     const shell = handle.renderShell()!;
     expect(shell.bodyChildWindow(999, 5)).toHaveLength(0);
+
+    await handle.close();
+  });
+
+  it('builds preview paragraph records without hydrating full XmlElementNode trees', async () => {
+    const handle = await open(createInlineSegmentsDocx());
+    await handle.ready('first-paint-shell');
+
+    const previewRecord = handle.renderShell()!.bodyChildPreview(2);
+
+    expect(previewRecord).toBeDefined();
+    expect(previewRecord?.kind).toBe('paragraph');
+    if (!previewRecord || previewRecord.kind !== 'paragraph') {
+      throw new Error('Expected a preview paragraph record');
+    }
+
+    expect(previewRecord.classification).toBe('field-display');
+    const segmentKinds = previewRecord.runs.flatMap((run) => run.raw.segments.map((segment) => segment.segmentKind));
+    expect(segmentKinds).toEqual(['text']);
+    expect(previewRecord.runs[0].raw.segments[0]).toMatchObject({
+      segmentKind: 'text',
+      text: '1',
+    });
+
+    await handle.close();
+  });
+
+  it('marks unsupported preview records explicitly', async () => {
+    const handle = await open(createTableDocx());
+    await handle.ready('first-paint-shell');
+
+    const previewRecord = handle.renderShell()!.bodyChildPreview(0);
+
+    expect(previewRecord).toBeDefined();
+    expect(previewRecord?.kind).toBe('unsupported');
+    expect(previewRecord).toMatchObject({
+      kind: 'unsupported',
+      localName: 'tbl',
+    });
 
     await handle.close();
   });

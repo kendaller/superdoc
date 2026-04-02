@@ -114,6 +114,42 @@ export type XmlLexicalIndex = {
   encoding: "utf-8" | "utf-16le" | "utf-16be" | "unknown";
 };
 
+/**
+ * Lightweight first-paint index for `/word/document.xml`.
+ *
+ * Records only the information needed for preview-first rendering:
+ * - root open-tag span for wrapper reconstruction
+ * - direct `w:body` child spans
+ * - final section page geometry
+ *
+ * This is intentionally separate from `XmlLexicalIndex` so the exact-path
+ * lexical index can remain unchanged for later render-shell/structure stages.
+ */
+export type XmlDocumentBodyFastIndex = {
+  rootQName: string;
+  rootOpenTagSpan: SourceSpan;
+  bodyChildRecords: XmlDocumentBodyBoundaryRecord[];
+  primaryPageGeometry?: XmlPageGeometry;
+};
+
+export type XmlDocumentBodyBoundaryRecord = {
+  id: string;
+  prefix?: string;
+  localName: string;
+  fullSpan: SourceSpan;
+};
+
+export type XmlPageGeometry = {
+  width: number;
+  height: number;
+  margins: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+};
+
 export type XmlStructuralRecord = {
   id: string;
   role: "root" | "boundary" | "anchor";

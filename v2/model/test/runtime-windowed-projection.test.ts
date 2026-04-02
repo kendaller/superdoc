@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { InProcessRuntimeV2, WorkerProxyV2, installWorkerHostV2 } from '../src/runtime/index.js';
 import { createMultiParagraphDocx } from './helpers/create-test-docx.js';
+import { createInlineSegmentsDocx } from './helpers/create-rich-docx.js';
 
 describe('windowed projection runtimes', () => {
   it('projects and prefetched windows in-process', async () => {
@@ -137,6 +138,49 @@ describe('windowed projection runtimes', () => {
     });
 
     expect(secondWindow.continuation.nextBodyChildIndex).toBeGreaterThan(firstWindow.continuation.nextBodyChildIndex);
+
+    await runtime.close();
+  });
+
+  it('projects preview windows in-process using visible field results', async () => {
+    const runtime = new InProcessRuntimeV2();
+    await runtime.openSource(createInlineSegmentsDocx());
+    await runtime.ready('first-paint-shell');
+
+    const previewWindow = await runtime.projectPreviewWindow({
+      startBodyChildIndex: 2,
+      maxBodyChildCount: 1,
+      stopAfterPageEstimate: 1,
+    });
+
+    expect(paragraphText(previewWindow.blocks)).toBe('1');
+    expect(previewWindow.projectionStats).toMatchObject({
+      fieldHeavyParagraphs: 1,
+      displayFastPathParagraphs: 1,
+    });
+
+    await runtime.close();
+  });
+
+  it('projects preview windows through the worker proxy using visible field results', async () => {
+    const { mainThreadWorker, workerScope } = createWorkerLoopback();
+    installWorkerHostV2(workerScope);
+
+    const runtime = new WorkerProxyV2(mainThreadWorker);
+    await runtime.openSource(createInlineSegmentsDocx());
+    await runtime.ready('first-paint-shell');
+
+    const previewWindow = await runtime.projectPreviewWindow({
+      startBodyChildIndex: 2,
+      maxBodyChildCount: 1,
+      stopAfterPageEstimate: 1,
+    });
+
+    expect(paragraphText(previewWindow.blocks)).toBe('1');
+    expect(previewWindow.projectionStats).toMatchObject({
+      fieldHeavyParagraphs: 1,
+      displayFastPathParagraphs: 1,
+    });
 
     await runtime.close();
   });

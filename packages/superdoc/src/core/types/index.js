@@ -237,6 +237,62 @@
  * @property {boolean | PasswordPromptConfig} [passwordPrompt] Built-in password prompt dialog for encrypted DOCX files.
  *   Enabled by default when omitted. Set to `false` to disable. When `true`, uses default titles/labels.
  *   When an object, allows custom titles and labels.
+ * @property {boolean | DocumentLoadingConfig} [documentLoading] Built-in loader shown while the v2 renderer prepares the first visible document pages.
+ *   Enabled by default when omitted. Set to `false` to suppress the loader entirely.
+ *   When an object, allows custom copy, custom components, external renderers, and per-document resolution.
+ */
+
+/**
+ * All customizable text strings for the document-loading overlay, resolved with defaults.
+ * @typedef {Object} ResolvedDocumentLoadingTexts
+ * @property {string} title Loader heading shown above the progress bar
+ * @property {string} openingMessage Text shown while opening the document source
+ * @property {string} preparingMessage Text shown while preparing the first pages
+ * @property {string} almostReadyMessage Text shown while building the first visible document view
+ */
+
+/**
+ * Read-only context passed to a document-loading resolver to decide how to render.
+ * @typedef {Object} DocumentLoadingContext
+ * @property {string} [documentId] The document currently loading
+ * @property {ResolvedDocumentLoadingTexts} texts Resolved loader copy
+ */
+
+/**
+ * Handle object injected into custom document-loading UIs as the `loadingOverlay` prop/context field.
+ * @typedef {Object} DocumentLoadingHandle
+ * @property {boolean} visible Whether the loader is currently visible
+ * @property {string} title Current loader title
+ * @property {string} message Current loader message
+ * @property {number} progressPercent Current determinate progress percentage (0-100)
+ * @property {ResolvedDocumentLoadingTexts} texts Resolved loader copy
+ * @property {(listener: (state: { visible: boolean, title: string, message: string, progressPercent: number }) => void) => () => void} subscribe Subscribe to loader state updates
+ */
+
+/**
+ * Context passed to an external (framework-agnostic) document-loading renderer.
+ * @typedef {Object} DocumentLoadingRenderContext
+ * @property {HTMLElement} container Empty DOM container to render into
+ * @property {string} [documentId] The document currently loading
+ * @property {DocumentLoadingHandle} loadingOverlay Reactive handle for current loader state
+ */
+
+/**
+ * Resolution returned by a document-loading resolver.
+ * @typedef {{ type: 'default' } | { type: 'none' } | { type: 'custom', component: unknown, props?: Record<string, unknown> } | { type: 'external', render: (ctx: DocumentLoadingRenderContext) => ({ destroy?: () => void } | void) }} DocumentLoadingResolution
+ */
+
+/**
+ * Configuration for the document-loading overlay used by the v2 renderer.
+ * @typedef {Object} DocumentLoadingConfig
+ * @property {string} [title] Loader heading (default: 'Loading document')
+ * @property {string} [openingMessage] Message while opening the document (default: 'Opening document…')
+ * @property {string} [preparingMessage] Message while preparing the first pages (default: 'Preparing first pages…')
+ * @property {string} [almostReadyMessage] Message just before the first document view appears (default: 'Almost ready. Your document will appear shortly…')
+ * @property {unknown} [component] Vue component to render as custom loader content. Mutually exclusive with `render`.
+ * @property {Record<string, unknown>} [props] Extra props passed to the custom Vue component. Component-only; ignored for `render`.
+ * @property {(ctx: DocumentLoadingRenderContext) => ({ destroy?: () => void } | void)} [render] External (framework-agnostic) renderer. Mutually exclusive with `component`.
+ * @property {(ctx: DocumentLoadingContext) => DocumentLoadingResolution | null | undefined} [resolver] Conditional resolver for per-document customization. Can coexist with `component`/`render`.
  */
 
 /**

@@ -77,6 +77,7 @@ export { InProcessRuntimeV2 } from './runtime/in-process-v2.js';
 export { WorkerProxyV2, installWorkerHostV2 } from './runtime/index.js';
 export type {
   EnrichmentTarget,
+  ProjectPreviewWindowParams,
   ProjectWindowParams,
   WindowContinuation,
   TaskId,
@@ -184,6 +185,8 @@ export { resolveField, parseFieldInstruction } from './resolve/index.js';
 
 // Layout projection (Layer 4: semantic → FlowBlock[])
 export { projectToFlowBlocks } from './projections/layout/index.js';
+export { PreviewWindowUnsupportedError } from './projections/layout/index.js';
+export { projectPreviewWindowToFlowBlocks } from './projections/layout/index.js';
 export { projectWindowToFlowBlocks } from './projections/layout/index.js';
 export type {
   ProjectionResult,

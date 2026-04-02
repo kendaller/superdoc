@@ -12,6 +12,8 @@ export type { ProjectOptions, ProjectionResult } from './project.js';
 // Windowed entry point (render-shell path — fast first paint)
 export { projectWindowToFlowBlocks } from './window-project.js';
 export type { WindowProjectOptions } from './window-project.js';
+export { projectPreviewWindowToFlowBlocks, PreviewWindowUnsupportedError } from './preview-window-project.js';
+export type { PreviewProjectOptions } from './preview-window-project.js';
 
 // Individual projectors (for targeted use or testing)
 export { projectParagraph } from './paragraph-projector.js';

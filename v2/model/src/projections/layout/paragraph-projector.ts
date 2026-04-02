@@ -41,6 +41,8 @@ import type { DependencyCollector } from './dependency-manifest.js';
 import { projectRuns, projectRunSegmentsFromFeeder, projectExtractedRunSegments } from './run-projector.js';
 import type { ResolvedRunProperties } from './run-projector.js';
 import type { ParagraphRenderPlan } from './paragraph-render-plan.js';
+import type { PreviewParagraphRecord, PreviewRunRecord } from '../../render-shell/preview-types.js';
+import { sourceSpanToSourceAnchor } from './source-anchor.js';
 import {
   normalizeColor,
   rawParagraphToStyleEngine,
@@ -126,6 +128,25 @@ export function projectParagraphFromFeeder(
   };
 }
 
+export function projectPreviewParagraph(
+  paragraph: PreviewParagraphRecord,
+  ids: StableIdAllocator,
+  resolver?: StyleResolver,
+): ParagraphBlock {
+  const resolvedParagraph = resolver ? resolver.resolveParagraphProperties(rawParagraphToStyleEngine(paragraph.raw)) : undefined;
+  const attrs = buildParagraphAttrs(paragraph.raw, resolvedParagraph);
+
+  return {
+    kind: 'paragraph',
+    id: ids.blockId(
+      'paragraph',
+      sourceSpanToSourceAnchor(paragraph.partUri, paragraph.sourceSpan, paragraph.bodyChildPath),
+    ),
+    runs: collectDisplayRunsFromPreview(paragraph.runs, resolver, resolvedParagraph),
+    ...(attrs ? { attrs } : {}),
+  };
+}
+
 function collectParagraphRuns(
   paragraphNode: FeederNode<'paragraph'>,
   feeder: ProjectionFeeder,
@@ -177,6 +198,30 @@ function collectDisplayRunsFromFeeder(
   const resolvedFormattingCache = new Map<string, ResolvedRunProperties | null>();
 
   for (const displayRun of feeder.paragraphDisplayRuns(paragraphNode, renderPlan.instructionRunIds)) {
+    const resolvedFormatting = resolveDisplayRunFormatting(
+      displayRun,
+      resolver,
+      resolvedParagraph,
+      resolvedFormattingCache,
+    );
+
+    for (const projectedRun of projectExtractedRunSegments(displayRun.raw, resolvedFormatting)) {
+      pushCoalescedRun(projectedRuns, projectedRun);
+    }
+  }
+
+  return projectedRuns;
+}
+
+function collectDisplayRunsFromPreview(
+  previewRuns: readonly PreviewRunRecord[],
+  resolver: StyleResolver | undefined,
+  resolvedParagraph: ResolvedParagraphProperties | undefined,
+): Run[] {
+  const projectedRuns: Run[] = [];
+  const resolvedFormattingCache = new Map<string, ResolvedRunProperties | null>();
+
+  for (const displayRun of previewRuns) {
     const resolvedFormatting = resolveDisplayRunFormatting(
       displayRun,
       resolver,

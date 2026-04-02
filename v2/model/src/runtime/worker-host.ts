@@ -292,6 +292,11 @@ export function installWorkerHostV2(scope: WorkerScope): void {
         return createRenderShellSnapshot(handle.renderShell());
       }
 
+      case 'projectPreviewWindow': {
+        if (!handle) throw new Error('No session open');
+        return windowProjection.projectPreviewWindow(handle, req.params);
+      }
+
       case 'projectWindow': {
         if (!handle) throw new Error('No session open');
         return windowProjection.projectWindow(handle, req.params);

@@ -10,6 +10,7 @@ import type { ReadyStage, PackageSession } from '../types/session.js';
 import type { XmlPart } from '../types/package.js';
 import { resolvePartBytes } from '../session/part-bytes.js';
 import { buildLexicalIndex } from './indexer.js';
+import { buildDocumentBodyFastIndex } from './document-body-fast-index.js';
 import type { BoundaryConfig } from './indexer.js';
 
 // The main document is the only XML part indexed on the first-paint critical path.
@@ -58,12 +59,24 @@ const BOUNDARY_CONFIGS: Record<string, BoundaryConfig> = {
  * This keeps the pre-render stage focused on the main document body's boundary
  * index while leaving styles/numbering/settings for the later render-shell stage.
  */
-export function indexRenderShellParts(session: PackageSession, signal?: AbortSignal): void {
+export function indexFirstPaintShellParts(session: PackageSession, signal?: AbortSignal): void {
   for (const [uri, part] of session.parts) {
     throwIfAborted(signal);
     if (part.kind !== 'xml') continue;
     if (!FIRST_PAINT_SHELL_INDEXED_PARTS.has(uri)) continue;
     indexSinglePart(part, session, 'first-paint-shell');
+  }
+}
+
+/**
+ * Index the main document part for exact render-shell projection.
+ */
+export function indexRenderShellParts(session: PackageSession, signal?: AbortSignal): void {
+  for (const [uri, part] of session.parts) {
+    throwIfAborted(signal);
+    if (part.kind !== 'xml') continue;
+    if (!FIRST_PAINT_SHELL_INDEXED_PARTS.has(uri)) continue;
+    indexSinglePart(part, session, 'render-shell');
   }
 }
 
@@ -111,11 +124,20 @@ export function indexPartOnDemand(part: XmlPart, session: PackageSession, signal
 }
 
 function indexSinglePart(part: XmlPart, session: PackageSession, stage: ReadyStage): void {
-  if (part.lexicalIndex) return;
+  if (stage === 'first-paint-shell') {
+    if (part.documentBodyFastIndex) return;
+  } else if (part.lexicalIndex) {
+    return;
+  }
 
   try {
     const bytes = resolvePartBytes(part, session);
     part.originalBytes = bytes;
+
+    if (stage === 'first-paint-shell' && part.uri === '/word/document.xml') {
+      part.documentBodyFastIndex = buildDocumentBodyFastIndex(bytes, part.uri);
+      return;
+    }
 
     const config = BOUNDARY_CONFIGS[part.uri] ?? { boundaryDepth: 1 };
     part.lexicalIndex = buildLexicalIndex(bytes, part.uri, config);

@@ -18,6 +18,7 @@ import type {
   TaskId,
   EnrichmentTarget,
   PrefetchWindowParams,
+  ProjectPreviewWindowParams,
   ProjectWindowParams,
   WindowContinuation,
 } from './worker-protocol.js';
@@ -64,6 +65,11 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
   async getRenderShell() {
     this.#assertOpen();
     return createRenderShellSnapshot(this.#handle!.renderShell());
+  }
+
+  async projectPreviewWindow(params: ProjectPreviewWindowParams): Promise<WindowedProjectionResult> {
+    this.#assertOpen();
+    return this.#windowProjection.projectPreviewWindow(this.#handle!, params);
   }
 
   async projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult> {

@@ -93,6 +93,39 @@
   --sd-ui-tooltip-radius: var(--sd-radius-100);
   --sd-ui-tooltip-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
 
+  /* UI: v2 document loader — cascades from semantic tier */
+  --sd-ui-loader-width: min(420px, calc(100vw - 48px));
+  --sd-ui-loader-offset-top: 132px;
+  --sd-ui-loader-z-index: 20;
+  --sd-ui-loader-gap: 12px;
+  --sd-ui-loader-padding: 20px 24px;
+  --sd-ui-loader-radius: 14px;
+  --sd-ui-loader-bg: color-mix(in srgb, var(--sd-ui-bg) 96%, transparent);
+  --sd-ui-loader-border: var(--sd-ui-border);
+  --sd-ui-loader-shadow: var(--sd-ui-shadow);
+  --sd-ui-loader-title-size: 18px;
+  --sd-ui-loader-title-weight: 600;
+  --sd-ui-loader-title-color: var(--sd-ui-text);
+  --sd-ui-loader-message-size: var(--sd-ui-font-size-400);
+  --sd-ui-loader-message-line-height: 1.5;
+  --sd-ui-loader-message-color: var(--sd-ui-text-muted);
+  --sd-ui-loader-meta-gap: 12px;
+  --sd-ui-loader-meta-size: var(--sd-ui-font-size-200);
+  --sd-ui-loader-meta-weight: 600;
+  --sd-ui-loader-meta-color: var(--sd-ui-text-muted);
+  --sd-ui-loader-value-size: var(--sd-ui-font-size-300);
+  --sd-ui-loader-value-weight: 600;
+  --sd-ui-loader-value-color: var(--sd-ui-text);
+  --sd-ui-loader-progress-height: 8px;
+  --sd-ui-loader-progress-radius: 999px;
+  --sd-ui-loader-progress-track-bg: color-mix(in srgb, var(--sd-ui-border) 45%, transparent);
+  --sd-ui-loader-progress-fill: linear-gradient(
+    90deg,
+    var(--sd-ui-action),
+    var(--sd-color-blue-300)
+  );
+  --sd-ui-loader-progress-transition-duration: 220ms;
+
   /* UI: toolbar — cascades from semantic tier */
   --sd-ui-toolbar-height: 32px;
   --sd-ui-toolbar-padding-x: 16px;

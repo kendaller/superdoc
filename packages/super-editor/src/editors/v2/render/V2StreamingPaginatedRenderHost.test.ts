@@ -123,6 +123,9 @@ function configureDocumentWindow(
   const nextBodyChildIndex = firstWindowNextBodyChildIndex ?? Math.min(firstWindowBlocks.length, totalBodyChildCount);
 
   (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(totalBodyChildCount));
+  (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
+    makeWindowResult(firstWindowBlocks, nextBodyChildIndex, totalBodyChildCount),
+  );
   (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
     makeWindowResult(firstWindowBlocks, nextBodyChildIndex, totalBodyChildCount),
   );
@@ -134,6 +137,9 @@ function createMockRuntime(overrides?: Partial<DocumentRuntime>): DocumentRuntim
     close: vi.fn().mockResolvedValue(undefined),
     ready: vi.fn().mockResolvedValue(undefined),
     getRenderShell: vi.fn().mockResolvedValue(makeShell(10)),
+    projectPreviewWindow: vi
+      .fn()
+      .mockResolvedValue(makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 10)),
     projectWindow: vi
       .fn()
       .mockResolvedValue(makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 10)),
@@ -172,7 +178,7 @@ describe('V2StreamingPaginatedRenderHost', () => {
   });
 
   describe('first paint from partial block set', () => {
-    it('projects only the first window, measures, paginates, and paints', async () => {
+    it('uses preview only to choose the opening range, then paints the exact first window', async () => {
       const runtime = createMockRuntime();
       const host = new V2StreamingPaginatedRenderHost({
         element: document.createElement('div'),
@@ -187,8 +193,14 @@ describe('V2StreamingPaginatedRenderHost', () => {
 
       expect(runtime.openSource).toHaveBeenCalledTimes(1);
       expect(runtime.ready).toHaveBeenCalledWith('first-paint-shell');
-      expect(runtime.getRenderShell).toHaveBeenCalledTimes(2);
-      expect(runtime.advanceRenderShell).toHaveBeenCalledTimes(1);
+      expect(runtime.projectPreviewWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          startBodyChildIndex: 0,
+          maxBodyChildCount: 3,
+          stopAfterPageEstimate: 2,
+        }),
+      );
+      expect(runtime.advanceRenderShell).toHaveBeenCalledTimes(2);
       expect(runtime.projectWindow).toHaveBeenCalledWith(
         expect.objectContaining({
           startBodyChildIndex: 0,
@@ -199,6 +211,110 @@ describe('V2StreamingPaginatedRenderHost', () => {
       expect(incrementalLayoutMock).toHaveBeenCalledTimes(1);
       expect(painter.paint).toHaveBeenCalledTimes(1);
       expect(host.state).toBe('complete'); // 3 body children, all consumed in first window
+    });
+
+    it('falls back to exact first-window projection when preview projection is unsupported', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 3 });
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error('Preview projection does not support tbl at body child 0: tables are not supported'),
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      expect(runtime.projectPreviewWindow).toHaveBeenCalledTimes(1);
+      expect(runtime.advanceRenderShell).toHaveBeenCalledTimes(2);
+      expect(runtime.projectWindow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          startBodyChildIndex: 0,
+          maxBodyChildCount: 3,
+          stopAfterPageEstimate: 2,
+        }),
+      );
+      expect(host.state).toBe('complete');
+    });
+
+    it('shows a loading overlay until the exact first window is ready', async () => {
+      const runtime = createMockRuntime();
+      const hostElement = document.createElement('div');
+      configureDocumentWindow(runtime, { totalBodyChildCount: 3 });
+
+      let resolveExactWindow!: (result: WindowedProjectionResult) => void;
+      const exactWindowPromise = new Promise<WindowedProjectionResult>((resolve) => {
+        resolveExactWindow = resolve;
+      });
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockImplementationOnce(() => exactWindowPromise);
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: hostElement,
+        runtime,
+        windowSize: 3,
+      });
+
+      const loadPromise = host.load(new Uint8Array([1, 2, 3]));
+      const loadingOverlay = hostElement.querySelector<HTMLElement>('.v2-streaming-renderer__loading');
+      const progressBar = hostElement.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress');
+      const progressValue = hostElement.querySelector<HTMLElement>('.v2-streaming-renderer__loading-progress-value');
+
+      expect(loadingOverlay?.hidden).toBe(false);
+      await vi.waitFor(() => {
+        expect(loadingOverlay?.textContent).toContain('Almost ready. Your document will appear shortly');
+      });
+      expect(progressBar?.getAttribute('aria-valuenow')).toBe('82');
+      expect(progressValue?.textContent).toBe('82%');
+
+      resolveExactWindow(makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 3));
+      await loadPromise;
+
+      expect(loadingOverlay?.hidden).toBe(true);
+      expect(host.state).toBe('complete');
+    });
+
+    it('emits determinate loading state updates while the first exact window is loading', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, { totalBodyChildCount: 3 });
+
+      let resolveExactWindow!: (result: WindowedProjectionResult) => void;
+      const exactWindowPromise = new Promise<WindowedProjectionResult>((resolve) => {
+        resolveExactWindow = resolve;
+      });
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockImplementationOnce(() => exactWindowPromise);
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+        showDefaultLoadingOverlay: false,
+      });
+
+      const loadingStates: Array<{ visible: boolean; message: string; progressPercent: number }> = [];
+      host.onLoadingStateChange((state) => {
+        loadingStates.push({
+          visible: state.visible,
+          message: state.message,
+          progressPercent: state.progressPercent,
+        });
+      });
+
+      const loadPromise = host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(() => {
+        expect(loadingStates.some((state) => state.progressPercent === 82)).toBe(true);
+      });
+
+      resolveExactWindow(makeWindowResult([makeBlock('b1'), makeBlock('b2'), makeBlock('b3')], 3, 3));
+      await loadPromise;
+
+      expect(loadingStates.at(-1)).toMatchObject({
+        visible: false,
+        progressPercent: 100,
+      });
     });
   });
 
@@ -292,6 +408,9 @@ describe('V2StreamingPaginatedRenderHost', () => {
     it('uses continuation body-child progress instead of block count when appending', async () => {
       const runtime = createMockRuntime();
       (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(2));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
+        makeWindowResult([makeBlock('b1'), makeBlock('b2')], 1, 2),
+      );
       (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValueOnce(
         makeWindowResult([makeBlock('b1'), makeBlock('b2')], 1, 2),
       );
@@ -487,10 +606,11 @@ describe('V2StreamingPaginatedRenderHost', () => {
         return { sessionId: 'session-B' };
       });
 
-      // Load 1 never gets past openSource, so getRenderShell and projectWindow
+      // Load 1 never gets past openSource, so getRenderShell and projectPreviewWindow
       // are only called by load 2. Use simple mocks that return source-B data.
       const blocksB = [makeBlock('B1'), makeBlock('B2')];
       (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(2));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(blocksB, 2, 2));
       (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(blocksB, 2, 2));
 
       const host = new V2StreamingPaginatedRenderHost({
@@ -546,6 +666,7 @@ describe('V2StreamingPaginatedRenderHost', () => {
       // Configure new blocks for second load
       const newBlocks = [makeBlock('new1'), makeBlock('new2')];
       (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(2));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(newBlocks, 2, 2));
       (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(newBlocks, 2, 2));
 
       // Second load — same doc, different bytes
