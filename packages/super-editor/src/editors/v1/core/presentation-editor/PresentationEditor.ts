@@ -2433,21 +2433,7 @@ export class PresentationEditor extends EventEmitter {
     const sessionMode = this.#headerFooterSession?.session?.mode ?? 'body';
 
     if (layout && sessionMode === 'body') {
-      let pageIndex: number | null = null;
-      for (let idx = 0; idx < layout.pages.length; idx++) {
-        const page = layout.pages[idx];
-        for (const fragment of page.fragments) {
-          if (isFootnoteLayoutBlockId((fragment as { blockId?: string }).blockId)) {
-            continue;
-          }
-          const frag = fragment as { pmStart?: number; pmEnd?: number };
-          if (frag.pmStart != null && frag.pmEnd != null && clampedPos >= frag.pmStart && clampedPos <= frag.pmEnd) {
-            pageIndex = idx;
-            break;
-          }
-        }
-        if (pageIndex != null) break;
-      }
+      const pageIndex = this.#findPageIndexForPosition(layout, clampedPos);
 
       if (pageIndex != null) {
         const pageEl = getPageElementByIndex(this.#viewportHost, pageIndex);
@@ -2569,6 +2555,26 @@ export class PresentationEditor extends EventEmitter {
   }
 
   /**
+   * Find the 0-based page index whose body fragments contain `pos`, skipping footnote
+   * layout blocks. Returns null when no fragment reports pmStart/pmEnd for `pos`.
+   */
+  #findPageIndexForPosition(layout: Layout, pos: number): number | null {
+    for (let idx = 0; idx < layout.pages.length; idx++) {
+      const page = layout.pages[idx];
+      for (const fragment of page.fragments) {
+        if (isFootnoteLayoutBlockId((fragment as { blockId?: string }).blockId)) {
+          continue;
+        }
+        const frag = fragment as { pmStart?: number; pmEnd?: number };
+        if (frag.pmStart != null && frag.pmEnd != null && pos >= frag.pmStart && pos <= frag.pmEnd) {
+          return idx;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Find the DOM element containing a specific document position.
    * Returns the most specific (smallest range) matching element.
    */
@@ -2635,21 +2641,7 @@ export class PresentationEditor extends EventEmitter {
     const sessionMode = this.#headerFooterSession?.session?.mode ?? 'body';
     if (!layout || sessionMode !== 'body') return false;
 
-    let pageIndex: number | null = null;
-    for (let idx = 0; idx < layout.pages.length; idx++) {
-      const page = layout.pages[idx];
-      for (const fragment of page.fragments) {
-        if (isFootnoteLayoutBlockId((fragment as { blockId?: string }).blockId)) {
-          continue;
-        }
-        const frag = fragment as { pmStart?: number; pmEnd?: number };
-        if (frag.pmStart != null && frag.pmEnd != null && clampedPos >= frag.pmStart && clampedPos <= frag.pmEnd) {
-          pageIndex = idx;
-          break;
-        }
-      }
-      if (pageIndex != null) break;
-    }
+    const pageIndex = this.#findPageIndexForPosition(layout, clampedPos);
     if (pageIndex == null) return false;
 
     // Trigger virtualization to render the page
@@ -5374,6 +5366,8 @@ export class PresentationEditor extends EventEmitter {
     this.#layoutOptions.pageSize = pageSize;
     this.#layoutOptions.margins = margins;
     const flowMode = this.#layoutOptions.flowMode ?? 'paginated';
+    const oddEvenHeadersFooters =
+      (this.#editor as EditorWithConverter)?.converter?.pageStyles?.alternateHeaders === true;
 
     const resolvedMargins = {
       top: margins.top!,
@@ -5413,6 +5407,7 @@ export class PresentationEditor extends EventEmitter {
           marginBottom: semanticMargins.bottom,
         },
         sectionMetadata,
+        ...(oddEvenHeadersFooters ? { oddEvenHeadersFooters: true } : {}),
       };
     }
 
@@ -5424,6 +5419,7 @@ export class PresentationEditor extends EventEmitter {
       margins: resolvedMargins,
       ...(columns ? { columns } : {}),
       sectionMetadata,
+      ...(oddEvenHeadersFooters ? { oddEvenHeadersFooters: true } : {}),
     };
   }
 
@@ -6730,23 +6726,7 @@ export class PresentationEditor extends EventEmitter {
 
     // Fallback: scan pages to find which one contains this position via fragments
     // Note: pmStart/pmEnd are only present on some fragment types (ParaFragment, ImageFragment, DrawingFragment)
-    const pos = selection.from;
-    for (let pageIdx = 0; pageIdx < layout.pages.length; pageIdx++) {
-      const page = layout.pages[pageIdx];
-      for (const fragment of page.fragments) {
-        if (isFootnoteLayoutBlockId((fragment as { blockId?: string }).blockId)) {
-          continue;
-        }
-        const frag = fragment as { pmStart?: number; pmEnd?: number };
-        if (frag.pmStart != null && frag.pmEnd != null) {
-          if (pos >= frag.pmStart && pos <= frag.pmEnd) {
-            return pageIdx;
-          }
-        }
-      }
-    }
-
-    return 0;
+    return this.#findPageIndexForPosition(layout, selection.from) ?? 0;
   }
 
   #findRegionForPage(kind: 'header' | 'footer', pageIndex: number): HeaderFooterRegion | null {
