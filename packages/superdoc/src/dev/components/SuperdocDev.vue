@@ -734,7 +734,7 @@ const init = async () => {
         // },
         // fonts: null,
         // hideButtons: false,
-        // responsiveToContainer: true,
+        responsiveToContainer: true,
         excludeItems: [], // ['italic', 'bold'],
         // texts: {},
       },

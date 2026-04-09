@@ -20,6 +20,7 @@ function createMockToolbar() {
     },
     getToolbarItemByGroup: () => [],
     getToolbarItemByName: () => null,
+    getAvailableWidth: () => 1200,
     onToolbarResize: vi.fn(),
     emitCommand: vi.fn(),
     overflowItems: [],

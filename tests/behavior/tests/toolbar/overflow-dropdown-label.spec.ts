@@ -29,6 +29,11 @@ test('font family applies and label updates when selected from overflow menu', a
   // Select Georgia from font family dropdown
   await superdoc.page.locator('[data-item="btn-fontFamily"]').click();
   await superdoc.waitForStable();
+  // Wait for the dropdown options to appear
+  await superdoc.page
+    .locator('[data-item="btn-fontFamily-option"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 5000 });
   await superdoc.page.locator('[data-item="btn-fontFamily-option"]').filter({ hasText: 'Georgia' }).click();
   await superdoc.waitForStable();
 
