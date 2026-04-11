@@ -78,12 +78,28 @@ export interface PageStyles {
 }
 
 /**
- * Toolbar configuration
+ * Toolbar instance accepted by `Editor.setToolbar()`.
+ *
+ * Any object with an optional `setActiveEditor` method satisfies this interface,
+ * including `SuperToolbar` which extends EventEmitter.
  */
 export interface Toolbar {
   setActiveEditor?: (editor: Editor) => void;
-  [key: string]: unknown;
 }
+
+/**
+ * Binary data accepted by document open/import APIs.
+ */
+export type BinaryData = ArrayBuffer | ArrayBufferView;
+
+/**
+ * Represents an unsupported HTML element dropped during paste.
+ */
+export type UnsupportedContentItem = {
+  tagName: string;
+  outerHTML: string;
+  count: number;
+};
 
 /**
  * Re-export commonly used types

@@ -1,13 +1,12 @@
 import { NodeSelection, Selection, TextSelection } from 'prosemirror-state';
 import { ContextMenuPluginKey } from '@extensions/context-menu/context-menu.js';
 import { CellSelection } from 'prosemirror-tables';
-import { DecorationBridge } from './dom/DecorationBridge.js';
+import { PresentationPostPaintPipeline } from './dom/PresentationPostPaintPipeline.js';
 import { ProofingSessionManager } from './proofing/ProofingSessionManager.js';
-import { applyProofingDecorations, clearProofingDecorations, createDomPainter } from '@superdoc/painter-dom';
+import { PresentationPainterAdapter } from './rendering/PresentationPainterAdapter.js';
 import { resolveLayout } from '@superdoc/layout-resolved';
-import type { DomPainterInput, ProofingAnnotation, LayoutMode, PaintSnapshot } from '@superdoc/painter-dom';
-import type { ProofingConfig, ProofingPaintSlice } from './proofing/types.js';
-import type { VisibilitySource } from './proofing/visibility-source.js';
+import type { DomPainterInput, LayoutMode, PaintSnapshot } from '@superdoc/painter-dom';
+import type { ProofingAnnotation, ProofingConfig } from './proofing/types.js';
 import {
   computeWordSelectionRangeAt,
   computeParagraphSelectionRangeAt as computeParagraphSelectionRangeAtFromHelper,
@@ -125,9 +124,22 @@ import {
 } from '../../../v2/presentation/index.js';
 import { isInRegisteredSurface } from './utils/uiSurfaceRegistry.js';
 import { buildSemanticFootnoteBlocks } from './semantic-flow-footnotes.js';
-import { splitRunsAtDecorationBoundaries } from './layout/SplitRunsAtDecorationBoundaries.js';
 
-import type { ResolveRangeOutput, DocumentApi } from '@superdoc/document-api';
+type ThreadAnchorScrollPlan = {
+  achievedClientY: number;
+  applyScroll: (behavior: ScrollBehavior) => void;
+};
+import { splitRunsAtDecorationBoundaries } from './layout/SplitRunsAtDecorationBoundaries.js';
+import { DOM_CLASS_NAMES, buildSdtBlockSelector } from '@superdoc/dom-contract';
+import {
+  ensureEditorNativeSelectionStyles,
+  ensureEditorFieldAnnotationInteractionStyles,
+} from './dom/EditorStyleInjector.js';
+
+import type { ResolveRangeOutput, DocumentApi, NavigableAddress, BlockNavigationAddress } from '@superdoc/document-api';
+import { getBlockIndex } from '../../document-api-adapters/helpers/index-cache.js';
+import { findBlockByNodeIdOnly, findBlockById } from '../../document-api-adapters/helpers/node-address-resolver.js';
+import { resolveTrackedChange } from '../../document-api-adapters/helpers/tracked-change-resolver.js';
 import type { SelectionHandle } from '../selection-state.js';
 import {
   v2PerfTimeline,
@@ -325,7 +337,7 @@ export class PresentationEditor extends EventEmitter {
   #endnoteNumberSignature: string | null = null;
   /** Product-side bridge into the new v2 semantic pipeline. */
   #v2Bridge = new PresentationV2Bridge();
-  #domPainter: ReturnType<typeof createDomPainter> | null = null;
+  #painterAdapter = new PresentationPainterAdapter();
   #pageGeometryHelper: PageGeometryHelper | null = null;
   #dragDropManager: DragDropManager | null = null;
   #layoutError: LayoutError | null = null;
@@ -352,8 +364,8 @@ export class PresentationEditor extends EventEmitter {
   #htmlAnnotationMeasureAttempts = 0;
   #domPositionIndex = new DomPositionIndex();
   #domIndexObserverManager: DomPositionIndexObserverManager | null = null;
-  /** Bridges external PM plugin decorations onto painted DOM elements. */
-  #decorationBridge = new DecorationBridge();
+  /** Owns the remaining editor-side post-paint DOM mutation pipeline. */
+  #postPaintPipeline = new PresentationPostPaintPipeline();
   /** Proofing session manager — handles provider lifecycle, scheduling, and store. */
   #proofingManager: ProofingSessionManager | null = null;
   /** RAF handle for coalesced decoration sync scheduling. */
@@ -497,6 +509,11 @@ export class PresentationEditor extends EventEmitter {
     this.#painterHost.className = 'presentation-editor__pages';
     this.#painterHost.style.transformOrigin = 'top left';
     this.#viewportHost.appendChild(this.#painterHost);
+    this.#postPaintPipeline.setContainer(this.#painterHost);
+
+    // Inject editor-owned styles (idempotent, once per document)
+    ensureEditorNativeSelectionStyles(doc);
+    ensureEditorFieldAnnotationInteractionStyles(doc);
 
     // Add event listeners for structured content hover coordination
     this.#painterHost.addEventListener('mouseover', this.#handleStructuredContentBlockMouseEnter);
@@ -507,8 +524,7 @@ export class PresentationEditor extends EventEmitter {
       windowRoot: win,
       getPainterHost: () => this.#painterHost,
       onRebuild: () => {
-        this.#rebuildDomPositionIndex();
-        this.#syncDecorations();
+        this.#refreshEditorDomAugmentations();
         this.#selectionSync.requestRender({ immediate: true });
       },
     });
@@ -1421,6 +1437,7 @@ export class PresentationEditor extends EventEmitter {
       this.#scheduleRerender();
     }
     this.#updatePermissionOverlay();
+    this.emit('documentModeChange', { editor: this.#editor, documentMode: mode });
   }
 
   #syncDocumentModeClass() {
@@ -1956,7 +1973,7 @@ export class PresentationEditor extends EventEmitter {
    * Return a snapshot of painter output captured during the latest paint cycle.
    */
   getPaintSnapshot(): PaintSnapshot | null {
-    return this.#domPainter?.getPaintSnapshot?.() ?? null;
+    return this.#painterAdapter.getPaintSnapshot();
   }
 
   /**
@@ -2048,7 +2065,7 @@ export class PresentationEditor extends EventEmitter {
         enabled: false,
       };
     }
-    this.#domPainter = null;
+    this.#painterAdapter.reset();
     this.#pageGeometryHelper = null;
     this.#pendingDocChange = true;
     this.#scheduleRerender();
@@ -2498,6 +2515,18 @@ export class PresentationEditor extends EventEmitter {
   }
 
   /**
+   * Return the viewport Y coordinate this thread anchor can actually reach after
+   * scroll bounds clamp the requested target.
+   *
+   * @param threadId - Comment or tracked-change identifier
+   * @param targetClientY - Desired top position in client/viewport coordinates
+   * @returns The reachable client Y, or null when the thread cannot be resolved
+   */
+  getReachableThreadAnchorClientY(threadId: string, targetClientY: number): number | null {
+    return this.#buildThreadAnchorScrollPlan(threadId, targetClientY)?.achievedClientY ?? null;
+  }
+
+  /**
    * Scroll a comment or tracked-change anchor so its top edge lands at the
    * requested viewport Y coordinate.
    *
@@ -2512,35 +2541,80 @@ export class PresentationEditor extends EventEmitter {
     targetClientY: number,
     options: { behavior?: ScrollBehavior } = {},
   ): boolean {
-    if (!threadId || !Number.isFinite(targetClientY)) return false;
+    const scrollPlan = this.#buildThreadAnchorScrollPlan(threadId, targetClientY);
+    if (!scrollPlan) return false;
+
+    const behavior = options.behavior ?? 'auto';
+    scrollPlan.applyScroll(behavior);
+    return true;
+  }
+
+  #buildThreadAnchorScrollPlan(threadId: string, targetClientY: number): ThreadAnchorScrollPlan | null {
+    if (!threadId || !Number.isFinite(targetClientY)) return null;
 
     const threadPosition = this.#collectCommentPositions()[threadId];
-    if (!threadPosition) return false;
+    if (!threadPosition) return null;
 
     const selectionBounds = this.getSelectionBounds(threadPosition.start, threadPosition.end);
     const currentTop = selectionBounds?.bounds?.top;
-    if (!Number.isFinite(currentTop)) return false;
+    if (!Number.isFinite(currentTop)) return null;
 
-    const deltaY = currentTop - targetClientY;
-    if (Math.abs(deltaY) < 1) return true;
-
-    const behavior = options.behavior ?? 'auto';
+    const requestedScrollDelta = currentTop - targetClientY;
     const scrollTarget = this.#scrollContainer ?? this.#visibleHost;
 
     if (scrollTarget instanceof Window) {
-      const currentScrollY = scrollTarget.scrollY ?? scrollTarget.pageYOffset ?? 0;
-      scrollTarget.scrollTo({ top: currentScrollY + deltaY, behavior });
-      return true;
+      return this.#buildWindowThreadAnchorScrollPlan(scrollTarget, currentTop, requestedScrollDelta);
     }
 
     if (scrollTarget instanceof HTMLElement) {
-      const maxScrollTop = Math.max(0, scrollTarget.scrollHeight - scrollTarget.clientHeight);
-      const nextScrollTop = Math.max(0, Math.min(maxScrollTop, scrollTarget.scrollTop + deltaY));
-      scrollTarget.scrollTo({ top: nextScrollTop, behavior });
-      return true;
+      return this.#buildElementThreadAnchorScrollPlan(scrollTarget, currentTop, requestedScrollDelta);
     }
 
-    return false;
+    return null;
+  }
+
+  #buildWindowThreadAnchorScrollPlan(
+    scrollTarget: Window,
+    currentTop: number,
+    requestedScrollDelta: number,
+  ): ThreadAnchorScrollPlan {
+    const scrollRoot =
+      scrollTarget.document.scrollingElement ??
+      scrollTarget.document.documentElement ??
+      scrollTarget.document.body ??
+      null;
+    const currentScrollTop = scrollTarget.scrollY ?? scrollTarget.pageYOffset ?? scrollRoot?.scrollTop ?? 0;
+    const viewportHeight = scrollTarget.innerHeight ?? scrollRoot?.clientHeight ?? 0;
+    const maxScrollTop = Math.max(0, (scrollRoot?.scrollHeight ?? 0) - viewportHeight);
+    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, currentScrollTop + requestedScrollDelta));
+    const appliedScrollDelta = nextScrollTop - currentScrollTop;
+
+    return {
+      achievedClientY: currentTop - appliedScrollDelta,
+      applyScroll: (behavior) => {
+        if (Math.abs(appliedScrollDelta) < 1) return;
+        scrollTarget.scrollTo({ top: nextScrollTop, behavior });
+      },
+    };
+  }
+
+  #buildElementThreadAnchorScrollPlan(
+    scrollTarget: HTMLElement,
+    currentTop: number,
+    requestedScrollDelta: number,
+  ): ThreadAnchorScrollPlan {
+    const currentScrollTop = scrollTarget.scrollTop;
+    const maxScrollTop = Math.max(0, scrollTarget.scrollHeight - scrollTarget.clientHeight);
+    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, currentScrollTop + requestedScrollDelta));
+    const appliedScrollDelta = nextScrollTop - currentScrollTop;
+
+    return {
+      achievedClientY: currentTop - appliedScrollDelta,
+      applyScroll: (behavior) => {
+        if (Math.abs(appliedScrollDelta) < 1) return;
+        scrollTarget.scrollTo({ top: nextScrollTop, behavior });
+      },
+    };
   }
 
   /**
@@ -2800,7 +2874,7 @@ export class PresentationEditor extends EventEmitter {
     this.#layoutOptions.zoom = zoom;
     this.#applyZoom();
     // Notify DomPainter so virtualization accounts for the CSS transform scale
-    this.#domPainter?.setZoom?.(zoom);
+    this.#painterAdapter.setZoom(zoom);
     this.emit('zoomChange', { zoom });
     this.#shouldScrollSelectionIntoView = true;
     this.#scheduleSelectionUpdate();
@@ -2844,7 +2918,7 @@ export class PresentationEditor extends EventEmitter {
         this.#decorationSyncRafHandle = null;
       }, 'Decoration sync RAF');
     }
-    this.#decorationBridge.destroy();
+    this.#postPaintPipeline.destroy();
     this.#proofingManager?.dispose();
     this.#proofingManager = null;
 
@@ -2930,7 +3004,7 @@ export class PresentationEditor extends EventEmitter {
     this.#flowBlockCache.clear();
     void this.#v2Bridge.close();
 
-    this.#domPainter = null;
+    this.#painterAdapter.reset();
     this.#pageGeometryHelper = null;
     this.#dragDropManager?.destroy();
     this.#dragDropManager = null;
@@ -3037,15 +3111,8 @@ export class PresentationEditor extends EventEmitter {
 
     mgr.setVisibilitySource({
       getVisiblePageIndices: () => {
-        if (!this.#painterHost) return null;
-        const pageEls = this.#painterHost.querySelectorAll('[data-page-index]');
-        if (pageEls.length === 0) return null;
-        const indices: number[] = [];
-        for (let i = 0; i < pageEls.length; i++) {
-          const idx = parseInt(pageEls[i].getAttribute('data-page-index')!, 10);
-          if (!isNaN(idx)) indices.push(idx);
-        }
-        return indices.length > 0 ? indices : null;
+        const mountedPageIndices = this.#painterAdapter.getMountedPageIndices();
+        return mountedPageIndices.length > 0 ? mountedPageIndices : null;
       },
     });
 
@@ -3060,23 +3127,9 @@ export class PresentationEditor extends EventEmitter {
     }
   }
 
-  /**
-   * Apply the proofing decoration pass after paint or when results change.
-   * Walks rendered spans and applies proofing CSS classes.
-   * Rebuilds DomPositionIndex if any DOM mutations were made.
-   *
-   * Also handles the case where proofing is disabled: clears all markers.
-   */
-  #applyProofingPass(): void {
-    if (!this.#painterHost) return;
-
-    // When proofing is disabled or no manager exists, clear any leftover markers
+  #buildProofingAnnotations(): ProofingAnnotation[] | null {
     if (!this.#proofingManager?.isEnabled) {
-      const cleared = clearProofingDecorations(this.#painterHost);
-      if (cleared) {
-        this.#rebuildDomPositionIndex();
-      }
-      return;
+      return null;
     }
 
     // Compute active word range for caret-token suppression:
@@ -3088,20 +3141,21 @@ export class PresentationEditor extends EventEmitter {
     }
 
     const slices = this.#proofingManager.getPaintSlices(activeWordRange);
-
-    // Convert paint slices to ProofingAnnotation format
-    const annotations: ProofingAnnotation[] = slices.map((s) => ({
+    return slices.map((s) => ({
       pmFrom: s.pmFrom,
       pmTo: s.pmTo,
       kind: s.kind,
     }));
+  }
 
-    const mutated = applyProofingDecorations(this.#painterHost, annotations);
-
-    // Rebuild position index if DOM was mutated (sibling splits)
-    if (mutated) {
-      this.#rebuildDomPositionIndex();
-    }
+  /**
+   * Apply the proofing decoration pass after paint or when results change.
+   * Rebuilds DomPositionIndex if proofing split/un-split the rendered spans.
+   */
+  #applyProofingPass(): void {
+    this.#postPaintPipeline.applyProofingAnnotations(this.#buildProofingAnnotations(), () =>
+      this.#rebuildDomPositionIndex(),
+    );
   }
 
   /**
@@ -3133,6 +3187,36 @@ export class PresentationEditor extends EventEmitter {
   }
 
   /**
+   * Applies comment highlight styles (background color, box-shadow,
+   * track-change-focused class) to all painter-rendered comment elements.
+   * Called after paint and after observer rebuild.
+   */
+  #syncCommentHighlights(): void {
+    this.#postPaintPipeline.applyCommentHighlights();
+  }
+
+  /**
+   * Applies every inline style layer that decorates painter-owned DOM elements.
+   *
+   * Comment highlights intentionally run before the decoration bridge because
+   * bridged inline decorations may own the same CSS properties and must be
+   * restored last.
+   */
+  #syncInlineStyleLayers(): void {
+    const state = this.#editor?.view?.state;
+    if (!state) {
+      this.#syncCommentHighlights();
+      return;
+    }
+
+    try {
+      this.#postPaintPipeline.syncInlineStyleLayers(state, this.#domPositionIndex);
+    } catch (error) {
+      console.warn('[PresentationEditor] Inline style layer sync failed:', error);
+    }
+  }
+
+  /**
    * Runs a full decoration sync: applies external plugin decoration classes
    * and styles to the painted DOM elements via DecorationBridge. Runs are
    * split at decoration boundaries during layout so only the selected portion
@@ -3146,7 +3230,7 @@ export class PresentationEditor extends EventEmitter {
     if (!state) return;
 
     try {
-      this.#decorationBridge.sync(state, this.#domPositionIndex);
+      this.#postPaintPipeline.syncDecorations(state, this.#domPositionIndex);
     } catch (error) {
       // Sync can call findRangeByText and other doc-dependent logic; if it throws
       // (e.g. edge-case doc state), avoid breaking the RAF or observer sync loop.
@@ -3169,7 +3253,7 @@ export class PresentationEditor extends EventEmitter {
 
     // Cheap identity check: bail if no DecorationSet references changed.
     const state = this.#editor?.view?.state;
-    if (!state || !this.#decorationBridge.hasChanges(state)) return;
+    if (!state || !this.#postPaintPipeline.hasDecorationChanges(state)) return;
 
     // Already scheduled — RAF will handle it.
     if (this.#decorationSyncRafHandle != null) return;
@@ -3264,14 +3348,14 @@ export class PresentationEditor extends EventEmitter {
     // otherwise the bridge applies the class to whole runs and highlights too much.
     const handleTransaction = (event?: { transaction?: Transaction }) => {
       const tr = event?.transaction;
-      this.#decorationBridge.recordTransaction(tr);
+      this.#postPaintPipeline.recordDecorationTransaction(tr);
       const state = this.#editor?.view?.state;
-      const decorationChanged = state && this.#decorationBridge.hasChanges(state);
+      const decorationChanged = state && this.#postPaintPipeline.hasDecorationChanges(state);
       // Sync immediately whenever decorations changed so e.g. clearFocus removes
       // highlight-selection in the same tick. Only restore when we had a doc change.
       if (decorationChanged) {
         const restoreEmpty = tr ? tr.docChanged === true : false;
-        this.#decorationBridge.sync(state!, this.#domPositionIndex, {
+        this.#postPaintPipeline.syncDecorations(state!, this.#domPositionIndex, {
           restoreEmptyDecorations: restoreEmpty,
         });
       } else {
@@ -3395,18 +3479,18 @@ export class PresentationEditor extends EventEmitter {
       event: 'collaborationReady',
       handler: handleCollaborationReady as (...args: unknown[]) => void,
     });
-    // Listen for comment selection changes to update Layout Engine highlighting
+    // Listen for comment selection changes and re-run the inline style layering
+    // pipeline on the existing DOM. This avoids a full layout → paint cycle
+    // while still restoring bridge-owned inline decoration styles afterward.
     const handleCommentsUpdate = (payload: { activeCommentId?: string | null }) => {
-      if (this.#domPainter?.setActiveComment) {
-        // Only update active comment when the field is explicitly present in the payload.
-        // This prevents unrelated events (like tracked change updates) from clearing
-        // the active comment selection unexpectedly.
-        if ('activeCommentId' in payload) {
-          const activeId = payload.activeCommentId ?? null;
-          this.#domPainter.setActiveComment(activeId);
-          // Mark as needing re-render to apply the new active comment highlighting
-          this.#pendingDocChange = true;
-          this.#scheduleRerender();
+      // Only update active comment when the field is explicitly present in the payload.
+      // This prevents unrelated events (like tracked change updates) from clearing
+      // the active comment selection unexpectedly.
+      if ('activeCommentId' in payload) {
+        const activeId = payload.activeCommentId ?? null;
+        const didChange = this.#postPaintPipeline.setActiveComment(activeId);
+        if (didChange) {
+          this.#syncInlineStyleLayers();
         }
       }
     };
@@ -3548,6 +3632,8 @@ export class PresentationEditor extends EventEmitter {
       clearHoverRegion: () => this.#clearHoverRegion(),
       renderHoverRegion: (region) => this.#renderHoverRegion(region),
       focusEditorAfterImageSelection: () => this.#focusEditorAfterImageSelection(),
+      resolveInlineImageElementByPmStart: (pmStart) => this.#painterAdapter.getInlineImageElementByPmStart(pmStart),
+      resolveImageFragmentElementByPmStart: (pmStart) => this.#painterAdapter.getImageFragmentElementByPmStart(pmStart),
       resolveFieldAnnotationSelectionFromElement: (el) => this.#resolveFieldAnnotationSelectionFromElement(el),
       computePendingMarginClick: (pointerId, x, y) => this.#computePendingMarginClick(pointerId, x, y),
       selectWordAt: (pos: number) => this.#selectWordAt(pos),
@@ -3565,7 +3651,7 @@ export class PresentationEditor extends EventEmitter {
     // Scroll handler for virtualization - find the actual scroll container
     // by walking up the DOM tree to find the first scrollable ancestor
     this.#scrollHandler = () => {
-      this.#domPainter?.onScroll?.();
+      this.#painterAdapter.onScroll();
     };
 
     // Find the scrollable ancestor and attach listener there
@@ -3660,7 +3746,7 @@ export class PresentationEditor extends EventEmitter {
     if (next instanceof Element) {
       next.addEventListener('scroll', this.#scrollHandler!, { passive: true });
     }
-    this.#domPainter?.setScrollContainer?.(next instanceof HTMLElement ? next : null);
+    this.#painterAdapter.setScrollContainer(next instanceof HTMLElement ? next : null);
   }
 
   /**
@@ -4232,7 +4318,7 @@ export class PresentationEditor extends EventEmitter {
       // Split runs at decoration boundaries so bridge sync applies background only to the
       // selected portion (like highlight mark) without adding a document mark.
       const state = this.#editor?.view?.state;
-      const decorationRanges = state ? this.#decorationBridge.collectDecorationRanges(state) : [];
+      const decorationRanges = state ? this.#postPaintPipeline.collectDecorationRanges(state) : [];
       if (decorationRanges.length > 0) {
         blocks = splitRunsAtDecorationBoundaries(
           blocks,
@@ -4385,9 +4471,9 @@ export class PresentationEditor extends EventEmitter {
         this.#updateDecorationProviders(layout);
       }
 
-      const painter = this.#ensurePainter();
+      this.#ensurePainter();
       if (!isSemanticFlow) {
-        painter.setProviders(
+        this.#painterAdapter.setProviders(
           this.#headerFooterSession?.headerDecorationProvider,
           this.#headerFooterSession?.footerDecorationProvider,
         );
@@ -4453,7 +4539,7 @@ export class PresentationEditor extends EventEmitter {
       };
       const endPaintSpan = v2PerfTimeline.startSpan(SPAN_PAINT);
       try {
-        painter.paint(paintInput, this.#painterHost, mapping ?? undefined);
+        this.#painterAdapter.paint(paintInput, this.#painterHost, mapping ?? undefined);
       } finally {
         endPaintSpan();
       }
@@ -4463,9 +4549,7 @@ export class PresentationEditor extends EventEmitter {
       const painterPaintEnd = perfNow();
       perfLog(`[Perf] painter.paint: ${(painterPaintEnd - painterPaintStart).toFixed(2)}ms`);
       const painterPostStart = perfNow();
-      this.#rebuildDomPositionIndex();
-      this.#syncDecorations();
-      this.#applyProofingPass();
+      this.#refreshEditorDomAugmentations();
       this.#domIndexObserverManager?.resume();
       const painterPostEnd = perfNow();
       perfLog(`[Perf] painter.postPaint: ${(painterPostEnd - painterPostStart).toFixed(2)}ms`);
@@ -4519,39 +4603,41 @@ export class PresentationEditor extends EventEmitter {
     }
   }
 
-  #ensurePainter() {
-    if (!this.#domPainter) {
-      // Ensure the virtualization gap matches the effective page gap so that
-      // DomPainter's spacer/offset math stays consistent with #applyZoom() height calculations.
-      const virtualization = this.#layoutOptions.virtualization;
-      const effectiveGap = this.#getEffectivePageGap();
-      const normalizedVirtualization = virtualization?.enabled
-        ? { ...virtualization, gap: virtualization.gap ?? effectiveGap }
-        : virtualization;
-
-      this.#domPainter = createDomPainter({
-        layoutMode: this.#layoutOptions.layoutMode ?? 'vertical',
-        flowMode: this.#layoutOptions.flowMode ?? 'paginated',
-        virtualization: normalizedVirtualization,
-        pageStyles: this.#layoutOptions.pageStyles,
-        headerProvider: this.#headerFooterSession?.headerDecorationProvider,
-        footerProvider: this.#headerFooterSession?.footerDecorationProvider,
-        ruler: this.#layoutOptions.ruler,
-        pageGap: this.#layoutState.layout?.pageGap ?? effectiveGap,
-      });
-      // Pass the current zoom so virtualization accounts for the CSS transform scale
-      const currentZoom = this.#layoutOptions.zoom ?? 1;
-      if (currentZoom !== 1) {
-        this.#domPainter.setZoom(currentZoom);
-      }
-      // Pass the scroll container so virtualization computes scrollY relative to it,
-      // not the browser viewport. This fixes offset errors when SuperDoc is mounted
-      // inside a wrapper div with overflow-y: auto.
-      if (this.#scrollContainer && this.#scrollContainer instanceof HTMLElement) {
-        this.#domPainter.setScrollContainer?.(this.#scrollContainer);
-      }
+  #ensurePainter(): void {
+    if (this.#painterAdapter.hasPainter) {
+      return;
     }
-    return this.#domPainter;
+
+    // Ensure the virtualization gap matches the effective page gap so that
+    // DomPainter's spacer/offset math stays consistent with #applyZoom() height calculations.
+    const virtualization = this.#layoutOptions.virtualization;
+    const effectiveGap = this.#getEffectivePageGap();
+    const normalizedVirtualization = virtualization?.enabled
+      ? { ...virtualization, gap: virtualization.gap ?? effectiveGap }
+      : virtualization;
+
+    this.#painterAdapter.ensurePainter({
+      layoutMode: this.#layoutOptions.layoutMode ?? 'vertical',
+      flowMode: this.#layoutOptions.flowMode ?? 'paginated',
+      virtualization: normalizedVirtualization,
+      pageStyles: this.#layoutOptions.pageStyles,
+      headerProvider: this.#headerFooterSession?.headerDecorationProvider,
+      footerProvider: this.#headerFooterSession?.footerDecorationProvider,
+      ruler: this.#layoutOptions.ruler,
+      pageGap: this.#layoutState.layout?.pageGap ?? effectiveGap,
+    });
+
+    // Pass the current zoom so virtualization accounts for the CSS transform scale
+    const currentZoom = this.#layoutOptions.zoom ?? 1;
+    if (currentZoom !== 1) {
+      this.#painterAdapter.setZoom(currentZoom);
+    }
+    // Pass the scroll container so virtualization computes scrollY relative to it,
+    // not the browser viewport. This fixes offset errors when SuperDoc is mounted
+    // inside a wrapper div with overflow-y: auto.
+    if (this.#scrollContainer && this.#scrollContainer instanceof HTMLElement) {
+      this.#painterAdapter.setScrollContainer(this.#scrollContainer);
+    }
   }
 
   #applyHtmlAnnotationMeasurements(blocks: FlowBlock[]) {
@@ -4586,22 +4672,20 @@ export class PresentationEditor extends EventEmitter {
 
   #updateHtmlAnnotationMeasurements(layoutEpoch: number): boolean {
     const nextHeights = new Map(this.#htmlAnnotationHeights);
-    const annotations = this.#painterHost.querySelectorAll('.annotation[data-type="html"]');
     const threshold = 1;
 
     let changed = false;
+    const annotations = this.#painterAdapter.getAnnotationEntitiesByType('html');
     annotations.forEach((annotation) => {
-      const element = annotation as HTMLElement;
-      const pmStart = element.dataset.pmStart;
-      const pmEnd = element.dataset.pmEnd;
-      if (!pmStart || !pmEnd) {
+      const element = annotation.element;
+      if (annotation.pmStart == null || annotation.pmEnd == null) {
         return;
       }
       const height = element.offsetHeight;
       if (height <= 0) {
         return;
       }
-      const key = `${pmStart}-${pmEnd}`;
+      const key = `${annotation.pmStart}-${annotation.pmEnd}`;
       const prev = nextHeights.get(key);
       if (prev != null && Math.abs(prev - height) <= threshold) {
         return;
@@ -4676,8 +4760,7 @@ export class PresentationEditor extends EventEmitter {
       return;
     }
 
-    const selector = `.annotation[data-pm-start="${pmStart}"]`;
-    const element = this.#painterHost.querySelector(selector) as HTMLElement | null;
+    const element = this.#painterAdapter.getAnnotationElementByPmStart(pmStart);
     if (!element) {
       this.#clearSelectedFieldAnnotationClass();
       return;
@@ -4754,15 +4837,12 @@ export class PresentationEditor extends EventEmitter {
     let elements: HTMLElement[] = [];
 
     if (id) {
-      const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
-      elements = Array.from(
-        this.#painterHost.querySelectorAll(`.superdoc-structured-content-block[data-sdt-id="${escapedId}"]`),
-      ) as HTMLElement[];
+      elements = this.#painterAdapter.getStructuredContentBlockElementsById(id);
     }
 
     if (elements.length === 0) {
       const elementAtPos = this.getElementAtPos(selection.from, { fallbackToCoords: true });
-      const container = elementAtPos?.closest?.('.superdoc-structured-content-block') as HTMLElement | null;
+      const container = elementAtPos?.closest?.(`.${DOM_CLASS_NAMES.BLOCK_SDT}`) as HTMLElement | null;
       if (container) {
         elements = [container];
       }
@@ -4778,7 +4858,7 @@ export class PresentationEditor extends EventEmitter {
 
   #handleStructuredContentBlockMouseEnter = (event: MouseEvent) => {
     const target = event.target as HTMLElement;
-    const block = target.closest('.superdoc-structured-content-block');
+    const block = target.closest(`.${DOM_CLASS_NAMES.BLOCK_SDT}`);
 
     if (!block || !(block instanceof HTMLElement)) return;
 
@@ -4793,17 +4873,19 @@ export class PresentationEditor extends EventEmitter {
 
   #handleStructuredContentBlockMouseLeave = (event: MouseEvent) => {
     const target = event.target as HTMLElement;
-    const block = target.closest('.superdoc-structured-content-block') as HTMLElement | null;
+    const block = target.closest(`.${DOM_CLASS_NAMES.BLOCK_SDT}`) as HTMLElement | null;
 
     if (!block) return;
 
     const relatedTarget = event.relatedTarget as HTMLElement | null;
-    if (
-      relatedTarget &&
-      block.dataset.sdtId &&
-      relatedTarget.closest(`.superdoc-structured-content-block[data-sdt-id="${block.dataset.sdtId}"]`)
-    ) {
-      return;
+    if (relatedTarget && block.dataset.sdtId) {
+      const escapedCheckId =
+        typeof CSS !== 'undefined' && CSS.escape
+          ? CSS.escape(block.dataset.sdtId)
+          : block.dataset.sdtId.replace(/"/g, '\\"');
+      if (relatedTarget.closest(buildSdtBlockSelector(escapedCheckId))) {
+        return;
+      }
     }
 
     this.#clearHoveredStructuredContentBlockClass();
@@ -4812,7 +4894,7 @@ export class PresentationEditor extends EventEmitter {
   #clearHoveredStructuredContentBlockClass() {
     if (!this.#lastHoveredStructuredContentBlock) return;
     this.#lastHoveredStructuredContentBlock.elements.forEach((element) => {
-      element.classList.remove('sdt-group-hover');
+      element.classList.remove(DOM_CLASS_NAMES.SDT_GROUP_HOVER);
     });
     this.#lastHoveredStructuredContentBlock = null;
   }
@@ -4824,20 +4906,71 @@ export class PresentationEditor extends EventEmitter {
 
     if (!this.#painterHost) return;
 
-    const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
-    const elements = Array.from(
-      this.#painterHost.querySelectorAll(`.superdoc-structured-content-block[data-sdt-id="${escapedId}"]`),
-    ) as HTMLElement[];
+    const elements = this.#painterAdapter.getStructuredContentBlockElementsById(id);
 
     if (elements.length === 0) return;
 
     elements.forEach((element) => {
       if (!element.classList.contains('ProseMirror-selectednode')) {
-        element.classList.add('sdt-group-hover');
+        element.classList.add(DOM_CLASS_NAMES.SDT_GROUP_HOVER);
       }
     });
 
     this.#lastHoveredStructuredContentBlock = { id, elements };
+  }
+
+  /**
+   * Re-applies the sdt-group-hover class after a paint cycle.
+   * DOM elements are rebuilt during repaint, so the hover class added by
+   * mouse events is lost. This restores hover state from the cached state.
+   */
+  #reapplySdtGroupHover(): void {
+    if (!this.#lastHoveredStructuredContentBlock || !this.#painterHost) return;
+
+    const { id } = this.#lastHoveredStructuredContentBlock;
+    if (!id) return;
+
+    const elements = this.#painterAdapter.getStructuredContentBlockElementsById(id);
+
+    if (elements.length === 0) {
+      this.#lastHoveredStructuredContentBlock = null;
+      return;
+    }
+
+    elements.forEach((element) => {
+      if (!element.classList.contains('ProseMirror-selectednode')) {
+        element.classList.add(DOM_CLASS_NAMES.SDT_GROUP_HOVER);
+      }
+    });
+
+    this.#lastHoveredStructuredContentBlock = { id, elements };
+  }
+
+  /**
+   * Runs all editor-owned DOM augmentations after the painter has rendered.
+   *
+   * This is the single entry point for post-paint DOM modifications. Every
+   * editor concern that needs to touch the painted DOM is called from here.
+   *
+   * Order is load-bearing:
+   * 1. Field annotation interaction layer — adds caret-anchor spans with
+   *    data-pm-start/end (must run before position index rebuild)
+   * 2. DOM position index rebuild — indexes ALL elements with pm-position
+   *    attributes, including caret-anchors added in step 1
+   * 3. Inline style layers (comment highlights + decoration bridge)
+   * 4. Proofing pass
+   * 5. SDT hover reapplication — DOM elements rebuilt during repaint lose
+   *    the hover class
+   */
+  #refreshEditorDomAugmentations(): void {
+    this.#postPaintPipeline.refreshAfterPaint({
+      layoutEpoch: this.#layoutEpoch,
+      editorState: this.#editor?.view?.state,
+      domPositionIndex: this.#domPositionIndex,
+      proofingAnnotations: this.#buildProofingAnnotations(),
+      rebuildDomPositionIndex: () => this.#rebuildDomPositionIndex(),
+      reapplyStructuredContentHover: () => this.#reapplySdtGroupHover(),
+    });
   }
 
   #clearSelectedStructuredContentInlineClass() {
@@ -4918,15 +5051,12 @@ export class PresentationEditor extends EventEmitter {
     let elements: HTMLElement[] = [];
 
     if (id) {
-      const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
-      elements = Array.from(
-        this.#painterHost.querySelectorAll(`.superdoc-structured-content-inline[data-sdt-id="${escapedId}"]`),
-      ) as HTMLElement[];
+      elements = this.#painterAdapter.getStructuredContentInlineElementsById(id);
     }
 
     if (elements.length === 0) {
       const elementAtPos = this.getElementAtPos(pos, { fallbackToCoords: true });
-      const container = elementAtPos?.closest?.('.superdoc-structured-content-inline') as HTMLElement | null;
+      const container = elementAtPos?.closest?.(`.${DOM_CLASS_NAMES.INLINE_SDT_WRAPPER}`) as HTMLElement | null;
       if (container) {
         elements = [container];
       }
@@ -5682,8 +5812,7 @@ export class PresentationEditor extends EventEmitter {
     if (!this.#isSelectionAwareVirtualizationEnabled()) {
       return;
     }
-    const painter = this.#domPainter;
-    if (!painter || typeof painter.setVirtualizationPins !== 'function') {
+    if (!this.#painterAdapter.hasPainter) {
       return;
     }
     const layout = this.#layoutState.layout;
@@ -5714,7 +5843,7 @@ export class PresentationEditor extends EventEmitter {
       extraPages: options?.extraPages,
     });
 
-    painter.setVirtualizationPins(pins);
+    this.#painterAdapter.setVirtualizationPins(pins);
   }
 
   #finalizeDragSelectionWithDom(
@@ -5827,6 +5956,171 @@ export class PresentationEditor extends EventEmitter {
    * This allows sufficient time for virtualized pages to render before giving up.
    */
   private static readonly ANCHOR_NAV_TIMEOUT_MS = 2000;
+
+  /**
+   * Scroll to any document element by its ID.
+   *
+   * Accepts any element ID — paragraph nodeId, comment entityId, or tracked
+   * change entityId. Resolves the element type automatically:
+   * 1. Tries block index lookup (paragraphs, headings, tables)
+   * 2. Tries comment navigation (activates comment thread)
+   * 3. Tries tracked change navigation (with raw ID fallback)
+   *
+   * @param elementId - The element's stable ID (nodeId, commentId, or trackedChangeId).
+   * @returns Promise resolving to true if the element was found and scrolled to.
+   */
+  async scrollToElement(elementId: string): Promise<boolean> {
+    if (!elementId) return false;
+
+    // Try block first — O(1) index lookup, most common for RAG citations.
+    if (await this.navigateTo({ kind: 'block', nodeId: elementId })) return true;
+
+    // Try comment — setCursorById handles both comment and TC marks,
+    // but we try comment first to get full thread activation.
+    if (await this.navigateTo({ kind: 'entity', entityType: 'comment', entityId: elementId })) return true;
+
+    // Try tracked change — has its own fallback chain (canonical → raw ID → scroll).
+    if (await this.navigateTo({ kind: 'entity', entityType: 'trackedChange', entityId: elementId })) return true;
+
+    return false;
+  }
+
+  /**
+   * Navigate to a typed document element address.
+   *
+   * @param target - Typed address: block (nodeId), comment (entityId), or tracked change (entityId).
+   * @returns Promise resolving to true if navigation succeeded.
+   */
+  async navigateTo(target: NavigableAddress): Promise<boolean> {
+    if (!target) return false;
+
+    try {
+      if (target.kind === 'block') {
+        return await this.#navigateToBlock(target);
+      }
+
+      if (target.kind === 'entity') {
+        if (target.entityType === 'comment') {
+          return await this.#navigateToComment(target.entityId);
+        }
+        if (target.entityType === 'trackedChange') {
+          return await this.#navigateToTrackedChange(target.entityId);
+        }
+      }
+
+      return false;
+    } catch (error) {
+      console.error('[PresentationEditor] navigateTo failed:', error);
+      this.emit('error', { error, context: 'navigateTo' });
+      return false;
+    }
+  }
+
+  async #navigateToBlock(target: BlockNavigationAddress): Promise<boolean> {
+    const editor = this.#editor;
+    if (!editor) return false;
+
+    const index = getBlockIndex(editor);
+
+    let candidate;
+    try {
+      if (target.nodeType) {
+        candidate = findBlockById(index, { kind: 'block', nodeType: target.nodeType, nodeId: target.nodeId });
+      } else {
+        candidate = findBlockByNodeIdOnly(index, target.nodeId);
+      }
+    } catch {
+      return false;
+    }
+
+    if (!candidate) return false;
+    return this.#scrollToBlockCandidate(editor, candidate);
+  }
+
+  /**
+   * Scroll to a resolved block candidate and place the cursor inside it.
+   *
+   * Resolves the first text-content position inside the block — the layout
+   * engine maps fragments to text content ranges, so block wrappers and
+   * zero-width annotation nodes (bookmarkStart, commentRangeStart) don't
+   * generate layout fragments. We walk the block's children to find the
+   * first inline node with text content (typically a `run` node).
+   */
+  async #scrollToBlockCandidate(editor: Editor, candidate: { pos: number }): Promise<boolean> {
+    const blockNode = editor.state.doc.nodeAt(candidate.pos);
+    let contentPos = candidate.pos + 1;
+    if (blockNode) {
+      blockNode.forEach((child, offset) => {
+        if (contentPos !== candidate.pos + 1) return;
+        if (child.textContent.length > 0) {
+          contentPos = candidate.pos + 1 + offset + (child.isText ? 0 : 1);
+        }
+      });
+    }
+
+    const scrolled = await this.scrollToPositionAsync(contentPos, {
+      behavior: 'auto',
+      block: 'center',
+    });
+    if (!scrolled) return false;
+
+    editor.commands?.setTextSelection?.({ from: contentPos, to: contentPos });
+    editor.view?.focus?.();
+    return true;
+  }
+
+  async #navigateToComment(entityId: string): Promise<boolean> {
+    const editor = this.#editor;
+    if (!editor) return false;
+
+    const setCursorById = editor.commands?.setCursorById;
+    if (typeof setCursorById !== 'function') return false;
+
+    if (!setCursorById(entityId, { preferredActiveThreadId: entityId, activeCommentId: entityId })) {
+      return false;
+    }
+
+    // Scroll the viewport — setCursorById places the cursor but doesn't
+    // scroll in presentation mode where DomPainter renders the output.
+    await this.scrollToPositionAsync(editor.state.selection.from, { behavior: 'auto', block: 'center' });
+    return true;
+  }
+
+  async #navigateToTrackedChange(entityId: string): Promise<boolean> {
+    const editor = this.#editor;
+    if (!editor) return false;
+
+    const setCursorById = editor.commands?.setCursorById;
+
+    // Try direct cursor placement, then scroll to the new selection.
+    if (typeof setCursorById === 'function' && setCursorById(entityId, { preferredActiveThreadId: entityId })) {
+      await this.scrollToPositionAsync(editor.state.selection.from, { behavior: 'auto', block: 'center' });
+      return true;
+    }
+
+    // Fall back to resolving the tracked change position and scrolling.
+    const resolved = resolveTrackedChange(editor, entityId);
+    if (!resolved) return false;
+
+    // Try with the raw ID (tracked changes may use a different internal ID).
+    if (typeof setCursorById === 'function' && resolved.rawId !== entityId) {
+      if (setCursorById(resolved.rawId, { preferredActiveThreadId: resolved.rawId })) {
+        await this.scrollToPositionAsync(editor.state.selection.from, { behavior: 'auto', block: 'center' });
+        return true;
+      }
+    }
+
+    // Last resort: scroll to position directly.
+    const scrolled = await this.scrollToPositionAsync(resolved.from, {
+      behavior: 'auto',
+      block: 'center',
+    });
+    if (!scrolled) return false;
+
+    editor.commands?.setTextSelection?.({ from: resolved.from, to: resolved.from });
+    editor.view?.focus?.();
+    return true;
+  }
 
   /**
    * Navigate to a bookmark/anchor in the current document (e.g., TOC links).

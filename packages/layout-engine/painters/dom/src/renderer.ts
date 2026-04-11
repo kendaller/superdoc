@@ -14,6 +14,7 @@ import type {
   ImageBlock,
   ImageDrawing,
   ImageFragment,
+  ImageHyperlink,
   ImageRun,
   Layout,
   Line,
@@ -59,6 +60,8 @@ import {
   calculateJustifySpacing,
   computeLinePmRange,
   getCellSpacingPx,
+  normalizeBaselineShift,
+  resolveBaseFontSizeForVerticalText,
   shouldApplyJustify,
   SPACE_CHARS,
 } from '@superdoc/contracts';
@@ -86,7 +89,6 @@ import {
   ensureFieldAnnotationStyles,
   ensureImageSelectionStyles,
   ensureLinkStyles,
-  ensureNativeSelectionStyles,
   ensurePrintStyles,
   ensureSdtContainerStyles,
   ensureTrackChangeStyles,
@@ -111,7 +113,6 @@ import {
   shouldRebuildForSdtBoundary,
   type SdtBoundaryOptions,
 } from './utils/sdt-helpers.js';
-import { SdtGroupedHover } from './utils/sdt-hover.js';
 import {
   computeBetweenBorderFlags,
   getFragmentParagraphBorders,
@@ -324,6 +325,8 @@ type PainterOptions = {
   };
   /** Per-page ruler options */
   ruler?: RulerOptions;
+  /** Called with the paint snapshot after each paint cycle completes. */
+  onPaintSnapshot?: (snapshot: PaintSnapshot) => void;
 };
 
 // BlockLookup lives in the shared types module (single source of truth)
@@ -397,6 +400,48 @@ export type PaintSnapshotTabStyle = {
   borderBottom?: string;
 };
 
+export type PaintSnapshotAnnotationEntity = {
+  element: HTMLElement;
+  pageIndex: number;
+  pmStart?: number;
+  pmEnd?: number;
+  fieldId?: string;
+  fieldType?: string;
+  type?: string;
+};
+
+export type PaintSnapshotStructuredContentBlockEntity = {
+  element: HTMLElement;
+  pageIndex: number;
+  sdtId: string;
+  pmStart?: number;
+  pmEnd?: number;
+};
+
+export type PaintSnapshotStructuredContentInlineEntity = {
+  element: HTMLElement;
+  pageIndex: number;
+  sdtId: string;
+  pmStart?: number;
+  pmEnd?: number;
+};
+
+export type PaintSnapshotImageEntity = {
+  element: HTMLElement;
+  pageIndex: number;
+  kind: 'inline' | 'fragment';
+  pmStart?: number;
+  pmEnd?: number;
+  blockId?: string;
+};
+
+export type PaintSnapshotEntities = {
+  annotations: PaintSnapshotAnnotationEntity[];
+  structuredContentBlocks: PaintSnapshotStructuredContentBlockEntity[];
+  structuredContentInlines: PaintSnapshotStructuredContentInlineEntity[];
+  images: PaintSnapshotImageEntity[];
+};
+
 export type PaintSnapshotLine = {
   index: number;
   inTableFragment: boolean;
@@ -420,6 +465,7 @@ export type PaintSnapshot = {
   markerCount: number;
   tabCount: number;
   pages: PaintSnapshotPage[];
+  entities: PaintSnapshotEntities;
 };
 
 type PaintSnapshotPageBuilder = {
@@ -459,6 +505,27 @@ function readSnapshotStyleValue(styleValue: string | null | undefined): string |
   return styleValue;
 }
 
+function createEmptyPaintSnapshotEntities(): PaintSnapshotEntities {
+  return {
+    annotations: [],
+    structuredContentBlocks: [],
+    structuredContentInlines: [],
+    images: [],
+  };
+}
+
+function readSnapshotDatasetNumber(value: string | null | undefined): number | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveSnapshotPageIndex(element: HTMLElement): number | null {
+  const pageEl = element.closest(`.${DOM_CLASS_NAMES.PAGE}`) as HTMLElement | null;
+  if (!pageEl) return null;
+  return readSnapshotDatasetNumber(pageEl.dataset.pageIndex);
+}
+
 function compactSnapshotObject<T extends Record<string, unknown>>(input: T): T {
   const out = {} as T;
   for (const [key, value] of Object.entries(input)) {
@@ -467,6 +534,123 @@ function compactSnapshotObject<T extends Record<string, unknown>>(input: T): T {
     (out as Record<string, unknown>)[key] = value;
   }
   return out;
+}
+
+function shouldIncludeInlineImageSnapshotElement(element: HTMLElement): boolean {
+  if (element.classList.contains(DOM_CLASS_NAMES.INLINE_IMAGE_CLIP_WRAPPER)) {
+    return true;
+  }
+
+  if (!element.classList.contains(DOM_CLASS_NAMES.INLINE_IMAGE)) {
+    return false;
+  }
+
+  return !element.closest(`.${DOM_CLASS_NAMES.INLINE_IMAGE_CLIP_WRAPPER}`);
+}
+
+function collectPaintSnapshotEntitiesFromDomRoot(rootEl: HTMLElement): PaintSnapshotEntities {
+  const entities = createEmptyPaintSnapshotEntities();
+
+  const annotationElements = Array.from(
+    rootEl.querySelectorAll<HTMLElement>(`.${DOM_CLASS_NAMES.ANNOTATION}[data-pm-start]`),
+  );
+  for (const element of annotationElements) {
+    const pageIndex = resolveSnapshotPageIndex(element);
+    if (pageIndex == null) continue;
+
+    entities.annotations.push(
+      compactSnapshotObject({
+        element,
+        pageIndex,
+        pmStart: readSnapshotDatasetNumber(element.dataset.pmStart),
+        pmEnd: readSnapshotDatasetNumber(element.dataset.pmEnd),
+        fieldId: element.dataset.fieldId || null,
+        fieldType: element.dataset.fieldType || null,
+        type: element.dataset.type || null,
+      }) as PaintSnapshotAnnotationEntity,
+    );
+  }
+
+  const blockSdtElements = Array.from(
+    rootEl.querySelectorAll<HTMLElement>(`.${DOM_CLASS_NAMES.BLOCK_SDT}[data-sdt-id]`),
+  );
+  for (const element of blockSdtElements) {
+    const pageIndex = resolveSnapshotPageIndex(element);
+    const sdtId = element.dataset.sdtId;
+    if (pageIndex == null || !sdtId) continue;
+
+    entities.structuredContentBlocks.push(
+      compactSnapshotObject({
+        element,
+        pageIndex,
+        sdtId,
+        pmStart: readSnapshotDatasetNumber(element.dataset.pmStart),
+        pmEnd: readSnapshotDatasetNumber(element.dataset.pmEnd),
+      }) as PaintSnapshotStructuredContentBlockEntity,
+    );
+  }
+
+  const inlineSdtElements = Array.from(
+    rootEl.querySelectorAll<HTMLElement>(`.${DOM_CLASS_NAMES.INLINE_SDT_WRAPPER}[data-sdt-id]`),
+  );
+  for (const element of inlineSdtElements) {
+    const pageIndex = resolveSnapshotPageIndex(element);
+    const sdtId = element.dataset.sdtId;
+    if (pageIndex == null || !sdtId) continue;
+
+    entities.structuredContentInlines.push(
+      compactSnapshotObject({
+        element,
+        pageIndex,
+        sdtId,
+        pmStart: readSnapshotDatasetNumber(element.dataset.pmStart),
+        pmEnd: readSnapshotDatasetNumber(element.dataset.pmEnd),
+      }) as PaintSnapshotStructuredContentInlineEntity,
+    );
+  }
+
+  const inlineImageElements = Array.from(
+    rootEl.querySelectorAll<HTMLElement>(
+      `.${DOM_CLASS_NAMES.INLINE_IMAGE_CLIP_WRAPPER}[data-pm-start], .${DOM_CLASS_NAMES.INLINE_IMAGE}[data-pm-start]`,
+    ),
+  );
+  for (const element of inlineImageElements) {
+    if (!shouldIncludeInlineImageSnapshotElement(element)) continue;
+
+    const pageIndex = resolveSnapshotPageIndex(element);
+    if (pageIndex == null) continue;
+
+    entities.images.push(
+      compactSnapshotObject({
+        element,
+        pageIndex,
+        kind: 'inline',
+        pmStart: readSnapshotDatasetNumber(element.dataset.pmStart),
+        pmEnd: readSnapshotDatasetNumber(element.dataset.pmEnd),
+      }) as PaintSnapshotImageEntity,
+    );
+  }
+
+  const fragmentImageElements = Array.from(
+    rootEl.querySelectorAll<HTMLElement>(`.${DOM_CLASS_NAMES.IMAGE_FRAGMENT}[data-pm-start]`),
+  );
+  for (const element of fragmentImageElements) {
+    const pageIndex = resolveSnapshotPageIndex(element);
+    if (pageIndex == null) continue;
+
+    entities.images.push(
+      compactSnapshotObject({
+        element,
+        pageIndex,
+        kind: 'fragment',
+        pmStart: readSnapshotDatasetNumber(element.dataset.pmStart),
+        pmEnd: readSnapshotDatasetNumber(element.dataset.pmEnd),
+        blockId: element.getAttribute('data-sd-block-id'),
+      }) as PaintSnapshotImageEntity,
+    );
+  }
+
+  return entities;
 }
 
 function snapshotLineStyleFromElement(lineEl: HTMLElement): PaintSnapshotLineStyle {
@@ -570,25 +754,7 @@ const LIST_MARKER_GAP = 8;
 const DEFAULT_PAGE_HEIGHT_PX = 1056;
 /** Default gap used when virtualization is enabled (kept in sync with PresentationEditor layout defaults). */
 const DEFAULT_VIRTUALIZED_PAGE_GAP = 72;
-import { cssToken } from './css-token.js';
-import type { CssToken } from './css-token.js';
-
-type CommentHighlightToken = CssToken;
-
-const COMMENT_HIGHLIGHT_EXTERNAL = cssToken('--sd-comments-highlight-external', '#B1124B40');
-const COMMENT_HIGHLIGHT_EXTERNAL_ACTIVE = cssToken('--sd-comments-highlight-external-active', '#B1124B66');
-const COMMENT_HIGHLIGHT_EXTERNAL_FADED = cssToken('--sd-comments-highlight-external-faded', '#B1124B20');
-const COMMENT_HIGHLIGHT_INTERNAL = cssToken('--sd-comments-highlight-internal', '#07838340');
-const COMMENT_HIGHLIGHT_INTERNAL_ACTIVE = cssToken('--sd-comments-highlight-internal-active', '#07838366');
-const COMMENT_HIGHLIGHT_INTERNAL_FADED = cssToken('--sd-comments-highlight-internal-faded', '#07838320');
-const COMMENT_HIGHLIGHT_EXTERNAL_NESTED_BORDER = cssToken(
-  '--sd-comments-highlight-external-nested-border',
-  '#B1124B99',
-);
-const COMMENT_HIGHLIGHT_INTERNAL_NESTED_BORDER = cssToken(
-  '--sd-comments-highlight-internal-nested-border',
-  '#07838399',
-);
+// Comment highlight color tokens moved to CommentHighlightDecorator (super-editor).
 
 type LinkRenderData = {
   href?: string;
@@ -683,7 +849,7 @@ const TRACK_CHANGE_BASE_CLASS: Record<TrackedChangeKind, string> = {
   delete: 'track-delete-dec',
   format: 'track-format-dec',
 };
-const TRACK_CHANGE_FOCUSED_CLASS = 'track-change-focused';
+// TRACK_CHANGE_FOCUSED_CLASS moved to CommentHighlightDecorator (super-editor).
 
 const TRACK_CHANGE_MODIFIER_CLASS: Record<TrackedChangeKind, Record<TrackedChangesMode, string | undefined>> = {
   insert: {
@@ -1121,11 +1287,10 @@ export class DomPainter {
    * Invalidated when the mount, scroll container, or zoom changes.
    */
   private scrollContainerMountOffset: number | null = null;
-  private sdtHover = new SdtGroupedHover();
-  /** The currently active/selected comment ID for highlighting */
-  private activeCommentId: string | null = null;
   private paintSnapshotBuilder: PaintSnapshotBuilder | null = null;
   private lastPaintSnapshot: PaintSnapshot | null = null;
+  private onPaintSnapshotCallback: ((snapshot: PaintSnapshot) => void) | null = null;
+  private mountedPageIndices: number[] = [];
   /** Resolved layout for the next-gen paint pipeline. */
   private resolvedLayout: ResolvedLayout | null = null;
 
@@ -1161,6 +1326,8 @@ export class DomPainter {
         this.virtualPaddingTop = Math.max(0, options.virtualization.paddingTop);
       }
     }
+
+    this.onPaintSnapshotCallback = options.onPaintSnapshot ?? null;
   }
 
   public setProviders(header?: PageDecorationProvider, footer?: PageDecorationProvider): void {
@@ -1227,37 +1394,6 @@ export class DomPainter {
     }
   }
 
-  /**
-   * Sets the active comment ID for highlighting.
-   * When set, only the active comment's range is highlighted.
-   * When null, all comments show depth-based highlighting.
-   */
-  public setActiveComment(commentId: string | null): void {
-    if (this.activeCommentId !== commentId) {
-      this.activeCommentId = commentId;
-      // Force re-render of all pages by incrementing layout version
-      // This bypasses the virtualization cache check
-      this.layoutVersion += 1;
-      // Clear page states to force full re-render (activeCommentId affects run rendering)
-      // For virtualized mode: remove existing page elements before clearing state
-      // to prevent duplicate pages in the DOM
-      for (const state of this.pageIndexToState.values()) {
-        state.element.remove();
-      }
-      this.pageIndexToState.clear();
-      this.virtualMountedKey = '';
-      // For non-virtualized mode:
-      this.pageStates = [];
-    }
-  }
-
-  /**
-   * Gets the currently active comment ID.
-   */
-  public getActiveComment(): string | null {
-    return this.activeCommentId;
-  }
-
   /** Returns the resolved page for a given index, or null if resolved data is unavailable. */
   private getResolvedPage(pageIndex: number): ResolvedPage | null {
     return this.resolvedLayout?.pages[pageIndex] ?? null;
@@ -1278,6 +1414,29 @@ export class DomPainter {
     return this.lastPaintSnapshot;
   }
 
+  /**
+   * Returns the page indices that are currently mounted in the DOM.
+   *
+   * Unlike paint snapshots, this reflects virtualization remounts that happen
+   * during scroll without waiting for a full paint cycle.
+   */
+  public getMountedPageIndices(): number[] {
+    return [...this.mountedPageIndices];
+  }
+
+  private createAllPageIndices(pageCount: number): number[] {
+    return Array.from({ length: pageCount }, (_, pageIndex) => pageIndex);
+  }
+
+  private setMountedPageIndices(pageIndices: number[]): void {
+    this.mountedPageIndices = [...pageIndices];
+  }
+
+  private emitPaintSnapshot(snapshot: PaintSnapshot): void {
+    this.lastPaintSnapshot = snapshot;
+    this.onPaintSnapshotCallback?.(snapshot);
+  }
+
   private beginPaintSnapshot(layout: Layout): void {
     this.paintSnapshotBuilder = {
       formatVersion: 1,
@@ -1293,7 +1452,7 @@ export class DomPainter {
     };
   }
 
-  private finalizePaintSnapshotFromBuilder(): void {
+  private finalizePaintSnapshotFromBuilder(rootEl?: HTMLElement): void {
     const builder = this.paintSnapshotBuilder;
     if (!builder) {
       this.lastPaintSnapshot = null;
@@ -1309,14 +1468,15 @@ export class DomPainter {
       }),
     ) as PaintSnapshotPage[];
 
-    this.lastPaintSnapshot = {
+    this.emitPaintSnapshot({
       formatVersion: builder.formatVersion,
       pageCount: pages.length,
       lineCount: builder.lineCount,
       markerCount: builder.markerCount,
       tabCount: builder.tabCount,
       pages,
-    };
+      entities: rootEl ? collectPaintSnapshotEntitiesFromDomRoot(rootEl) : createEmptyPaintSnapshotEntities(),
+    });
     this.paintSnapshotBuilder = null;
   }
 
@@ -1413,6 +1573,7 @@ export class DomPainter {
       markerCount,
       tabCount,
       pages,
+      entities: collectPaintSnapshotEntitiesFromDomRoot(rootEl),
     };
   }
 
@@ -1510,7 +1671,6 @@ export class DomPainter {
     ensureFieldAnnotationStyles(doc);
     ensureSdtContainerStyles(doc);
     ensureImageSelectionStyles(doc);
-    ensureNativeSelectionStyles(doc);
     if (!this.isSemanticFlow && this.options.ruler?.enabled) {
       ensureRulerStyles(doc);
     }
@@ -1520,6 +1680,7 @@ export class DomPainter {
       this.resetState();
     }
     this.layoutVersion += 1;
+
     this.layoutEpoch = layout.layoutEpoch ?? 0;
     this.mount = mount;
     this.beginPaintSnapshot(layout);
@@ -1535,6 +1696,7 @@ export class DomPainter {
       } else {
         this.patchLayout(layout);
       }
+      this.setMountedPageIndices(this.createAllPageIndices(layout.pages.length));
       this.currentLayout = layout;
       this.changedBlocks.clear();
       this.currentMapping = null;
@@ -1548,7 +1710,8 @@ export class DomPainter {
       // Use configured page gap for horizontal rendering
       mount.style.gap = `${this.pageGap}px`;
       this.renderHorizontal(layout, mount);
-      this.finalizePaintSnapshotFromBuilder();
+      this.finalizePaintSnapshotFromBuilder(mount);
+      this.setMountedPageIndices(this.createAllPageIndices(layout.pages.length));
       this.currentLayout = layout;
       this.pageStates = [];
       this.changedBlocks.clear();
@@ -1558,7 +1721,8 @@ export class DomPainter {
     if (mode === 'book') {
       applyStyles(mount, containerStyles);
       this.renderBookMode(layout, mount);
-      this.finalizePaintSnapshotFromBuilder();
+      this.finalizePaintSnapshotFromBuilder(mount);
+      this.setMountedPageIndices(this.createAllPageIndices(layout.pages.length));
       this.currentLayout = layout;
       this.pageStates = [];
       this.changedBlocks.clear();
@@ -1586,13 +1750,14 @@ export class DomPainter {
         this.patchLayout(layout);
         useDomSnapshotFallback = true;
       }
+      this.setMountedPageIndices(this.createAllPageIndices(layout.pages.length));
     }
 
     if (useDomSnapshotFallback) {
-      this.lastPaintSnapshot = this.collectPaintSnapshotFromDomRoot(mount);
+      this.emitPaintSnapshot(this.collectPaintSnapshotFromDomRoot(mount));
       this.paintSnapshotBuilder = null;
     } else {
-      this.finalizePaintSnapshotFromBuilder();
+      this.finalizePaintSnapshotFromBuilder(mount);
     }
 
     this.currentLayout = layout;
@@ -1706,8 +1871,6 @@ export class DomPainter {
       };
       win.addEventListener('resize', this.onResizeHandler);
     }
-
-    this.sdtHover.bind(mount);
   }
 
   private computeVirtualMetrics(): void {
@@ -1772,6 +1935,7 @@ export class DomPainter {
 
     if (N === 0) {
       this.mount.innerHTML = '';
+      this.setMountedPageIndices([]);
       this.processedLayoutVersion = this.layoutVersion;
       return;
     }
@@ -1855,6 +2019,7 @@ export class DomPainter {
     this.virtualMountedKey = mountedKey;
     this.virtualStart = start;
     this.virtualEnd = end;
+    this.setMountedPageIndices(mounted);
 
     // Update spacers + rebuild gap spacers
     this.updateSpacersForMountedPages(mounted);
@@ -1935,8 +2100,6 @@ export class DomPainter {
     // Clear changed blocks now that current visible pages are patched
     this.changedBlocks.clear();
     this.processedLayoutVersion = this.layoutVersion;
-
-    this.sdtHover.reapply();
   }
 
   private updateSpacers(start: number, end: number): void {
@@ -2404,11 +2567,11 @@ export class DomPainter {
     this.onWindowScrollHandler = null;
     this.onResizeHandler = null;
     this.scrollContainerMountOffset = null;
-    this.sdtHover.destroy();
     this.layoutVersion = 0;
     this.processedLayoutVersion = -1;
     this.paintSnapshotBuilder = null;
     this.lastPaintSnapshot = null;
+    this.mountedPageIndices = [];
   }
 
   private fullRender(layout: Layout): void {
@@ -3506,13 +3669,80 @@ export class DomPainter {
       if (filters.length > 0) {
         img.style.filter = filters.join(' ');
       }
-      fragmentEl.appendChild(img);
+
+      // Wrap in anchor when block has a DrawingML hyperlink (a:hlinkClick)
+      const imageChild = this.buildImageHyperlinkAnchor(img, block.hyperlink, 'block');
+      fragmentEl.appendChild(imageChild);
 
       return fragmentEl;
     } catch (error) {
       console.error('[DomPainter] Image fragment rendering failed:', { fragment, error });
       return this.createErrorPlaceholder(fragment.blockId, error);
     }
+  }
+
+  /**
+   * Optionally wrap an image element in an anchor for DrawingML hyperlinks (a:hlinkClick).
+   *
+   * When `hyperlink` is present and its URL passes sanitization, returns an
+   * `<a class="superdoc-link">` wrapping `imageEl`. The existing EditorInputManager
+   * click-delegation on `a.superdoc-link` handles both viewing-mode navigation and
+   * editing-mode event dispatch automatically, with no extra wiring needed here.
+   *
+   * When `hyperlink` is absent or the URL fails sanitization the original element
+   * is returned unchanged.
+   *
+   * @param imageEl   - The image element (img or span wrapper) to potentially wrap.
+   * @param hyperlink - Hyperlink metadata from the ImageBlock/ImageRun, or undefined.
+   * @param display   - CSS display value for the anchor: 'block' for fragment images,
+   *                    'inline-block' for inline runs.
+   */
+  private buildImageHyperlinkAnchor(
+    imageEl: HTMLElement,
+    hyperlink: ImageHyperlink | undefined,
+    display: 'block' | 'inline-block',
+  ): HTMLElement {
+    if (!hyperlink?.url || !this.doc) return imageEl;
+
+    const sanitized = sanitizeHref(hyperlink.url);
+    if (!sanitized?.href) return imageEl;
+
+    const anchor = this.doc.createElement('a');
+    anchor.href = sanitized.href;
+    anchor.classList.add('superdoc-link');
+
+    if (sanitized.protocol === 'http' || sanitized.protocol === 'https') {
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+    }
+
+    const tooltipSource =
+      typeof hyperlink.tooltip === 'string' && hyperlink.tooltip.trim().length > 0 ? hyperlink.tooltip : hyperlink.url;
+    const tooltipResult = encodeTooltip(tooltipSource);
+    if (tooltipResult?.text) {
+      anchor.title = tooltipResult.text;
+    }
+
+    for (const titledElement of [imageEl, ...Array.from(imageEl.querySelectorAll('[title]'))]) {
+      titledElement.removeAttribute('title');
+    }
+
+    // Accessibility: explicit role and keyboard focus (mirrors applyLinkAttributes for text links)
+    anchor.setAttribute('role', 'link');
+    anchor.setAttribute('tabindex', '0');
+
+    if (display === 'block') {
+      anchor.style.cssText = 'display: block; width: 100%; height: 100%; cursor: pointer;';
+    } else {
+      // inline-block preserves the image's layout box inside a paragraph line
+      anchor.style.display = 'inline-block';
+      anchor.style.lineHeight = '0';
+      anchor.style.cursor = 'pointer';
+      anchor.style.verticalAlign = imageEl.style.verticalAlign || 'bottom';
+    }
+
+    anchor.appendChild(imageEl);
+    return anchor;
   }
 
   private renderDrawingFragment(
@@ -4828,33 +5058,25 @@ export class DomPainter {
     const textRun = run as TextRun;
     const commentAnnotations = textRun.comments;
     const hasAnyComment = !!commentAnnotations?.length;
-    const commentHighlight = getCommentHighlight(textRun, this.activeCommentId);
-
-    if (commentHighlight.color && hasAnyComment) {
-      const runElement = elem as HTMLElement;
-      const previousBackgroundColor = runElement.style.backgroundColor;
-      runElement.style.backgroundColor = commentHighlight.color.css;
-      // jsdom may drop var() values for inline style properties.
-      // Fall back to concrete color to keep rendering/tests stable.
-      if (!runElement.style.backgroundColor || runElement.style.backgroundColor === previousBackgroundColor) {
-        runElement.style.backgroundColor = commentHighlight.color.fallback;
-      }
-      // Add thin visual indicator for nested comments when outer comment is selected.
-      // Use box-shadow instead of border to avoid affecting text layout.
-      if (commentHighlight.hasNestedComments && commentHighlight.nestedBorderColor) {
-        runElement.style.boxShadow = `inset 1px 0 0 ${commentHighlight.nestedBorderColor.css}, inset -1px 0 0 ${commentHighlight.nestedBorderColor.css}`;
-        if (!runElement.style.boxShadow) {
-          runElement.style.boxShadow = `inset 1px 0 0 ${commentHighlight.nestedBorderColor.fallback}, inset -1px 0 0 ${commentHighlight.nestedBorderColor.fallback}`;
-        }
-      } else {
-        runElement.style.boxShadow = '';
-      }
-    }
+    // Comment highlight styles are applied post-paint by CommentHighlightDecorator (super-editor).
+    // The painter only stamps metadata attributes below.
     // We still need to preserve the comment ids
     if (hasAnyComment) {
       elem.dataset.commentIds = commentAnnotations.map((c) => c.commentId).join(',');
       if (commentAnnotations.some((c) => c.internal)) {
         elem.dataset.commentInternal = 'true';
+      }
+      // Per-comment internal flag so the editor-side decorator can pick the right color
+      const internalIds = commentAnnotations.filter((c) => c.internal).map((c) => c.commentId);
+      if (internalIds.length > 0) {
+        elem.dataset.commentInternalIds = internalIds.join(',');
+      }
+      // importedId aliases so the decorator can match by either ID
+      const importedEntries = commentAnnotations
+        .filter((c) => c.importedId && c.importedId !== c.commentId)
+        .map((c) => `${c.importedId}=${c.commentId}`);
+      if (importedEntries.length > 0) {
+        elem.dataset.commentImportedIds = importedEntries.join(',');
       }
       elem.classList.add('superdoc-comment-highlight');
     }
@@ -5092,7 +5314,7 @@ export class DomPainter {
       this.applySdtDataset(wrapper, run.sdt);
       if (run.dataAttrs) applyRunDataAttributes(wrapper, run.dataAttrs);
       wrapper.appendChild(img);
-      return wrapper;
+      return this.buildImageHyperlinkAnchor(wrapper, run.hyperlink, 'inline-block');
     }
 
     // Apply PM position tracking for cursor placement (only on img when not wrapped)
@@ -5147,10 +5369,10 @@ export class DomPainter {
       this.applySdtDataset(wrapper, run.sdt);
 
       wrapper.appendChild(img);
-      return wrapper;
+      return this.buildImageHyperlinkAnchor(wrapper, run.hyperlink, 'inline-block');
     }
 
-    return img;
+    return this.buildImageHyperlinkAnchor(img, run.hyperlink, 'inline-block');
   }
 
   /**
@@ -5199,7 +5421,7 @@ export class DomPainter {
 
     // Create outer annotation wrapper
     const annotation = this.doc.createElement('span');
-    annotation.classList.add('annotation');
+    annotation.classList.add(DOM_CLASS_NAMES.ANNOTATION);
     annotation.setAttribute('aria-label', 'Field annotation');
 
     // Apply pill styling (unless highlighted is explicitly false)
@@ -5272,7 +5494,7 @@ export class DomPainter {
 
     // Create inner content wrapper
     const content = this.doc.createElement('span');
-    content.classList.add('annotation-content');
+    content.classList.add(DOM_CLASS_NAMES.ANNOTATION_CONTENT);
     content.style.pointerEvents = 'none';
     content.setAttribute('contenteditable', 'false');
 
@@ -5369,23 +5591,12 @@ export class DomPainter {
 
     // Apply data attributes for field tracking
     annotation.dataset.type = run.variant;
+    annotation.dataset.displayLabel = run.displayLabel;
     if (run.fieldId) {
       annotation.dataset.fieldId = run.fieldId;
     }
     if (run.fieldType) {
       annotation.dataset.fieldType = run.fieldType;
-    }
-
-    // Make field annotation draggable (matching super-editor behavior)
-    annotation.draggable = true;
-    annotation.dataset.draggable = 'true';
-
-    // Store additional data for drag operations
-    if (run.displayLabel) {
-      annotation.dataset.displayLabel = run.displayLabel;
-    }
-    if (run.variant) {
-      annotation.dataset.variant = run.variant;
     }
 
     // Assert PM positions are present for cursor fallback
@@ -5400,39 +5611,10 @@ export class DomPainter {
     }
     annotation.dataset.layoutEpoch = String(this.layoutEpoch);
 
-    this.appendAnnotationCaretAnchor(annotation, run);
-
     // Apply SDT metadata
     this.applySdtDataset(annotation, run.sdt);
 
     return annotation;
-  }
-
-  /**
-   * Adds a hidden DOM anchor at pmEnd so caret placement after the annotation is correct.
-   */
-  private appendAnnotationCaretAnchor(annotation: HTMLElement, run: FieldAnnotationRun): void {
-    if (!this.doc || run.pmEnd == null) return;
-
-    const caretAnchor = this.doc.createElement('span');
-    caretAnchor.dataset.pmStart = String(run.pmEnd);
-    caretAnchor.dataset.pmEnd = String(run.pmEnd);
-    caretAnchor.dataset.layoutEpoch = String(this.layoutEpoch);
-    caretAnchor.classList.add('annotation-caret-anchor');
-    caretAnchor.style.position = 'absolute';
-    caretAnchor.style.left = '100%';
-    caretAnchor.style.top = '0';
-    caretAnchor.style.width = '0';
-    caretAnchor.style.height = '1em';
-    caretAnchor.style.overflow = 'hidden';
-    caretAnchor.style.pointerEvents = 'none';
-    caretAnchor.style.userSelect = 'none';
-    caretAnchor.style.opacity = '0';
-    caretAnchor.textContent = '\u200B';
-    if (!annotation.style.position) {
-      annotation.style.position = 'relative';
-    }
-    annotation.appendChild(caretAnchor);
   }
 
   /**
@@ -5549,6 +5731,8 @@ export class DomPainter {
 
     // Check if any segments have explicit X positioning (from tab stops)
     const hasExplicitPositioning = line.segments?.some((seg) => seg.x !== undefined);
+    const lineContainsTabRun = runsForLine.some((run) => run.kind === 'tab');
+    const manualTabWithoutSegments = lineContainsTabRun && !hasExplicitPositioning;
     const availableWidth = availableWidthOverride ?? line.maxWidth ?? line.width;
 
     const justifyShouldApply = shouldApplyJustify({
@@ -5557,7 +5741,7 @@ export class DomPainter {
       // Caller already folds last-line + trailing lineBreak behavior into skipJustify.
       isLastLineOfParagraph: false,
       paragraphEndsWithLineBreak: false,
-      skipJustifyOverride: skipJustify,
+      skipJustifyOverride: skipJustify || manualTabWithoutSegments,
     });
 
     const countSpaces = (text: string): number => {
@@ -6210,9 +6394,7 @@ export class DomPainter {
     if (meta.date) {
       elem.dataset.trackChangeDate = meta.date;
     }
-    if (this.activeCommentId && meta.id === this.activeCommentId) {
-      elem.classList.add(TRACK_CHANGE_FOCUSED_CLASS);
-    }
+    // track-change-focused class is applied post-paint by CommentHighlightDecorator (super-editor).
   }
 
   /**
@@ -7261,6 +7443,43 @@ const deriveBlockVersion = (block: FlowBlock): string => {
   return block.id;
 };
 
+const DEFAULT_SUPERSCRIPT_RAISE_RATIO = 0.33;
+const DEFAULT_SUBSCRIPT_LOWER_RATIO = 0.14;
+
+const hasVerticalPositioning = (run: TextRun): boolean =>
+  normalizeBaselineShift(run.baselineShift) != null || run.vertAlign === 'superscript' || run.vertAlign === 'subscript';
+
+const applyRunVerticalPositioning = (element: HTMLElement, run: TextRun): void => {
+  // Vertically shifted runs should use a tight inline box. If they inherit the
+  // parent line's full line-height, the glyph remains visually low inside an
+  // oversized inline box even when the superscript/subscript offset is correct.
+  if (hasVerticalPositioning(run)) {
+    element.style.lineHeight = '1';
+  }
+
+  const explicitBaselineShift = normalizeBaselineShift(run.baselineShift);
+  if (explicitBaselineShift != null) {
+    element.style.verticalAlign = `${explicitBaselineShift}pt`;
+    return;
+  }
+
+  if (run.vertAlign === 'superscript') {
+    const baseFontSize = resolveBaseFontSizeForVerticalText(run.fontSize, run);
+    element.style.verticalAlign = `${baseFontSize * DEFAULT_SUPERSCRIPT_RAISE_RATIO}px`;
+    return;
+  }
+
+  if (run.vertAlign === 'subscript') {
+    const baseFontSize = resolveBaseFontSizeForVerticalText(run.fontSize, run);
+    element.style.verticalAlign = `${-(baseFontSize * DEFAULT_SUBSCRIPT_LOWER_RATIO)}px`;
+    return;
+  }
+
+  if (run.vertAlign === 'baseline') {
+    element.style.verticalAlign = 'baseline';
+  }
+};
+
 /**
  * Applies run styling properties to a DOM element.
  *
@@ -7320,23 +7539,8 @@ const applyRunStyles = (element: HTMLElement, run: Run, _isLink = false): void =
     element.style.textDecorationLine = decorations.join(' ');
   }
 
-  // Vertical alignment: custom baseline offset takes precedence over vertAlign
-  if (run.baselineShift != null && Number.isFinite(run.baselineShift)) {
-    element.style.verticalAlign = `${run.baselineShift}pt`;
-  } else if (run.vertAlign === 'superscript') {
-    element.style.verticalAlign = 'super';
-  } else if (run.vertAlign === 'subscript') {
-    element.style.verticalAlign = 'sub';
-  } else if (run.vertAlign === 'baseline') {
-    element.style.verticalAlign = 'baseline';
-  }
+  applyRunVerticalPositioning(element, run);
 };
-
-interface CommentHighlightResult {
-  color?: CommentHighlightToken;
-  nestedBorderColor?: CommentHighlightToken;
-  hasNestedComments?: boolean;
-}
 
 const CLIP_PATH_PREFIXES = ['inset(', 'polygon(', 'circle(', 'ellipse(', 'path(', 'rect('];
 
@@ -7359,41 +7563,6 @@ const resolveBlockClipPath = (block: unknown): string => {
   if (!block || typeof block !== 'object') return '';
   const record = block as Record<string, unknown>;
   return readClipPathValue(record.clipPath) || resolveClipPathFromAttrs(record.attrs);
-};
-
-const getCommentHighlight = (run: TextRun, activeCommentId: string | null): CommentHighlightResult => {
-  const comments = run.comments;
-  if (!comments || comments.length === 0) return {};
-
-  // Helper to match comment by ID or importedId
-  const matchesId = (c: { commentId: string; importedId?: string }, id: string) =>
-    c.commentId === id || c.importedId === id;
-
-  // When a comment is selected, only highlight that comment's range
-  if (activeCommentId != null) {
-    const activeComment = comments.find((c) =>
-      matchesId(c as { commentId: string; importedId?: string }, activeCommentId),
-    );
-    if (activeComment) {
-      const nestedComments = comments.filter(
-        (c) => !matchesId(c as { commentId: string; importedId?: string }, activeCommentId),
-      );
-      return {
-        color: activeComment.internal ? COMMENT_HIGHLIGHT_INTERNAL_ACTIVE : COMMENT_HIGHLIGHT_EXTERNAL_ACTIVE,
-        nestedBorderColor: activeComment.internal
-          ? COMMENT_HIGHLIGHT_INTERNAL_NESTED_BORDER
-          : COMMENT_HIGHLIGHT_EXTERNAL_NESTED_BORDER,
-        hasNestedComments: nestedComments.length > 0,
-      };
-    }
-    // Active comment is set but this run does not belong to it - show faded highlight.
-    const fadedPrimary = comments[0];
-    return { color: fadedPrimary.internal ? COMMENT_HIGHLIGHT_INTERNAL_FADED : COMMENT_HIGHLIGHT_EXTERNAL_FADED };
-  }
-
-  // No active comment - show uniform light highlight (like Word/Google Docs)
-  const primary = comments[0];
-  return { color: primary.internal ? COMMENT_HIGHLIGHT_INTERNAL : COMMENT_HIGHLIGHT_EXTERNAL };
 };
 
 /**

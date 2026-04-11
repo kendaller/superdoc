@@ -8,7 +8,7 @@
   ],
   "exports": {
     ".": {
-      "source": "./src/index.js",
+      "source": "./src/index.ts",
       "types": "./dist/src/index.d.ts",
       "import": "./dist/super-editor.es.js"
     },
@@ -51,6 +51,16 @@
       "source": "./src/editors/v1/components/toolbar/Toolbar.vue",
       "import": "./dist/toolbar.es.js"
     },
+    "./headless-toolbar/react": {
+      "source": "./src/headless-toolbar/react.ts",
+      "types": "./dist/src/headless-toolbar/react.d.ts",
+      "import": "./dist/headless-toolbar-react.es.js"
+    },
+    "./headless-toolbar/vue": {
+      "source": "./src/headless-toolbar/vue.ts",
+      "types": "./dist/src/headless-toolbar/vue.d.ts",
+      "import": "./dist/headless-toolbar-vue.es.js"
+    },
     "./super-input": {
       "source": "./src/editors/v1/components/SuperInput.vue",
       "import": "./dist/super-input.es.js"
@@ -72,7 +82,7 @@
       "import": "./dist/style.css"
     },
     "./presentation-editor": {
-      "source": "./src/index.js",
+      "source": "./src/index.ts",
       "import": "./dist/super-editor.es.js",
       "types": "./dist/index.d.ts"
     }
@@ -94,6 +104,7 @@
   "dependencies": {
     "@superdoc/common": "workspace:*",
     "@superdoc/contracts": "workspace:*",
+    "@superdoc/dom-contract": "workspace:*",
     "@superdoc/document-api": "workspace:*",
     "@superdoc/layout-bridge": "workspace:*",
     "@superdoc/layout-resolved": "workspace:*",
@@ -138,13 +149,20 @@
   },
   "peerDependencies": {
     "@floating-ui/dom": "^1.7.0",
+    "react": ">=16.8.0",
     "tippy.js": "^6.3.7",
     "y-prosemirror": "catalog:",
     "yjs": "catalog:"
   },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@floating-ui/dom": "catalog:",
     "@types/mdast": "catalog:",
+    "@types/react": "catalog:",
     "@vitejs/plugin-vue": "catalog:",
     "@vue/test-utils": "catalog:",
     "canvas": "catalog:",
@@ -152,6 +170,7 @@
     "postcss-nested": "catalog:",
     "postcss-nested-import": "catalog:",
     "prosemirror-test-builder": "catalog:",
+    "react": "catalog:",
     "tippy.js": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",

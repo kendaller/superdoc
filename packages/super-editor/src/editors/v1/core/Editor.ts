@@ -83,6 +83,7 @@ import { initPartsRuntime } from './parts/init-parts-runtime.js';
 import { syncPackageMetadata } from './opc/sync-package-metadata.js';
 import { readSettingsRoot, parseProtectionState } from '../document-api-adapters/document-settings.js';
 import { applyEffectiveEditability, getProtectionStorage } from '../extensions/protection/editability.js';
+import { getViewModeSelectionWithoutStructuredContent } from './helpers/getViewModeSelectionWithoutStructuredContent.js';
 
 declare const __APP_VERSION__: string | undefined;
 declare const version: string | undefined;
@@ -212,7 +213,7 @@ export interface SaveOptions {
   commentsType?: string;
 
   /** Comments to include in export */
-  comments?: Array<{ id: string; [key: string]: unknown }>;
+  comments?: Comment[];
 
   /** Highlight color for fields */
   fieldsHighlightColor?: string | null;
@@ -227,6 +228,19 @@ export interface SaveOptions {
  * with format-specific options (e.g., format?: 'docx' | 'json' | 'xml').
  */
 export type ExportOptions = SaveOptions;
+
+/**
+ * Full parameter set for `Editor.exportDocx()`.
+ * Extends SaveOptions with internal export format flags.
+ */
+export interface ExportDocxParams extends SaveOptions {
+  /** Return raw XML string instead of a binary blob */
+  exportXmlOnly?: boolean;
+  /** Return JSON string instead of a binary blob */
+  exportJsonOnly?: boolean;
+  /** Return the updated file map instead of a binary blob */
+  getUpdatedDocs?: boolean;
+}
 
 /**
  * Main editor class that manages document state, extensions, and user interactions
@@ -248,13 +262,15 @@ export class Editor extends EventEmitter<EditorEventMap> {
   extensionStorage: ExtensionStorage = {};
 
   /**
-   * ProseMirror schema for the editor
+   * ProseMirror schema for the editor.
+   * @deprecated Direct ProseMirror access will be removed in a future version. Use the Document API (`editor.doc`) instead.
    */
   schema!: Schema;
 
   /**
    * ProseMirror view instance.
    * Undefined in headless mode or before the editor is mounted.
+   * @deprecated Direct ProseMirror access will be removed in a future version. Use the Document API (`editor.doc`) instead.
    */
   view?: PmEditorView;
 
@@ -1310,7 +1326,8 @@ export class Editor extends EventEmitter<EditorEventMap> {
   }
 
   /**
-   * Get the editor state
+   * Get the editor state.
+   * @deprecated Direct ProseMirror state access will be removed in a future version. Use the Document API (`editor.doc`) instead.
    */
   get state(): EditorState {
     return this._state;
@@ -1377,6 +1394,7 @@ export class Editor extends EventEmitter<EditorEventMap> {
 
   /**
    * Get object of registered commands.
+   * @deprecated Editor commands will be removed in a future version. Use the Document API (`editor.doc`) instead.
    */
   get commands(): EditorCommands {
     return this.#commandService?.commands;
@@ -1562,6 +1580,7 @@ export class Editor extends EventEmitter<EditorEventMap> {
 
   /**
    * Create a chain of commands to call multiple commands at once.
+   * @deprecated Editor commands will be removed in a future version. Use the Document API (`editor.doc`) instead.
    */
   chain(): ChainableCommandObject {
     return this.#commandService.chain();
@@ -1569,6 +1588,7 @@ export class Editor extends EventEmitter<EditorEventMap> {
 
   /**
    * Check if a command or a chain of commands can be executed. Without executing it.
+   * @deprecated Editor commands will be removed in a future version. Use the Document API (`editor.doc`) instead.
    */
   can(): CanObject {
     return this.#commandService.can();
@@ -1593,6 +1613,10 @@ export class Editor extends EventEmitter<EditorEventMap> {
     // Viewing mode: Not editable, no tracked changes, no comments
     if (cleanedMode === 'viewing') {
       this.commands.toggleTrackChangesShowOriginal?.();
+      const normalizedSelection = getViewModeSelectionWithoutStructuredContent(this.state);
+      if (normalizedSelection) {
+        this.view?.dispatch(this.state.tr.setSelection(normalizedSelection));
+      }
       this.setEditable(false, false);
       this.setOptions({ documentMode: 'viewing' });
       if (pm) pm.classList.add('view-mode');
@@ -1620,6 +1644,11 @@ export class Editor extends EventEmitter<EditorEventMap> {
     // This may override the setEditable calls above when read-only protection
     // is enforced or when permission ranges allow editing in protected docs.
     applyEffectiveEditability(this);
+
+    this.emit('documentModeChange', {
+      editor: this,
+      documentMode: cleanedMode as 'editing' | 'viewing' | 'suggesting',
+    });
   }
 
   /**
@@ -2206,7 +2235,22 @@ export class Editor extends EventEmitter<EditorEventMap> {
    *   - [3] fonts - Object containing font files from the DOCX
    */
   static async loadXmlData(
-    fileSource: File | Blob | Buffer,
+    fileSource: File | Blob | Buffer | ArrayBuffer,
+    isNode?: boolean,
+    options?: { password?: string },
+  ): Promise<
+    [DocxFileEntry[], Record<string, unknown>, Record<string, unknown>, Record<string, unknown>, Uint8Array | null]
+  >;
+  static async loadXmlData(
+    fileSource: File | Blob | Buffer | ArrayBuffer | null | undefined,
+    isNode?: boolean,
+    options?: { password?: string },
+  ): Promise<
+    | [DocxFileEntry[], Record<string, unknown>, Record<string, unknown>, Record<string, unknown>, Uint8Array | null]
+    | undefined
+  >;
+  static async loadXmlData(
+    fileSource: File | Blob | Buffer | ArrayBuffer | null | undefined,
     isNode: boolean = false,
     options?: { password?: string },
   ): Promise<
@@ -2463,15 +2507,33 @@ export class Editor extends EventEmitter<EditorEventMap> {
    * images are never wider than their containing cell.
    *
    * @returns Size object with width and height in pixels, or empty object if no page size.
-   * @note In web layout mode, returns empty object to skip content constraints.
-   *       CSS max-width: 100% handles responsive display while preserving full resolution.
+   * @note In web layout mode, returns empty object to skip content constraints unless
+   *       the cursor is inside a table cell, in which case the cell width is returned.
    */
   getMaxContentSize(): { width?: number; height?: number } {
     if (!this.converter) return {};
 
-    // In web layout mode: skip constraints, let CSS handle responsive sizing
-    // This preserves full image resolution while CSS max-width: 100% handles display
+    // When the cursor is inside a table cell, constrain width to the cell's content
+    // width so images inserted into a cell are never wider than that cell.
+    // This applies to both print and web layout modes.
+    let cellConstraintWidth = 0;
+    const { $head } = this.state.selection;
+    for (let d = $head.depth; d > 0; d--) {
+      const node = $head.node(d);
+      if (node.type.name === 'tableCell' || node.type.name === 'tableHeader') {
+        cellConstraintWidth = getCellContentWidthPx(node);
+        break;
+      }
+    }
+
+    // In web layout mode there are no page dimensions. Return cell width constraint
+    // if inside a table cell, otherwise skip constraints entirely (CSS handles display).
     if (this.isWebLayout()) {
+      if (cellConstraintWidth > 0) {
+        // Infinity lets getAllowedImageDimensions() skip the height check while
+        // still applying the width constraint (web layout has no page height).
+        return { width: cellConstraintWidth, height: Infinity };
+      }
       return {};
     }
 
@@ -2494,18 +2556,8 @@ export class Editor extends EventEmitter<EditorEventMap> {
     const maxHeight = height * PIXELS_PER_INCH - topPx - bottomPx - MAX_HEIGHT_BUFFER_PX;
     const maxWidth = width * PIXELS_PER_INCH - leftPx - rightPx - MAX_WIDTH_BUFFER_PX;
 
-    // When the cursor is inside a table cell, constrain width to the cell's content
-    // width so images inserted into a cell are never wider than that cell.
-    const { $head } = this.state.selection;
-    for (let d = $head.depth; d > 0; d--) {
-      const node = $head.node(d);
-      if (node.type.name === 'tableCell' || node.type.name === 'tableHeader') {
-        const cellWidth = getCellContentWidthPx(node);
-        if (cellWidth > 0) {
-          return { width: cellWidth, height: maxHeight };
-        }
-        break;
-      }
+    if (cellConstraintWidth > 0) {
+      return { width: cellConstraintWidth, height: maxHeight };
     }
 
     return {
@@ -2713,6 +2765,8 @@ export class Editor extends EventEmitter<EditorEventMap> {
    *
    * In headless mode, this is the primary way to apply state changes since there is
    * no ProseMirror view to dispatch through.
+   *
+   * @deprecated Direct ProseMirror dispatch will be removed in a future version. Use the Document API (`editor.doc`) instead.
    *
    * @param tr - The ProseMirror transaction to dispatch
    *
@@ -3048,7 +3102,17 @@ export class Editor extends EventEmitter<EditorEventMap> {
 
   /**
    * Export the editor document to DOCX.
+   *
+   * Return type depends on flags:
+   * - `exportXmlOnly: true` → `string` (raw XML)
+   * - `exportJsonOnly: true` → `string` (JSON string)
+   * - `getUpdatedDocs: true` → `Record<string, string | null>` (file map)
+   * - Default → `Blob` (browser) or `Buffer` (Node.js headless)
    */
+  async exportDocx(params: ExportDocxParams & { exportXmlOnly: true }): Promise<string>;
+  async exportDocx(params: ExportDocxParams & { exportJsonOnly: true }): Promise<string>;
+  async exportDocx(params: ExportDocxParams & { getUpdatedDocs: true }): Promise<Record<string, string | null>>;
+  async exportDocx(params?: ExportDocxParams): Promise<Blob | Buffer>;
   async exportDocx({
     isFinalDoc = false,
     commentsType = 'external',
@@ -3058,16 +3122,7 @@ export class Editor extends EventEmitter<EditorEventMap> {
     getUpdatedDocs = false,
     fieldsHighlightColor = null,
     compression,
-  }: {
-    isFinalDoc?: boolean;
-    commentsType?: string;
-    exportJsonOnly?: boolean;
-    exportXmlOnly?: boolean;
-    comments?: Comment[];
-    getUpdatedDocs?: boolean;
-    fieldsHighlightColor?: string | null;
-    compression?: 'DEFLATE' | 'STORE';
-  } = {}): Promise<Blob | ArrayBuffer | Buffer | Record<string, string | null> | ProseMirrorJSON | string | undefined> {
+  }: ExportDocxParams = {}): Promise<Blob | Buffer | Record<string, string | null> | string | undefined> {
     try {
       // Use provided comments, or fall back to imported comments from converter
       const effectiveComments = comments ?? this.converter.comments ?? [];
@@ -3667,11 +3722,11 @@ export class Editor extends EventEmitter<EditorEventMap> {
   /**
    * Replace the current file
    */
-  async replaceFile(newFile: File | Blob | Buffer, options?: { password?: string }): Promise<void> {
+  async replaceFile(newFile: File | Blob | Buffer | ArrayBuffer, options?: { password?: string }): Promise<void> {
     this.setOptions({ annotations: true });
     const [docx, media, mediaFiles, fonts, decryptedData] = (await Editor.loadXmlData(newFile, false, options))!;
     this.setOptions({
-      fileSource: decryptedData ?? newFile,
+      fileSource: decryptedData ?? (newFile instanceof ArrayBuffer ? new Blob([newFile]) : newFile),
       content: docx,
       media,
       mediaFiles,
@@ -3692,6 +3747,7 @@ export class Editor extends EventEmitter<EditorEventMap> {
 
       const doReplaceFileSync = () => {
         // 1. Insert new PM doc into Y fragment (must happen first)
+        this.options.fragment = null;
         this.#insertNewFileData();
 
         // 2. Seed parts from new converter snapshot (prunes stale parts)

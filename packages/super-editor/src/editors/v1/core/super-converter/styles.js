@@ -13,6 +13,7 @@ import {
 } from '@converter/helpers.js';
 import { SuperConverter } from '@converter/SuperConverter.js';
 import { getUnderlineCssString } from '@extensions/linked-styles/underline-css.js';
+import { normalizeBaselineShift, SUBSCRIPT_SUPERSCRIPT_SCALE } from '@superdoc/contracts';
 import {
   resolveDocxFontFamily,
   resolveRunProperties,
@@ -30,14 +31,6 @@ const getToCssFontFamily = () => {
   // @ts-expect-error - SuperConverter.toCssFontFamily exists but isn't typed
   return SuperConverter.toCssFontFamily;
 };
-
-/**
- * Font size scaling factor for subscript and superscript text.
- * This value (0.65 or 65%) matches Microsoft Word's default rendering behavior
- * for vertical alignment (w:vertAlign) when set to 'superscript' or 'subscript'.
- * Applied to the base font size to reduce text size for sub/superscripts.
- */
-const SUBSCRIPT_SUPERSCRIPT_SCALE = 0.65;
 
 /**
  * Encodes run property objects into mark definitions for the editor schema.
@@ -116,12 +109,24 @@ export function encodeMarksFromRPr(runProperties, docx) {
         const fontFamily = resolveDocxFontFamily(value, docx, getToCssFontFamily());
         textStyleAttrs[key] = fontFamily;
         // value can be a string (from resolveRunPropertiesFromParagraphStyle) or an object
-        const eastAsiaFamily = typeof value === 'object' && value !== null ? value['eastAsia'] : undefined;
-
-        if (eastAsiaFamily) {
-          const eastAsiaCss = getFontFamilyValue({ 'w:ascii': eastAsiaFamily }, docx);
-          if (!fontFamily || eastAsiaCss !== textStyleAttrs.fontFamily) {
-            textStyleAttrs.eastAsiaFontFamily = eastAsiaCss;
+        // Preserve per-script fonts when they differ from ascii (ECMA-376 §17.3.2.26:
+        // ascii, hAnsi, eastAsia, cs are independent font slots). Without this, the mark
+        // round-trip flattens all scripts to the ascii font, causing false-positive inline
+        // detection and w:rFonts injection on export. (SD-2517)
+        if (typeof value === 'object' && value !== null) {
+          const eastAsiaFamily = value['eastAsia'];
+          if (eastAsiaFamily) {
+            const eastAsiaCss = getFontFamilyValue({ 'w:ascii': eastAsiaFamily }, docx);
+            if (!fontFamily || eastAsiaCss !== textStyleAttrs.fontFamily) {
+              textStyleAttrs.eastAsiaFontFamily = eastAsiaCss;
+            }
+          }
+          const csFamily = value['cs'];
+          if (csFamily) {
+            const csCss = getFontFamilyValue({ 'w:ascii': csFamily }, docx);
+            if (!fontFamily || csCss !== textStyleAttrs.fontFamily) {
+              textStyleAttrs.csFontFamily = csCss;
+            }
           }
         }
         break;
@@ -311,6 +316,10 @@ export function encodeCSSFromRPr(runProperties, docx) {
   let hasHighlightTag = false;
   let verticalAlignValue;
   let fontSizeOverride;
+  const normalizedPositionPoints =
+    runProperties.position != null && Number.isFinite(runProperties.position)
+      ? normalizeBaselineShift(halfPointToPoints(runProperties.position))
+      : undefined;
 
   Object.keys(runProperties).forEach((key) => {
     const value = runProperties[key];
@@ -451,8 +460,8 @@ export function encodeCSSFromRPr(runProperties, docx) {
         break;
       }
       case 'vertAlign': {
-        // Skip if position is present - position takes precedence over vertAlign
-        if (runProperties.position != null && Number.isFinite(runProperties.position)) {
+        // Only non-zero positions override the default superscript/subscript offset.
+        if (normalizedPositionPoints != null) {
           break;
         }
         if (value === 'superscript' || value === 'subscript') {
@@ -471,13 +480,9 @@ export function encodeCSSFromRPr(runProperties, docx) {
         break;
       }
       case 'position': {
-        if (value != null && Number.isFinite(value)) {
-          const points = halfPointToPoints(value);
-          if (Number.isFinite(points)) {
-            verticalAlignValue = `${points}pt`;
-            // Position takes precedence over vertAlign, so clear font-size override
-            fontSizeOverride = undefined;
-          }
+        if (normalizedPositionPoints != null) {
+          verticalAlignValue = `${normalizedPositionPoints}pt`;
+          fontSizeOverride = undefined;
         }
         break;
       }
@@ -604,6 +609,20 @@ export function decodeRPrFromMarks(marks) {
                   result[attr] = cleanValue;
                 });
                 runProperties.fontFamily = result;
+              }
+              break;
+            case 'eastAsiaFontFamily':
+              // Restore per-script East Asian font from the mark attribute preserved
+              // during encode. Without this, decodeRPrFromMarks flattens all scripts
+              // to the ascii font, causing false-positive inline detection. (SD-2517)
+              if (value != null && runProperties.fontFamily) {
+                runProperties.fontFamily.eastAsia = value.split(',')[0].trim();
+              }
+              break;
+            case 'csFontFamily':
+              // Restore per-script Complex Script font (same pattern as eastAsia).
+              if (value != null && runProperties.fontFamily) {
+                runProperties.fontFamily.cs = value.split(',')[0].trim();
               }
               break;
             case 'vertAlign':

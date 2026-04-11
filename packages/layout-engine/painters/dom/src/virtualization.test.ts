@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createDomPainter } from './index.js';
-import type { DomPainterOptions, DomPainterInput } from './index.js';
+import type { DomPainterOptions, DomPainterInput, PaintSnapshot } from './index.js';
 import type { FlowBlock, Measure, Layout, Fragment, PageMargins, ResolvedLayout } from '@superdoc/contracts';
 
 const emptyResolved: ResolvedLayout = { version: 1, flowMode: 'paginated', pageGap: 0, pages: [] };
@@ -8,7 +8,13 @@ const emptyResolved: ResolvedLayout = { version: 1, flowMode: 'paginated', pageG
 /** Test-only bridge: see index.test.ts for full JSDoc. */
 function createTestPainter(opts: { blocks?: FlowBlock[]; measures?: Measure[] } & DomPainterOptions) {
   const { blocks: initBlocks, measures: initMeasures, ...painterOpts } = opts;
-  const painter = createDomPainter(painterOpts);
+  let lastPaintSnapshot: PaintSnapshot | null = null;
+  const painter = createDomPainter({
+    ...painterOpts,
+    onPaintSnapshot: (snapshot) => {
+      lastPaintSnapshot = snapshot;
+    },
+  });
   let currentBlocks: FlowBlock[] = initBlocks ?? [];
   let currentMeasures: Measure[] = initMeasures ?? [];
   let currentResolved: ResolvedLayout = emptyResolved;
@@ -25,9 +31,10 @@ function createTestPainter(opts: { blocks?: FlowBlock[]; measures?: Measure[] } 
     },
     setProviders: painter.setProviders,
     setVirtualizationPins: painter.setVirtualizationPins,
-    setActiveComment: painter.setActiveComment,
-    getActiveComment: painter.getActiveComment,
-    getPaintSnapshot: painter.getPaintSnapshot,
+    getMountedPageIndices: painter.getMountedPageIndices,
+    getPaintSnapshot() {
+      return lastPaintSnapshot;
+    },
     onScroll: painter.onScroll,
     setZoom: painter.setZoom,
     setScrollContainer: painter.setScrollContainer,
@@ -101,6 +108,12 @@ const makeDrawingLayout = (count: number): Layout => ({
     ],
   })),
 });
+
+function getMountedPageIndicesFromDom(mount: HTMLElement): number[] {
+  return Array.from(mount.querySelectorAll('.superdoc-page')).map((page) =>
+    Number((page as HTMLElement).dataset.pageIndex),
+  );
+}
 
 describe('DomPainter virtualization (vertical)', () => {
   let mount: HTMLElement;
@@ -339,6 +352,28 @@ describe('DomPainter virtualization (vertical)', () => {
 
     expect(mount.querySelector('.superdoc-page[data-page-index="10"]')).toBeNull();
     expect(mount.querySelector('[data-virtual-spacer="gap"]')).toBeNull();
+  });
+
+  it('keeps mounted page indices in sync when virtualization pins remount pages', () => {
+    const painter = createTestPainter({
+      blocks: [block],
+      measures: [measure],
+      virtualization: { enabled: true, window: 2, overscan: 0, gap: 72, paddingTop: 0 },
+    });
+
+    const layout = makeLayout(12);
+    painter.paint(layout, mount);
+
+    expect(painter.getMountedPageIndices?.()).toEqual(getMountedPageIndicesFromDom(mount));
+
+    painter.setVirtualizationPins?.([10]);
+
+    expect(painter.getMountedPageIndices?.()).toEqual(getMountedPageIndicesFromDom(mount));
+    expect(mount.querySelector('.superdoc-page[data-page-index="10"]')).toBeTruthy();
+
+    painter.setVirtualizationPins?.([]);
+
+    expect(painter.getMountedPageIndices?.()).toEqual(getMountedPageIndicesFromDom(mount));
   });
 
   it('updates providers without remounting pages', () => {

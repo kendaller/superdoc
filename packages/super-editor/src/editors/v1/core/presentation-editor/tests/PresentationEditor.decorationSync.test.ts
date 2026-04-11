@@ -3,6 +3,8 @@ import { DecorationSet } from 'prosemirror-view';
 import { PluginKey } from 'prosemirror-state';
 
 import { PresentationEditor } from '../PresentationEditor.js';
+import { DecorationBridge } from '../dom/DecorationBridge.js';
+import { CommentHighlightDecorator } from '../dom/CommentHighlightDecorator.js';
 
 // Create a plugin key for our test highlight plugin
 const testHighlightPluginKey = new PluginKey('testHighlight');
@@ -135,6 +137,10 @@ const {
       setZoom: vi.fn(),
       setLayoutMode: vi.fn(),
       setProviders: vi.fn(),
+      setVirtualizationPins: vi.fn(),
+      getMountedPageIndices: vi.fn(() => []),
+      onScroll: vi.fn(),
+      setScrollContainer: vi.fn(),
     })),
     mockEditorConverterStore: converterStore,
     mockEditorOverlayManager: vi.fn().mockImplementation(() => ({
@@ -266,8 +272,6 @@ vi.mock('@superdoc/painter-dom', () => ({
     BLOCK_SDT: 'superdoc-structured-content-block',
     DOCUMENT_SECTION: 'superdoc-document-section',
   },
-  applyProofingDecorations: vi.fn(() => false),
-  clearProofingDecorations: vi.fn(() => false),
 }));
 
 vi.mock('../../header-footer/EditorOverlayManager.js', () => ({
@@ -320,6 +324,17 @@ describe('PresentationEditor.decorationSync', () => {
         });
       });
     });
+
+  /**
+   * Extracts an event handler that PresentationEditor registered on the mock editor.
+   * Tests use this to simulate real editor events without reaching into private state.
+   */
+  const getRegisteredEditorHandler = <THandler extends (...args: unknown[]) => void>(eventName: string): THandler => {
+    const onCalls: Array<[string, THandler]> = mockEditorOn.mock.calls;
+    const match = onCalls.find(([event]) => event === eventName);
+    if (!match) throw new Error(`No ${eventName} handler registered on mock editor`);
+    return match[1];
+  };
 
   /**
    * Sets up the editor with the given decorations and returns the painterHost.
@@ -541,12 +556,7 @@ describe('PresentationEditor.decorationSync', () => {
      * on the mock editor. This simulates the real customer flow: a command dispatches
      * a setMeta transaction → Editor fires 'transaction' → bridge syncs.
      */
-    const getTransactionHandler = (): (() => void) => {
-      const onCalls: Array<[string, () => void]> = mockEditorOn.mock.calls;
-      const match = onCalls.find(([event]) => event === 'transaction');
-      if (!match) throw new Error('No transaction handler registered on mock editor');
-      return match[1];
-    };
+    const getTransactionHandler = (): (() => void) => getRegisteredEditorHandler('transaction');
 
     it('syncs decorations when a transaction fires (setMeta customer flow)', async () => {
       const { plugin, setDecorations } = createMutableMockPlugin();
@@ -589,6 +599,50 @@ describe('PresentationEditor.decorationSync', () => {
 
       await waitForSync();
       expect(span.classList.contains('highlight-selection')).toBe(false);
+    });
+  });
+
+  describe('comment highlight interoperability', () => {
+    it('re-syncs bridged decorations after comment selection changes', async () => {
+      const commentApplySpy = vi.spyOn(CommentHighlightDecorator.prototype, 'apply');
+      const decorationSyncSpy = vi.spyOn(DecorationBridge.prototype, 'sync');
+
+      try {
+        setupWithDecorations([{ from: 5, to: 15, attrs: { style: 'background-color: yellow;' } }]);
+        const span = document.createElement('span');
+        span.dataset.pmStart = '5';
+        span.dataset.pmEnd = '15';
+        span.classList.add('superdoc-comment-highlight');
+        span.dataset.commentIds = 'comment-1';
+        span.textContent = 'text';
+        painterHost.appendChild(span);
+
+        await waitForSync();
+
+        const fireCommentsUpdate =
+          getRegisteredEditorHandler<(payload: { activeCommentId?: string | null }) => void>('commentsUpdate');
+
+        const applyCallsBeforeSelectionChange = commentApplySpy.mock.calls.length;
+        const syncCallsBeforeSelectionChange = decorationSyncSpy.mock.calls.length;
+        fireCommentsUpdate({ activeCommentId: 'comment-1' });
+        expect(commentApplySpy.mock.calls.length).toBeGreaterThan(applyCallsBeforeSelectionChange);
+        expect(decorationSyncSpy.mock.calls.length).toBeGreaterThan(syncCallsBeforeSelectionChange);
+        expect(commentApplySpy.mock.invocationCallOrder.at(-1)).toBeLessThan(
+          decorationSyncSpy.mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY,
+        );
+
+        const applyCallsBeforeClear = commentApplySpy.mock.calls.length;
+        const syncCallsBeforeClear = decorationSyncSpy.mock.calls.length;
+        fireCommentsUpdate({ activeCommentId: null });
+        expect(commentApplySpy.mock.calls.length).toBeGreaterThan(applyCallsBeforeClear);
+        expect(decorationSyncSpy.mock.calls.length).toBeGreaterThan(syncCallsBeforeClear);
+        expect(commentApplySpy.mock.invocationCallOrder.at(-1)).toBeLessThan(
+          decorationSyncSpy.mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY,
+        );
+      } finally {
+        commentApplySpy.mockRestore();
+        decorationSyncSpy.mockRestore();
+      }
     });
   });
 });

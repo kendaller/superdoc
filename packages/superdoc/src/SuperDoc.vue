@@ -37,6 +37,7 @@ import AiLayer from './components/AiLayer/AiLayer.vue';
 import { useSelectedText } from './composables/use-selected-text';
 import { useAi } from './composables/use-ai';
 import { useHighContrastMode } from './composables/use-high-contrast-mode';
+import { getVisibleThreadAnchorClientY } from './helpers/comment-focus.js';
 import { useUiFontFamily } from './composables/useUiFontFamily.js';
 import { usePasswordPrompt } from './composables/use-password-prompt.js';
 import { useFindReplace } from './composables/use-find-replace.js';
@@ -117,8 +118,12 @@ const {
   syncTrackedChangeComments,
   addComment,
   getComment,
+  resolveCommentPositionEntry,
   belongsToDocument,
   COMMENT_EVENTS,
+  requestInstantSidebarAlignment,
+  peekInstantSidebarAlignment,
+  clearInstantSidebarAlignment,
 } = commentsStore;
 const { proxy } = getCurrentInstance();
 commentsStore.proxy = proxy;
@@ -743,6 +748,7 @@ const editorOptions = (doc) => {
     disableContextMenu: proxy.$superdoc.config.disableContextMenu,
     jsonOverride: proxy.$superdoc.config.jsonOverride,
     viewOptions: proxy.$superdoc.config.viewOptions,
+    contained: proxy.$superdoc.config.contained,
     linkPopoverResolver: proxy.$superdoc.config.modules?.links?.popoverResolver,
     layoutEngineOptions: useLayoutEngine
       ? {
@@ -898,6 +904,36 @@ const normalizeReplayCommentModelPayload = (payload = {}) => {
   }
   applyReplayIsDoneResolutionFallback(normalizedPayload, normalizedPayload);
   return normalizedPayload;
+};
+
+const syncInstantSidebarAlignmentFromEditorSelection = (commentId) => {
+  if (Number.isFinite(peekInstantSidebarAlignment())) {
+    return;
+  }
+
+  if (commentId == null) {
+    clearInstantSidebarAlignment();
+    return;
+  }
+
+  const layersElement = layers.value;
+  const { entry } = resolveCommentPositionEntry(commentId);
+  const targetClientY = getVisibleThreadAnchorClientY(layersElement, entry);
+
+  if (Number.isFinite(targetClientY)) {
+    requestInstantSidebarAlignment(targetClientY, commentId);
+    return;
+  }
+
+  clearInstantSidebarAlignment();
+};
+
+const isSameActiveCommentSelection = (commentId) => {
+  if (commentId == null || activeComment.value == null) {
+    return false;
+  }
+
+  return String(activeComment.value) === String(commentId);
 };
 
 const onEditorCommentsUpdate = (params = {}) => {
@@ -1072,6 +1108,10 @@ const onEditorCommentsUpdate = (params = {}) => {
 
   if (type === 'trackedChange') {
     handleTrackedChangeUpdate({ superdoc: proxy.$superdoc, params });
+  }
+
+  if (shouldSyncActiveComment && (activeCommentId == null || !isSameActiveCommentSelection(activeCommentId))) {
+    syncInstantSidebarAlignmentFromEditorSelection(activeCommentId);
   }
 
   nextTick(() => {
@@ -1494,6 +1534,7 @@ const getPDFViewer = () => {
     :class="{
       'superdoc--with-sidebar': showCommentsSidebar,
       'superdoc--web-layout': proxy.$superdoc.config.viewOptions?.layout === 'web',
+      'superdoc--contained': proxy.$superdoc.config.contained,
       'high-contrast': isHighContrastMode,
     }"
     :style="superdocStyleVars"
@@ -1664,8 +1705,7 @@ const getPDFViewer = () => {
   min-width: 300px;
   width: 300px;
   height: 100%;
-  overflow-y: hidden;
-  overflow-x: hidden;
+  overflow: visible;
 }
 
 .superdoc__layers {
@@ -1701,6 +1741,21 @@ const getPDFViewer = () => {
   top: 0;
   height: 100%;
   position: relative;
+}
+
+/* In contained mode, overlay layers must not take flow space.
+ * With height:100% resolved on .superdoc__document, this element's
+ * position:relative + height:100% takes the full container height,
+ * pushing .superdoc__sub-document out of view. */
+.superdoc--contained .superdoc__comments-layer {
+  position: absolute;
+  width: 100%;
+  pointer-events: none;
+}
+
+/* Re-enable pointer events on comment anchors so highlights remain clickable */
+.superdoc--contained .sd-comment-anchor {
+  pointer-events: auto;
 }
 
 .superdoc__right-sidebar {

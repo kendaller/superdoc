@@ -76,6 +76,7 @@ tests/perf/results/
 tests/layout/candidate/
 tests/layout/reference/
 tests/layout/reports/
+tmp/layout-compare/
 test-corpus/
 .pnpm-store
 devtools/visual-testing/pnpm-lock.yaml
@@ -108,3 +109,4 @@ packages/sdk/tools/*.json
 # deploys directly from git with no pre-build hook support.
 
 .playwright-cli/
+.prqrc.json

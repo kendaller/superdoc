@@ -24,7 +24,7 @@
     "test:behavior:html": "pnpm --filter @superdoc-testing/behavior test:html",
     "type-check": "tsc -b tsconfig.references.json",
     "type-check:force": "tsc -b --force tsconfig.references.json",
-    "rebuild:types": "pnpm run --filter=@superdoc/common --filter=@superdoc/word-layout --filter=@superdoc/contracts --filter=@superdoc/layout-resolved --filter=@superdoc/geometry-utils --filter=@superdoc/style-engine --filter=@superdoc/pm-adapter --filter=@superdoc/measuring-dom --filter=@superdoc/layout-engine --filter=@superdoc/painter-dom --filter=@superdoc/layout-bridge build",
+    "rebuild:types": "pnpm run --filter=@superdoc/common --filter=@superdoc/word-layout --filter=@superdoc/contracts --filter=@superdoc/dom-contract --filter=@superdoc/layout-resolved --filter=@superdoc/geometry-utils --filter=@superdoc/style-engine --filter=@superdoc/pm-adapter --filter=@superdoc/measuring-dom --filter=@superdoc/layout-engine --filter=@superdoc/painter-dom --filter=@superdoc/layout-bridge build",
     "validate:commands": "node scripts/validate-command-types.mjs",
     "unzip": "bash packages/super-editor/src/editors/v1/tests/helpers/unzip.sh",
     "dev": "pnpm --prefix packages/superdoc run dev",
@@ -64,6 +64,7 @@
     "layout:snapshots:npm": "bun tests/layout/export-layout-snapshots-npm.mjs",
     "layout:compare": "bun tests/layout/compare-layout-snapshots.mjs",
     "corpus:pull": "node scripts/corpus/pull.mjs",
+    "corpus:delete": "node scripts/corpus/delete.mjs",
     "corpus:push": "node scripts/corpus/push.mjs",
     "corpus:update-registry": "node scripts/corpus/update-registry.mjs",
     "watch": "pnpm --prefix packages/superdoc run watch:es",
@@ -128,7 +129,7 @@
   },
   "pnpm": {
     "overrides": {
-      "canvas": "3.2.1",
+      "canvas": "3.2.3",
       "happy-dom": "20.4.0",
       "jsdom": "27.3.0",
       "vue": "3.5.25",

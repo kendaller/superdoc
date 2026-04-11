@@ -39,6 +39,16 @@ export {
   formatInsetClipPathTransform,
   type InsetClipPathScale,
 } from './clip-path-inset.js';
+export {
+  SUBSCRIPT_SUPERSCRIPT_SCALE,
+  normalizeBaselineShift,
+  hasExplicitBaselineShift,
+  isSuperscriptOrSubscript,
+  usesDefaultScriptLayout,
+  scaleFontSizeForVerticalText,
+  resolveBaseFontSizeForVerticalText,
+  type VerticalTextAlign,
+} from './vertical-text.js';
 
 export { computeFragmentPmRange, computeLinePmRange, type LinePmRange } from './pm-range.js';
 export { cloneColumnLayout, normalizeColumnLayout, widthsEqual } from './column-layout.js';
@@ -200,7 +210,10 @@ export type RunMarks = {
   textTransform?: 'uppercase' | 'lowercase' | 'capitalize' | 'none';
   /** Vertical alignment for superscript/subscript text. */
   vertAlign?: 'superscript' | 'subscript' | 'baseline';
-  /** Custom baseline shift in points (positive = raise, negative = lower). Takes precedence over vertAlign for positioning. */
+  /**
+   * Explicit baseline shift in points (positive = raise, negative = lower).
+   * Rendering normalizes a shift of zero to "no explicit shift".
+   */
   baselineShift?: number;
 };
 
@@ -273,6 +286,9 @@ export type ImageLuminanceAdjustment = {
   /** OOXML a:lum/@contrast in raw units (-100000..100000). */
   contrast?: number;
 };
+
+/** Hyperlink metadata from OOXML a:hlinkClick on a DrawingML image. */
+export type ImageHyperlink = { url: string; tooltip?: string };
 
 /**
  * Inline image run for images that flow with text on the same line.
@@ -348,6 +364,8 @@ export type ImageRun = {
   // OOXML image effects
   grayscale?: boolean; // Apply grayscale filter to image
   lum?: ImageLuminanceAdjustment; // DrawingML luminance adjustment from a:lum
+  /** Image hyperlink from OOXML a:hlinkClick. When set, clicking the image opens the URL. */
+  hyperlink?: ImageHyperlink;
 };
 
 export type BreakRun = {
@@ -622,6 +640,8 @@ export type ImageBlock = {
   rotation?: number; // Rotation angle in degrees
   flipH?: boolean; // Horizontal flip
   flipV?: boolean; // Vertical flip
+  /** Image hyperlink from OOXML a:hlinkClick. When set, clicking the image opens the URL. */
+  hyperlink?: ImageHyperlink;
 };
 
 export type DrawingKind = 'image' | 'vectorShape' | 'shapeGroup' | 'chart';

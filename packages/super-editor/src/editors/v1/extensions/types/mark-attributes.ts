@@ -133,7 +133,8 @@ export interface TextStyleAttrs {
   /**
    * Vertical alignment for subscript/superscript text (DOCX w:vertAlign).
    * Standard values: 'superscript', 'subscript', 'baseline'.
-   * When both vertAlign and position are present, position takes precedence.
+   * Non-zero position values override the default superscript/subscript offset.
+   * A position of 0 is treated as an identity value.
    * Renders as CSS vertical-align: super/sub with 65% font-size scaling.
    */
   vertAlign?: 'superscript' | 'subscript' | 'baseline' | null;
@@ -141,14 +142,16 @@ export interface TextStyleAttrs {
    * Custom vertical position offset in points (DOCX w:position).
    * Format: '{number}pt' where number is in points (e.g., '2pt', '-1.5pt').
    * Positive values raise text, negative values lower text.
-   * Takes precedence over vertAlign when both are present.
+   * A position of 0 is treated as an identity value during rendering.
    * Renders as CSS vertical-align with the exact offset value.
    */
   position?: string | null;
   /** Font family (CSS font-family string) */
   fontFamily?: string | null;
-  /** East Asian font family override */
+  /** East Asian font family override (per-script font, ECMA-376 §17.3.2.26) */
   eastAsiaFontFamily?: string | null;
+  /** Complex Script font family override (per-script font, ECMA-376 §17.3.2.26) */
+  csFontFamily?: string | null;
   /** Text color (hex/CSS color) */
   color?: string | null;
   /** Background color (CSS color) */
