@@ -190,36 +190,6 @@ function collectReferencedRIdsBySection(effectiveRefsBySection: Map<number, Head
 }
 
 /**
- * Resolve the default header/footer rId for each section.
- *
- * Multi-section layout has historically measured only the default variant with
- * section-specific constraints. Preserve that behavior to avoid changing
- * established rendering for documents that use first/even/odd variants.
- */
-function resolveDefaultRIdPerSection(
-  sectionMetadata: SectionMetadata[],
-  kind: 'header' | 'footer',
-): Map<number, string> {
-  const result = new Map<number, string>();
-  let inheritedDefaultRId: string | undefined;
-
-  for (const section of sectionMetadata) {
-    const refs = getRefsForKind(section, kind);
-    const explicitDefaultRId = refs?.default;
-
-    if (explicitDefaultRId) {
-      inheritedDefaultRId = explicitDefaultRId;
-    }
-
-    if (inheritedDefaultRId) {
-      result.set(section.sectionIndex, inheritedDefaultRId);
-    }
-  }
-
-  return result;
-}
-
-/**
  * Layout header/footer blocks per rId, respecting per-section margins.
  *
  * For documents with multiple sections that have different margins, this function
@@ -411,7 +381,7 @@ async function layoutWithPerSectionConstraints(
 ): Promise<void> {
   if (!blocksByRId) return;
 
-  const defaultRIdPerSection = resolveDefaultRIdPerSection(sectionMetadata, kind);
+  const effectiveRefsBySection = buildEffectiveRefsBySection(sectionMetadata, kind);
 
   // Extract table width specs per rId (SD-1837).
   // Word allows tables in headers/footers to extend beyond content margins.
@@ -433,8 +403,12 @@ async function layoutWithPerSectionConstraints(
   >();
 
   for (const section of sectionMetadata) {
-    const rId = defaultRIdPerSection.get(section.sectionIndex);
-    if (!rId || !blocksByRId.has(rId)) continue;
+    const refs = effectiveRefsBySection.get(section.sectionIndex);
+    if (!refs) continue;
+
+    for (const variant of HEADER_FOOTER_VARIANTS) {
+      const rId = refs[variant];
+      if (!rId || !blocksByRId.has(rId)) continue;
 
       // Resolve the minimum width needed for tables in this section.
       // For pct tables, this depends on the section's content width.
