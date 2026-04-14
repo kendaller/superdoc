@@ -6,6 +6,7 @@ import type {
   DependencyManifest,
   DocumentRuntime,
   RenderShellSnapshot,
+  SourceRef,
   WindowedProjectionResult,
   ResourceViolation,
 } from '@superdoc/v2-model';
@@ -20,6 +21,7 @@ import {
   buildEditableDocumentSnapshotForBlockIds,
   buildEditableDocumentSnapshotFromSourceRefs,
   createOptimisticEditableParagraph,
+  describeEditableParagraphBySourceRef,
   isEmptyEditableParagraph,
   mergeEditableDocumentSnapshots,
   replaceSnapshotParagraph,
@@ -468,18 +470,18 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       return;
     }
 
-    const previousBlocks = structuredClone(this.#accumulated.blocks);
-    const previousLayout = this.#accumulated.layout;
-    const previousMeasures = [...this.#accumulated.measures];
+    const previousRenderState = options?.repaint
+      ? {
+          previousBlocks: structuredClone(this.#accumulated.blocks),
+          previousLayout: this.#accumulated.layout,
+          previousMeasures: [...this.#accumulated.measures],
+        }
+      : null;
 
     if (this.#editingController.semanticModel && (await this.#tryApplyStructuralReprojection(options))) {
       this.#refreshEditableInteractionData();
-      if (options?.repaint) {
-        await this.#refreshRenderedInteractionData({
-          previousBlocks,
-          previousLayout,
-          previousMeasures,
-        });
+      if (previousRenderState) {
+        await this.#refreshRenderedInteractionData(previousRenderState);
         this.#scheduleStreamingWork();
       } else {
         this.#publishEditingSurfaceDiagnostics();
@@ -647,6 +649,32 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       applyEditableInteractionDataToParagraphBlock(block, optimisticParagraph);
     }
 
+    return true;
+  }
+
+  commitEditableParagraphText(blockId: string, paragraphSourceRef: SourceRef): boolean {
+    const model = this.#editingController?.semanticModel;
+    if (!model) {
+      return false;
+    }
+
+    const committedParagraph = describeEditableParagraphBySourceRef(model, paragraphSourceRef, blockId);
+    if (!committedParagraph?.supported) {
+      return false;
+    }
+
+    this.#accumulated.editingSnapshot = replaceSnapshotParagraph(this.#accumulated.editingSnapshot, committedParagraph);
+
+    for (const block of this.#accumulated.blocks) {
+      if (block.id !== blockId || block.kind !== 'paragraph') {
+        continue;
+      }
+
+      reconcileEditableParagraphBlockText(block, committedParagraph);
+      applyEditableInteractionDataToParagraphBlock(block, committedParagraph);
+    }
+
+    this.#publishEditingSurfaceDiagnostics();
     return true;
   }
 
@@ -1988,6 +2016,7 @@ type ParagraphRunTemplate = {
     text: string;
     pmStart?: number;
     pmEnd?: number;
+    dataAttrs?: Record<string, string>;
   };
   readonly runRefId: string | null;
 };
@@ -2031,7 +2060,7 @@ function createRebuiltParagraphRun(
       [DATA_ATTRS.SD_SEGMENT_END]: String(segment.paragraphEnd),
       [DATA_ATTRS.SD_INTERACTION_KIND]: segment.isMutableText ? 'text' : 'protected-text',
     },
-  };
+  } as ParagraphRunTemplate['run'];
 }
 
 function isParagraphTextCarrierRun(run: Extract<FlowBlock, { kind: 'paragraph' }>['runs'][number]): run is Extract<
@@ -2041,8 +2070,9 @@ function isParagraphTextCarrierRun(run: Extract<FlowBlock, { kind: 'paragraph' }
   text: string;
   pmStart?: number;
   pmEnd?: number;
+  dataAttrs?: Record<string, string>;
 } {
-  return (run.kind === undefined || run.kind === 'text' || run.kind === 'tab') && typeof run.text === 'string';
+  return (run.kind === undefined || run.kind === 'text') && typeof run.text === 'string';
 }
 
 function collectRenderedParagraphBlockIds(accumulated: AccumulatedState, painterHost: HTMLElement): string[] {

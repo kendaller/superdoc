@@ -4,7 +4,20 @@ import { V2EditableIndex } from './V2EditableIndex.js';
 import { V2EditingDomContext } from './V2EditingDom.js';
 import { V2HiddenInputHost } from './V2HiddenInputHost.js';
 import type { V2ResolvedSelection, V2ResolvedTextPosition, V2PendingSelection } from './V2EditingTypes.js';
-import { deleteBackward, deleteForward, replaceSelectionWithText, splitSelection } from './V2MutationPlanner.js';
+import {
+  applyParagraphTextEdit,
+  deleteBackward,
+  deleteForward,
+  replaceSelectionWithText,
+  splitSelection,
+} from './V2MutationPlanner.js';
+import {
+  planLocalParagraphDeleteBackward,
+  planLocalParagraphDeleteForward,
+  planLocalParagraphTextInsertion,
+  type V2LocalParagraphDraftEdit,
+} from './V2LocalParagraphEdit.js';
+import { patchRenderedParagraphDraftText } from './V2LocalParagraphDom.js';
 import { V2SelectionOverlay, ensureV2SelectionOverlayStyles } from './V2SelectionOverlay.js';
 import type { SourceRef } from '@superdoc/v2-model';
 
@@ -27,13 +40,30 @@ type V2EditingSessionOptions = {
   readonly container: HTMLElement;
   readonly controller: V2EditingController;
   readonly getSnapshot: () => V2EditableDocumentSnapshot;
+  readonly patchParagraphText?: ((blockId: string, text: string) => boolean) | null;
+  readonly commitParagraphText?: ((blockId: string, paragraphSourceRef: SourceRef) => boolean) | null;
   readonly refreshView?: ((options?: V2EditingViewRefreshOptions) => void | Promise<void>) | null;
 };
+
+type ParagraphDraftState = {
+  readonly blockId: string;
+  readonly paragraphSourceRef: SourceRef;
+  committedText: string;
+  currentText: string;
+  pendingSelection: V2PendingSelection;
+  flushTimerId: number | null;
+  flushInFlight: boolean;
+  flushRequestedWhileBusy: boolean;
+};
+
+const LOCAL_TEXT_FLUSH_DELAY_MS = 80;
 
 export class V2EditingSession {
   readonly #container: HTMLElement;
   readonly #controller: V2EditingController;
   readonly #getSnapshot: () => V2EditableDocumentSnapshot;
+  readonly #patchParagraphText: ((blockId: string, text: string) => boolean) | null;
+  readonly #commitParagraphText: ((blockId: string, paragraphSourceRef: SourceRef) => boolean) | null;
   readonly #refreshView: ((options?: V2EditingViewRefreshOptions) => void | Promise<void>) | null;
   readonly #domContext: V2EditingDomContext;
   readonly #overlay: V2SelectionOverlay;
@@ -46,6 +76,7 @@ export class V2EditingSession {
   #isPointerSelecting = false;
   #isMutating = false;
   #isReady = true;
+  #paragraphDraft: ParagraphDraftState | null = null;
 
   readonly #handlePointerDown = (event: PointerEvent) => {
     if (!this.#isReady || event.button !== 0 || this.#isMutating) {
@@ -97,7 +128,7 @@ export class V2EditingSession {
   };
 
   readonly #handleBeforeInput = (event: InputEvent) => {
-    if (!this.#isReady || this.#selection.kind === 'none' || this.#isMutating) {
+    if (!this.#isReady || this.#selection.kind === 'none') {
       return;
     }
 
@@ -110,7 +141,9 @@ export class V2EditingSession {
       }
 
       event.preventDefault();
-      void this.#replaceSelection(normalizedText);
+      if (!this.#applyLocalDraftEdit(planLocalParagraphTextInsertion(this.#index, this.#selection, normalizedText))) {
+        void this.#replaceSelection(normalizedText);
+      }
       return;
     }
 
@@ -122,13 +155,17 @@ export class V2EditingSession {
 
     if (inputType === 'deleteContentBackward') {
       event.preventDefault();
-      void this.#deleteBackward();
+      if (!this.#applyLocalDraftEdit(planLocalParagraphDeleteBackward(this.#index, this.#selection))) {
+        void this.#deleteBackward();
+      }
       return;
     }
 
     if (inputType === 'deleteContentForward') {
       event.preventDefault();
-      void this.#deleteForward();
+      if (!this.#applyLocalDraftEdit(planLocalParagraphDeleteForward(this.#index, this.#selection))) {
+        void this.#deleteForward();
+      }
     }
   };
 
@@ -199,6 +236,8 @@ export class V2EditingSession {
     this.#container = options.container;
     this.#controller = options.controller;
     this.#getSnapshot = options.getSnapshot;
+    this.#patchParagraphText = options.patchParagraphText ?? null;
+    this.#commitParagraphText = options.commitParagraphText ?? null;
     this.#refreshView = options.refreshView ?? null;
     this.#domContext = new V2EditingDomContext(this.#container);
     this.#index = new V2EditableIndex(options.getSnapshot());
@@ -284,6 +323,7 @@ export class V2EditingSession {
   }
 
   destroy(): void {
+    this.#clearParagraphDraft();
     this.#container.removeEventListener('pointerdown', this.#handlePointerDown);
     this.#container.removeEventListener('scroll', this.#handleScroll);
     window.removeEventListener('resize', this.#handleResize);
@@ -348,6 +388,10 @@ export class V2EditingSession {
       return;
     }
 
+    if (mutationKind !== 'replaceText') {
+      this.#scheduleParagraphDraftFlush(0);
+    }
+
     this.#isMutating = true;
     const anchorParagraphSourceRef = selectionAnchorParagraphSourceRef(this.#selection);
 
@@ -374,6 +418,152 @@ export class V2EditingSession {
     } finally {
       this.#isMutating = false;
     }
+  }
+
+  #applyLocalDraftEdit(edit: V2LocalParagraphDraftEdit | null): boolean {
+    if (!edit || !this.#patchParagraphText) {
+      return false;
+    }
+
+    if (!this.#canUseParagraphDraft(edit)) {
+      this.#scheduleParagraphDraftFlush(0);
+      return false;
+    }
+
+    if (!this.#patchParagraphText(edit.blockId, edit.nextText)) {
+      return false;
+    }
+
+    this.#patchRenderedParagraphDraft(edit.blockId, edit.nextText);
+    this.#updateParagraphDraft(edit);
+    this.#pendingSelection = edit.pendingSelection;
+    this.refresh();
+    this.#scheduleParagraphDraftFlush();
+    this.#hiddenInputHost.reset();
+    this.#hiddenInputHost.focus();
+    return true;
+  }
+
+  #canUseParagraphDraft(edit: V2LocalParagraphDraftEdit): boolean {
+    if (!this.#paragraphDraft) {
+      return true;
+    }
+
+    return this.#sameSourceRef(this.#paragraphDraft.paragraphSourceRef, edit.paragraphSourceRef);
+  }
+
+  #updateParagraphDraft(edit: V2LocalParagraphDraftEdit): void {
+    const existingDraft = this.#paragraphDraft;
+    if (!existingDraft || !this.#sameSourceRef(existingDraft.paragraphSourceRef, edit.paragraphSourceRef)) {
+      this.#clearParagraphDraft();
+      this.#paragraphDraft = {
+        blockId: edit.blockId,
+        paragraphSourceRef: edit.paragraphSourceRef,
+        committedText: edit.committedText,
+        currentText: edit.nextText,
+        pendingSelection: edit.pendingSelection,
+        flushTimerId: null,
+        flushInFlight: false,
+        flushRequestedWhileBusy: false,
+      };
+      return;
+    }
+
+    existingDraft.currentText = edit.nextText;
+    existingDraft.pendingSelection = edit.pendingSelection;
+  }
+
+  #scheduleParagraphDraftFlush(delayMs: number = LOCAL_TEXT_FLUSH_DELAY_MS): void {
+    const draft = this.#paragraphDraft;
+    if (!draft) {
+      return;
+    }
+
+    if (draft.flushTimerId != null) {
+      window.clearTimeout(draft.flushTimerId);
+    }
+
+    draft.flushTimerId = window.setTimeout(() => {
+      draft.flushTimerId = null;
+      void this.#flushParagraphDraft();
+    }, delayMs);
+  }
+
+  async #flushParagraphDraft(): Promise<void> {
+    const draft = this.#paragraphDraft;
+    if (!draft) {
+      return;
+    }
+
+    if (draft.flushInFlight) {
+      draft.flushRequestedWhileBusy = true;
+      return;
+    }
+
+    if (draft.currentText === draft.committedText) {
+      return;
+    }
+
+    draft.flushInFlight = true;
+    const committedText = draft.committedText;
+    const nextText = draft.currentText;
+    const pendingSelection = draft.pendingSelection;
+
+    try {
+      await applyParagraphTextEdit(this.#controller, draft.paragraphSourceRef, committedText, nextText);
+      draft.committedText = nextText;
+
+      const committedLocally = this.#commitParagraphText?.(draft.blockId, draft.paragraphSourceRef) ?? false;
+      if (!committedLocally && this.#refreshView) {
+        await this.#refreshView({
+          repaint: false,
+          pendingSelection,
+          anchorParagraphSourceRef: draft.paragraphSourceRef,
+          mutationKind: 'replaceText',
+        });
+      }
+
+      this.#pendingSelection = pendingSelection;
+      this.refresh();
+    } finally {
+      draft.flushInFlight = false;
+
+      if (draft.flushRequestedWhileBusy) {
+        draft.flushRequestedWhileBusy = false;
+        this.#scheduleParagraphDraftFlush(0);
+      }
+    }
+  }
+
+  #patchRenderedParagraphDraft(blockId: string, text: string): void {
+    const blockElement = this.#container.querySelector<HTMLElement>(`[data-block-id="${blockId}"]`);
+    if (!blockElement) {
+      return;
+    }
+
+    this.#domContext.invalidate();
+    patchRenderedParagraphDraftText(blockElement, text);
+  }
+
+  #clearParagraphDraft(): void {
+    const draft = this.#paragraphDraft;
+    if (!draft) {
+      return;
+    }
+
+    if (draft.flushTimerId != null) {
+      window.clearTimeout(draft.flushTimerId);
+    }
+
+    this.#paragraphDraft = null;
+  }
+
+  #sameSourceRef(left: SourceRef, right: SourceRef): boolean {
+    return (
+      left.partUri === right.partUri &&
+      left.nodeId === right.nodeId &&
+      (left.sourceNodePath ?? '') === (right.sourceNodePath ?? '')
+    );
   }
 
   #moveHorizontal(delta: -1 | 1, extend: boolean): void {

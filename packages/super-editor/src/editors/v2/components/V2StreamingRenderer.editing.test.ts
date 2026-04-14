@@ -78,6 +78,7 @@ vi.mock('../render/V2StreamingPaginatedRenderHost.js', () => ({
       orderedParagraphs: [],
     }));
     readonly patchEditableParagraphText = vi.fn().mockReturnValue(true);
+    readonly commitEditableParagraphText = vi.fn().mockReturnValue(true);
 
     constructor() {
       hostInstances.push(this);

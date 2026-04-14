@@ -7,6 +7,7 @@ import { V2StreamingPaginatedRenderHost } from '../render/V2StreamingPaginatedRe
 import type { LoadingOverlayState, StateChangeEvent } from '../render/streaming-host-types.js';
 import { createDefaultV2DocumentRuntime } from '../runtime/create-default-runtime.js';
 import { V2EditingController } from '../runtime/V2EditingController.js';
+import type { SourceRef } from '@superdoc/v2-model';
 import V2LoadingOverlayExternalMount from './V2LoadingOverlayExternalMount.vue';
 import type { DocumentLoadingConfig, DocumentLoadingHandle } from './loading-overlay-config.js';
 import {
@@ -248,6 +249,9 @@ async function initializeEditingInfrastructure(options: EditingInfrastructureOpt
       container,
       controller,
       getSnapshot: () => host.getEditingSnapshot(),
+      patchParagraphText: (blockId, text) => host.patchEditableParagraphText(blockId, text),
+      commitParagraphText: (blockId, paragraphSourceRef) =>
+        host.commitEditableParagraphText(blockId, paragraphSourceRef as SourceRef),
       refreshView: (options) => host.refreshEditingSnapshotView(options),
     });
 

@@ -7,8 +7,8 @@
 // source document verbatim.
 // ---------------------------------------------------------------------------
 
-import type { SemanticOperation } from './types.js';
 import type {
+  SemanticOperation,
   InsertTextOp,
   SplitParagraphOp,
   MergeParagraphsOp,
