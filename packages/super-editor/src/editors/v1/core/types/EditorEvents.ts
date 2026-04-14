@@ -148,4 +148,13 @@ export interface EditorEventMap extends DefaultEventMap {
 
   /** Called when document protection state changes (init, local mutation, or remote sync). */
   protectionChanged: [{ editor: Editor; state: DocumentProtectionState; source: ProtectionChangeSource }];
+
+  /** Called on pointer down (local only, not broadcast via collaboration) */
+  pointerDown: [{ editor: Editor; event: PointerEvent }];
+
+  /** Called on pointer up (local only, not broadcast via collaboration) */
+  pointerUp: [{ editor: Editor; event: PointerEvent }];
+
+  /** Called on right-click (local only, not broadcast via collaboration) */
+  rightClick: [{ editor: Editor; event: MouseEvent }];
 }

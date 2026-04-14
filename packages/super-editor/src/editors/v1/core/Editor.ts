@@ -424,6 +424,9 @@ export class Editor extends EventEmitter<EditorEventMap> {
     onCommentsLoaded: () => null,
     onCommentClicked: () => null,
     onCommentLocationsUpdate: () => null,
+    onPointerDown: () => null,
+    onPointerUp: () => null,
+    onRightClick: () => null,
     onDocumentLocked: () => null,
     onFirstRender: () => null,
     onCollaborationReady: () => null,
@@ -761,6 +764,9 @@ export class Editor extends EventEmitter<EditorEventMap> {
     this.on('list-definitions-change', this.options.onListDefinitionsChange!);
     this.on('fonts-resolved', this.options.onFontsResolved!);
     this.on('exception', this.options.onException!);
+    this.on('pointerDown', this.options.onPointerDown!);
+    this.on('pointerUp', this.options.onPointerUp!);
+    this.on('rightClick', this.options.onRightClick!);
   }
 
   /**
@@ -1159,6 +1165,9 @@ export class Editor extends EventEmitter<EditorEventMap> {
     this.on('list-definitions-change', this.options.onListDefinitionsChange!);
     this.on('fonts-resolved', this.options.onFontsResolved!);
     this.on('exception', this.options.onException!);
+    this.on('pointerDown', this.options.onPointerDown!);
+    this.on('pointerUp', this.options.onPointerUp!);
+    this.on('rightClick', this.options.onRightClick!);
 
     if (!shouldMountRenderer) {
       this.#emitCreateAsync();
@@ -1235,6 +1244,9 @@ export class Editor extends EventEmitter<EditorEventMap> {
     this.on('commentClick', this.options.onCommentClicked!);
     this.on('locked', this.options.onDocumentLocked!);
     this.on('list-definitions-change', this.options.onListDefinitionsChange!);
+    this.on('pointerDown', this.options.onPointerDown!);
+    this.on('pointerUp', this.options.onPointerUp!);
+    this.on('rightClick', this.options.onRightClick!);
 
     if (!shouldMountRenderer) {
       this.#emitCreateAsync();
