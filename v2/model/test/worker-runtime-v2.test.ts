@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { installWorkerHostV2, WorkerProxyV2 } from '../src/runtime/index.js';
+import { open, segmentsToText } from '../src/index.js';
 import type { WorkerMessageEnvelope, WorkerRequestV2, WorkerResponseV2 } from '../src/runtime/worker-protocol.js';
 import { createMinimalDocx } from './helpers/create-test-docx.js';
 import { createInlineImageDocx } from './helpers/create-rich-docx.js';
@@ -96,6 +97,134 @@ describe('worker runtime v2', () => {
     expect(result.items[0].mimeType).toBe('image/png');
     expect(result.items[0].data).toBeInstanceOf(ArrayBuffer);
 
+    await runtime.close();
+  });
+
+  it('applies semantic mutations through the worker proxy and reports revisions', async () => {
+    const { mainThreadWorker, workerScope } = createWorkerLoopback();
+    installWorkerHostV2(workerScope);
+
+    const bytes = createMinimalDocx('Hello');
+    const inspectorHandle = await open(bytes);
+    await inspectorHandle.ready('structure');
+    const inspectorModel = inspectorHandle.semanticModel();
+    if (!inspectorModel) {
+      throw new Error('Inspector model was not created');
+    }
+
+    const mainStory = inspectorModel.mainStory();
+    if (!mainStory) {
+      throw new Error('Missing main story');
+    }
+
+    const paragraph = inspectorModel.blockEntities(mainStory.ref)[0];
+    if (!paragraph || paragraph.kind !== 'paragraph') {
+      throw new Error('Missing first paragraph');
+    }
+
+    const runtime = new WorkerProxyV2(mainThreadWorker);
+    await runtime.openSource(bytes);
+    await runtime.ready('structure');
+
+    const initialRevision = await runtime.getRevision();
+    expect(initialRevision).toBeTruthy();
+
+    const mutationResult = await runtime.applyOperation({
+      id: 'worker-mutation-1',
+      label: 'Insert paragraph',
+      kind: 'insertParagraph',
+      relativeTo: paragraph.ref,
+      position: 'after',
+    });
+
+    expect(mutationResult).toMatchObject({
+      ok: true,
+      revision: expect.any(String),
+    });
+    expect(mutationResult.revision).not.toBe(initialRevision);
+    expect(await runtime.getRevision()).toBe(mutationResult.revision);
+
+    const undoResult = await runtime.undo();
+    expect(undoResult).toMatchObject({
+      ok: true,
+      revision: expect.any(String),
+    });
+    expect(undoResult.revision).not.toBe(mutationResult.revision);
+
+    await inspectorHandle.close();
+    await runtime.close();
+  });
+
+  it('resolves source-backed text mutations through invokeMutation without pre-expanded runs', async () => {
+    const { mainThreadWorker, workerScope } = createWorkerLoopback();
+    installWorkerHostV2(workerScope);
+
+    const bytes = createMinimalDocx('Hello');
+    const inspectorHandle = await open(bytes);
+    await inspectorHandle.ready('structure');
+    const inspectorModel = inspectorHandle.semanticModel();
+    if (!inspectorModel) {
+      throw new Error('Inspector model was not created');
+    }
+
+    const mainStory = inspectorModel.mainStory();
+    if (!mainStory) {
+      throw new Error('Missing main story');
+    }
+
+    const paragraph = inspectorModel.blockEntities(mainStory.ref)[0];
+    if (!paragraph || paragraph.kind !== 'paragraph' || !paragraph.sourceRefs[0]) {
+      throw new Error('Missing first paragraph');
+    }
+
+    const run = inspectorModel.runs(paragraph.ref)[0];
+    if (!run || !run.sourceRefs[0]) {
+      throw new Error('Missing first run');
+    }
+
+    const runtime = new WorkerProxyV2(mainThreadWorker);
+    await runtime.openSource(bytes);
+
+    const mutationResult = await runtime.invokeMutation!('paragraph.insertText', {
+      paragraphSourceRef: paragraph.sourceRefs[0],
+      targetSourceRef: run.sourceRefs[0],
+      text: '!',
+      segmentIndex: 0,
+      charOffset: 5,
+    });
+
+    expect(mutationResult).toMatchObject({
+      ok: true,
+      revision: expect.any(String),
+    });
+
+    const savedBytes = await runtime.save();
+    const mutatedHandle = await open(savedBytes);
+    await mutatedHandle.ready('structure');
+    const mutatedModel = mutatedHandle.semanticModel();
+    if (!mutatedModel) {
+      throw new Error('Mutated model was not created');
+    }
+
+    const mutatedStory = mutatedModel.mainStory();
+    if (!mutatedStory) {
+      throw new Error('Missing mutated main story');
+    }
+
+    const mutatedParagraph = mutatedModel.blockEntities(mutatedStory.ref)[0];
+    if (!mutatedParagraph || mutatedParagraph.kind !== 'paragraph') {
+      throw new Error('Missing mutated paragraph');
+    }
+
+    const mutatedRun = mutatedModel.runs(mutatedParagraph.ref)[0];
+    if (!mutatedRun) {
+      throw new Error('Missing mutated run');
+    }
+
+    expect(segmentsToText(mutatedModel.segments(mutatedRun.ref))).toBe('Hello!');
+
+    await mutatedHandle.close();
+    await inspectorHandle.close();
     await runtime.close();
   });
 

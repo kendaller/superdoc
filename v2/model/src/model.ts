@@ -11,7 +11,7 @@
 //   - Property extraction happens lazily with revision-based cache invalidation
 // ---------------------------------------------------------------------------
 
-import type { EntityRef, SourceRef } from "./identity/types.js";
+import type { EntityRef, SourceRef } from './identity/types.js';
 import type {
   Entity,
   EntityKind,
@@ -25,30 +25,30 @@ import type {
   NumberingDefinitionEntity,
   BookmarkEntity,
   SectionEntity,
-} from "./entities/types.js";
+} from './entities/types.js';
 // isStoryKind used indirectly via isContainerKind at file bottom
-import type { InlineSegment } from "./entities/inline-segments.js";
-import type { Diagnostic } from "./diagnostics/types.js";
-import type { XmlElementNode, XmlNode } from "./types/xml.js";
-import { DiagnosticBag } from "./diagnostics/diagnostic-bag.js";
-import type { PackageSession, PackageViews } from "./types/session.js";
-import type { RelationshipRecord } from "./types/package.js";
-import { EntityGraphImpl } from "./graph/entity-graph.js";
-import { EntityHandle } from "./graph/entity-handle.js";
-import { createGraphContext } from "./graph/graph-context.js";
-import { constructTier0 } from "./graph/construct-tier-0.js";
+import type { InlineSegment } from './entities/inline-segments.js';
+import type { Diagnostic } from './diagnostics/types.js';
+import type { XmlElementNode, XmlNode } from './types/xml.js';
+import { DiagnosticBag } from './diagnostics/diagnostic-bag.js';
+import type { PackageSession, PackageViews } from './types/session.js';
+import type { RelationshipRecord } from './types/package.js';
+import { EntityGraphImpl } from './graph/entity-graph.js';
+import { EntityHandle } from './graph/entity-handle.js';
+import { createGraphContext } from './graph/graph-context.js';
+import { constructTier0 } from './graph/construct-tier-0.js';
 import {
   expandParagraph,
   expandTable,
   expandTableRow,
   expandTableCell,
   expandContentControl,
-} from "./graph/construct-tier-1.js";
-import { createExtractorRegistry } from "./extract/registry.js";
-import type { RefGenerator } from "./graph/ref-generator.js";
-import type { GraphContext, EntityGraph } from "./graph/types.js";
-import { ensureHydratedWithIndex } from "./mutations/engine-hydration.js";
-import { resolveRelationshipTarget as resolveRelationshipTargetFromOpc } from "./opc/relationships.js";
+} from './graph/construct-tier-1.js';
+import { createExtractorRegistry } from './extract/registry.js';
+import type { RefGenerator } from './graph/ref-generator.js';
+import type { GraphContext, EntityGraph } from './graph/types.js';
+import { ensureHydratedWithIndex } from './mutations/engine-hydration.js';
+import { resolveRelationshipTarget as resolveRelationshipTargetFromOpc } from './opc/relationships.js';
 
 /**
  * The semantic document model.
@@ -64,6 +64,16 @@ export class SemanticModel {
   private readonly _expandedEntities = new Set<string>();
   private readonly _session: PackageSession;
   private readonly _views: PackageViews;
+
+  /**
+   * Access the underlying PackageSession.
+   *
+   * Needed by the editing controller to pass to `applySemanticOperation`.
+   * This is an internal API — product code should use the editing controller.
+   */
+  get session(): PackageSession {
+    return this._session;
+  }
 
   constructor(session: PackageSession, views: PackageViews) {
     this._session = session;
@@ -82,33 +92,41 @@ export class SemanticModel {
    * This is the Phase 2 coherence strategy: full rebuild, not incremental
    * patching. Stable live handles across mutations are a Phase 5+ concern.
    */
-  rebuild(): void {
+  rebuild(options: { replayExpandedEntities?: boolean } = {}): void {
     const previouslyExpandedEntityIds = [...this._expandedEntities];
     this._graph.clear();
     this._ctx.clearElementCache();
     this._expandedEntities.clear();
     this._diagnostics.clear();
     this._refs = constructTier0(this._views, this._session, this._graph, this._ctx);
-    this.replayExpandedEntities(previouslyExpandedEntityIds);
+    if (options.replayExpandedEntities !== false) {
+      this.replayExpandedEntities(previouslyExpandedEntityIds);
+    }
   }
 
   // ---- Story enumeration ----------------------------------------------------
 
   /** All story entities in the document. */
   stories(): StoryEntity[] {
-    return this._graph.storyRefs().map((ref) =>
-      this._graph.get(ref) as StoryEntity,
-    ).filter(Boolean);
+    return this._graph
+      .storyRefs()
+      .map((ref) => this._graph.get(ref) as StoryEntity)
+      .filter(Boolean);
   }
 
   /** Get a specific story by its entity ref. */
   story(ref: EntityRef): StoryEntity | undefined {
     const entity = this._graph.get(ref);
     if (!entity) return undefined;
-    if (entity.kind === "mainStory" || entity.kind === "headerStory" ||
-        entity.kind === "footerStory" || entity.kind === "footnoteStory" ||
-        entity.kind === "endnoteStory" || entity.kind === "commentStory" ||
-        entity.kind === "textboxStory") {
+    if (
+      entity.kind === 'mainStory' ||
+      entity.kind === 'headerStory' ||
+      entity.kind === 'footerStory' ||
+      entity.kind === 'footnoteStory' ||
+      entity.kind === 'endnoteStory' ||
+      entity.kind === 'commentStory' ||
+      entity.kind === 'textboxStory'
+    ) {
       return entity as StoryEntity;
     }
     return undefined;
@@ -116,7 +134,7 @@ export class SemanticModel {
 
   /** Get the main story. */
   mainStory(): StoryEntity | undefined {
-    const stories = this._graph.allOfKind("mainStory");
+    const stories = this._graph.allOfKind('mainStory');
     return stories[0];
   }
 
@@ -141,7 +159,7 @@ export class SemanticModel {
   /** Get runs within a paragraph, including runs inside hyperlinks and inline SDTs. */
   runs(paragraphRef: EntityRef): RunEntity[] {
     const para = this.ensureExpanded(paragraphRef);
-    if (!para || para.kind !== "paragraph") return [];
+    if (!para || para.kind !== 'paragraph') return [];
 
     const result: RunEntity[] = [];
     this.collectRunsRecursive(para, result);
@@ -154,9 +172,9 @@ export class SemanticModel {
       const child = this._graph.get(childRef);
       if (!child) continue;
 
-      if (child.kind === "run") {
+      if (child.kind === 'run') {
         result.push(child as RunEntity);
-      } else if (child.kind === "hyperlink" || child.kind === "contentControl") {
+      } else if (child.kind === 'hyperlink' || child.kind === 'contentControl') {
         // Expand the wrapper, then recurse to find its runs
         this.ensureExpanded(childRef);
         this.collectRunsRecursive(child, result);
@@ -167,7 +185,7 @@ export class SemanticModel {
   /** Get inline segments for a run. */
   segments(runRef: EntityRef): readonly InlineSegment[] {
     const run = this._graph.get(runRef);
-    if (!run || run.kind !== "run") return [];
+    if (!run || run.kind !== 'run') return [];
     return (run as RunEntity).raw().segments;
   }
 
@@ -176,21 +194,21 @@ export class SemanticModel {
   /** Get rows within a table. Triggers tier-1 expansion if needed. */
   tableRows(tableRef: EntityRef): TableRowEntity[] {
     const table = this.ensureExpanded(tableRef);
-    if (!table || table.kind !== "table") return [];
-    return this.resolveChildrenOfKind(table, "tableRow");
+    if (!table || table.kind !== 'table') return [];
+    return this.resolveChildrenOfKind(table, 'tableRow');
   }
 
   /** Get cells within a table row. Triggers tier-1 expansion if needed. */
   tableCells(rowRef: EntityRef): TableCellEntity[] {
     const row = this.ensureExpanded(rowRef);
-    if (!row || row.kind !== "tableRow") return [];
-    return this.resolveChildrenOfKind(row, "tableCell");
+    if (!row || row.kind !== 'tableRow') return [];
+    return this.resolveChildrenOfKind(row, 'tableCell');
   }
 
   /** Get block content within a table cell. Triggers tier-1 expansion. */
   cellContent(cellRef: EntityRef): Entity[] {
     const cell = this.ensureExpanded(cellRef);
-    if (!cell || cell.kind !== "tableCell") return [];
+    if (!cell || cell.kind !== 'tableCell') return [];
     return this.resolveChildEntities(cell);
   }
 
@@ -198,33 +216,33 @@ export class SemanticModel {
 
   /** All style entities. */
   styles(): StyleEntity[] {
-    return this._graph.allOfKind("style");
+    return this._graph.allOfKind('style');
   }
 
   /** Look up a style entity by its style ID (from raw properties). */
   styleByStyleId(styleId: string): StyleEntity | undefined {
-    const all = this._graph.allOfKind("style");
+    const all = this._graph.allOfKind('style');
     return all.find((s) => s.raw().styleId === styleId);
   }
 
   /** All numbering definition entities. */
   numberingDefinitions(): NumberingDefinitionEntity[] {
-    return this._graph.allOfKind("numberingDefinition");
+    return this._graph.allOfKind('numberingDefinition');
   }
 
   /** All section entities. */
   sections(): SectionEntity[] {
-    return this._graph.allOfKind("section");
+    return this._graph.allOfKind('section');
   }
 
   /** All bookmark entities (start-marker only in Phase 2). */
   bookmarks(): BookmarkEntity[] {
-    return this._graph.allOfKind("bookmark");
+    return this._graph.allOfKind('bookmark');
   }
 
   /** All comment range entities (start-marker only in Phase 2). */
-  commentRanges(): Entity<"commentRange">[] {
-    return this._graph.allOfKind("commentRange");
+  commentRanges(): Entity<'commentRange'>[] {
+    return this._graph.allOfKind('commentRange');
   }
 
   // ---- Entity lookup --------------------------------------------------------
@@ -247,7 +265,7 @@ export class SemanticModel {
    */
   resolveSourceNode(sourceRef: SourceRef): XmlNode | undefined {
     const part = this._session.parts.get(sourceRef.partUri);
-    if (!part || part.kind !== "xml") {
+    if (!part || part.kind !== 'xml') {
       return undefined;
     }
 
@@ -258,9 +276,7 @@ export class SemanticModel {
   /** Resolve a source-backed XML element when the ref points at an element node. */
   resolveSourceElement(sourceRef: SourceRef): XmlElementNode | undefined {
     const node = this.resolveSourceNode(sourceRef);
-    return node?.kind === "element"
-      ? node
-      : undefined;
+    return node?.kind === 'element' ? node : undefined;
   }
 
   /**
@@ -269,10 +285,7 @@ export class SemanticModel {
    * This is used by projection layers that need to bridge semantic entities
    * back to package resources such as images, charts, and headers/footers.
    */
-  resolvePartRelationship(
-    sourcePartUri: string,
-    relationshipId: string,
-  ): RelationshipRecord | undefined {
+  resolvePartRelationship(sourcePartUri: string, relationshipId: string): RelationshipRecord | undefined {
     return this._views.relationships.partRelationships(sourcePartUri)?.get(relationshipId);
   }
 
@@ -282,16 +295,13 @@ export class SemanticModel {
    * External relationships are returned as-is. Internal relationships are
    * normalized to absolute package part URIs.
    */
-  resolveRelationshipTarget(
-    sourcePartUri: string,
-    relationshipId: string,
-  ): string | undefined {
+  resolveRelationshipTarget(sourcePartUri: string, relationshipId: string): string | undefined {
     const relationship = this.resolvePartRelationship(sourcePartUri, relationshipId);
     if (!relationship) {
       return undefined;
     }
 
-    if (relationship.targetMode === "External") {
+    if (relationship.targetMode === 'External') {
       return relationship.target;
     }
 
@@ -347,13 +357,13 @@ export class SemanticModel {
   /** All paragraphs across all stories. Triggers full expansion. */
   allParagraphs(): ParagraphEntity[] {
     this.expandAllStories();
-    return this._graph.allOfKind("paragraph");
+    return this._graph.allOfKind('paragraph');
   }
 
   /** All tables across all stories. Triggers full expansion. */
   allTables(): TableEntity[] {
     this.expandAllStories();
-    return this._graph.allOfKind("table");
+    return this._graph.allOfKind('table');
   }
 
   // ---- Diagnostics ----------------------------------------------------------
@@ -379,35 +389,20 @@ export class SemanticModel {
     const handle = entity as EntityHandle<EntityKind>;
 
     switch (entity.kind) {
-      case "paragraph":
-        expandParagraph(
-          handle as EntityHandle<"paragraph">,
-          this._graph, this._ctx, this._refs,
-        );
+      case 'paragraph':
+        expandParagraph(handle as EntityHandle<'paragraph'>, this._graph, this._ctx, this._refs);
         break;
-      case "table":
-        expandTable(
-          handle as EntityHandle<"table">,
-          this._graph, this._ctx, this._refs,
-        );
+      case 'table':
+        expandTable(handle as EntityHandle<'table'>, this._graph, this._ctx, this._refs);
         break;
-      case "tableRow":
-        expandTableRow(
-          handle as EntityHandle<"tableRow">,
-          this._graph, this._ctx, this._refs,
-        );
+      case 'tableRow':
+        expandTableRow(handle as EntityHandle<'tableRow'>, this._graph, this._ctx, this._refs);
         break;
-      case "tableCell":
-        expandTableCell(
-          handle as EntityHandle<"tableCell">,
-          this._graph, this._ctx, this._refs,
-        );
+      case 'tableCell':
+        expandTableCell(handle as EntityHandle<'tableCell'>, this._graph, this._ctx, this._refs);
         break;
-      case "contentControl":
-        expandContentControl(
-          handle as EntityHandle<"contentControl">,
-          this._graph, this._ctx, this._refs,
-        );
+      case 'contentControl':
+        expandContentControl(handle as EntityHandle<'contentControl'>, this._graph, this._ctx, this._refs);
         break;
     }
 
@@ -431,28 +426,34 @@ export class SemanticModel {
   private resolveChildEntities(parent: Entity): Entity[] {
     const expanded = this.ensureExpanded(parent.ref);
     if (!expanded) return [];
-    return expanded.childRefs()
+    return expanded
+      .childRefs()
       .map((ref) => this._graph.get(ref))
       .filter((e): e is Entity => e !== undefined);
   }
 
-  private resolveChildrenOfKind<K extends EntityKind>(
-    parent: Entity,
-    kind: K,
-  ): Entity<K>[] {
-    return this.resolveChildEntities(parent)
-      .filter((e): e is Entity<K> => e.kind === kind);
+  private resolveChildrenOfKind<K extends EntityKind>(parent: Entity, kind: K): Entity<K>[] {
+    return this.resolveChildEntities(parent).filter((e): e is Entity<K> => e.kind === kind);
   }
 }
 
 // ---- Container kind classification -----------------------------------------
 
 const CONTAINER_KINDS = new Set<EntityKind>([
-  "mainStory", "headerStory", "footerStory",
-  "footnoteStory", "endnoteStory", "commentStory", "textboxStory",
-  "table", "tableRow", "tableCell",
-  "commentThread", "footnoteBody", "endnoteBody",
-  "contentControl",
+  'mainStory',
+  'headerStory',
+  'footerStory',
+  'footnoteStory',
+  'endnoteStory',
+  'commentStory',
+  'textboxStory',
+  'table',
+  'tableRow',
+  'tableCell',
+  'commentThread',
+  'footnoteBody',
+  'endnoteBody',
+  'contentControl',
 ]);
 
 function isContainerKind(kind: EntityKind): boolean {

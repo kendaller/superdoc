@@ -34,6 +34,9 @@ describe('V2StreamingRenderer', () => {
       props: {
         runtime,
         fileSource: new Uint8Array([1, 2, 3]),
+        options: {
+          documentMode: 'viewing',
+        },
       },
     });
 

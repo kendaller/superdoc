@@ -59,7 +59,51 @@ export interface DocumentRuntime {
   status(): Promise<SessionStatus>;
   save(options?: SaveOptions): Promise<Uint8Array>;
 
+  // ---- Editing (Phase 4) ----------------------------------------------------
+
+  /**
+   * Apply a serialized semantic operation to the live document.
+   * Returns the operation result with success/failure and revision.
+   */
+  applyOperation?(op: SerializableSemanticOperation): Promise<RuntimeMutationResult>;
+
+  /**
+   * Execute a document-api operation by key.
+   * Translates and applies through the semantic operation pipeline.
+   */
+  invokeMutation?(operationKey: string, args: Record<string, unknown>): Promise<RuntimeMutationResult>;
+
+  /** Undo the last operation. */
+  undo?(): Promise<RuntimeMutationResult>;
+
+  /** Redo the last undone operation. */
+  redo?(): Promise<RuntimeMutationResult>;
+
+  /** Get the current session revision. */
+  getRevision?(): Promise<string | null>;
+
   // ---- Events ---------------------------------------------------------------
 
   on(event: string, handler: RuntimeEventHandler): () => void;
 }
+
+// ---- Editing types ----------------------------------------------------------
+
+/**
+ * JSON-serializable representation of a semantic operation.
+ * Used for worker message transport — the worker deserializes and applies.
+ */
+export type SerializableSemanticOperation = {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: string;
+  readonly [key: string]: unknown;
+};
+
+/** Result of a runtime mutation (serializable for worker transport). */
+export type RuntimeMutationResult = {
+  readonly ok: boolean;
+  readonly revision?: string;
+  readonly error?: string;
+  readonly noop?: boolean;
+};

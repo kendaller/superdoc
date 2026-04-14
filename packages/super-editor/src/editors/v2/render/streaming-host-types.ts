@@ -1,5 +1,6 @@
 import type { FlowBlock, Layout, Measure, SectionMetadata } from '@superdoc/contracts';
 import type { DependencyManifest, SectionMetadataDelta } from '@superdoc/v2-model';
+import type { V2EditableDocumentSnapshot } from '../editing/V2EditableDocumentSnapshot.js';
 
 // ---- State machine -----------------------------------------------------------
 
@@ -88,6 +89,7 @@ export type WindowRecord = {
   bodyChildCount: number;
   blockCount: number;
   blocks: FlowBlock[];
+  blockIds: string[];
   sectionMetadataDelta: SectionMetadataDelta;
   dependencyManifest?: DependencyManifest;
   projectionMode: 'preview' | 'exact';
@@ -101,6 +103,8 @@ export type AccumulatedState = {
   measures: Measure[];
   layout: Layout | null;
   windowRecords: WindowRecord[];
+  blockToSourceRef: ReadonlyMap<string, { partUri: string; nodeId: string; sourceNodePath?: string }>;
+  editingSnapshot: V2EditableDocumentSnapshot;
   nextBodyChildIndex: number;
   totalBodyChildCount: number;
   sectionMetadata: SectionMetadata[];
@@ -134,4 +138,45 @@ export type V2StreamingLayoutPayload = {
   blocks: FlowBlock[];
   measures: Measure[];
   layout: Layout;
+};
+
+// ---- Editing surface diagnostics ---------------------------------------------
+
+export type V2EditingSnapshotSource = 'none' | 'blockIds' | 'sourceRefs' | 'merged';
+
+export type V2EditingBootstrapPhase =
+  | 'idle'
+  | 'awaiting-controller'
+  | 'preparing-snapshot'
+  | 'repainting'
+  | 'ready'
+  | 'blocked'
+  | 'failed';
+
+export type V2EditingHistogramEntry = {
+  readonly reason: string;
+  readonly count: number;
+};
+
+export type V2EditingSurfaceStatus = {
+  ready: boolean;
+  bootstrapPhase: V2EditingBootstrapPhase;
+  bootstrapIssue: string | null;
+  snapshotSource: V2EditingSnapshotSource;
+  renderedParagraphCount: number;
+  renderedEditableParagraphCount: number;
+  domSegmentCount: number;
+  snapshotParagraphCount: number;
+  supportedParagraphCount: number;
+  blockIdParagraphCount: number;
+  blockIdSupportedParagraphCount: number;
+  sourceRefParagraphCount: number;
+  sourceRefSupportedParagraphCount: number;
+  blockIdOnlySupportedParagraphCount: number;
+  sourceRefOnlySupportedParagraphCount: number;
+  missingRenderedBlockIdCount: number;
+  paragraphsWithoutDomSegmentsCount: number;
+  unsupportedParagraphHistogram: readonly V2EditingHistogramEntry[];
+  missingRenderedBlockIds: readonly string[];
+  paragraphsWithoutDomSegments: readonly string[];
 };

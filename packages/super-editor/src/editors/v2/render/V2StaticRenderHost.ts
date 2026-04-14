@@ -1,8 +1,16 @@
 import { EventEmitter } from 'eventemitter3';
 import { measureBlock } from '@superdoc/measuring-dom';
 import { createDomPainter } from '@superdoc/painter-dom';
+import { DATA_ATTRS, DATASET_KEYS } from '@superdoc/dom-contract';
 import { projectToFlowBlocks } from '@superdoc/v2-model';
 import type { FlowBlock, Layout, Measure } from '@superdoc/contracts';
+import type {
+  EntityRef,
+  SemanticOperation,
+  SemanticOperationResult,
+  SaveOptions,
+  SaveResult,
+} from '@superdoc/v2-model';
 import type { LayoutEngineOptions, TrackedChangesOverrides } from '../../v1/core/presentation-editor/types.js';
 import { runInstrumentedIncrementalLayout } from '../../../core/perf/runInstrumentedIncrementalLayout.js';
 import {
@@ -12,6 +20,12 @@ import {
   type V2SemanticDocument as PresentationV2SemanticDocument,
   type V2SemanticModel as PresentationV2SemanticModel,
 } from '../runtime/V2DocumentRuntime.js';
+import { V2EditingController, type InvokeResult, type NoopResult } from '../runtime/V2EditingController.js';
+import {
+  applyEditableInteractionData,
+  buildEditableDocumentSnapshot,
+  type V2EditableDocumentSnapshot,
+} from '../editing/V2EditableDocumentSnapshot.js';
 import {
   v2PerfTimeline,
   SPAN_RENDER,
@@ -46,6 +60,13 @@ export type V2StaticLayoutSnapshot = {
   measures: Measure[];
   layout: Layout | null;
 };
+
+/** Projection metadata exposed for targeting and interaction. */
+export type V2ProjectionSnapshot = {
+  readonly blockToEntityRef: ReadonlyMap<string, EntityRef>;
+};
+
+export type V2EditingSnapshot = V2EditableDocumentSnapshot;
 
 export type V2StaticLayoutPayload = {
   blocks: FlowBlock[];
@@ -84,6 +105,14 @@ export class V2StaticRenderHost extends EventEmitter {
   readonly options: { documentId?: string };
 
   #runtime = new V2DocumentRuntime();
+  #editingController: V2EditingController | null = null;
+  #unbindEditingController: (() => void) | null = null;
+  #projectionSnapshot: V2ProjectionSnapshot = { blockToEntityRef: new Map() };
+  #editingSnapshot: V2EditingSnapshot = {
+    blockToEntityRef: new Map(),
+    paragraphsByBlockId: new Map(),
+    orderedParagraphs: [],
+  };
   #viewportHost: HTMLDivElement;
   #painterHost: HTMLDivElement;
   #domPainter: ReturnType<typeof createDomPainter> | null = null;
@@ -129,23 +158,35 @@ export class V2StaticRenderHost extends EventEmitter {
   }
 
   async load(source: V2DocumentSource): Promise<void> {
-    await this.#runtime.initialize(source);
+    const controller = this.#editingController;
+    if (controller) {
+      await this.#runtime.close();
+      await controller.initialize(source);
+    } else {
+      await this.#runtime.initialize(source);
+    }
     await this.render();
   }
 
   async render(): Promise<void> {
     const endRender = v2PerfTimeline.startSpan(SPAN_RENDER);
     try {
-      const semanticModel = this.#runtime.semanticModel;
+      const runtime = this.#getRenderRuntime();
+      const semanticModel = runtime.semanticModel;
       if (!semanticModel) {
         throw new Error('Cannot render before the semantic model is initialized');
       }
 
       // Phase 1: Projection (instrumented inside projectToFlowBlocks)
       const projection = projectToFlowBlocks(semanticModel, {
-        resolver: this.#runtime.styleResolver,
+        resolver: runtime.styleResolver,
       });
+      this.#projectionSnapshot = { blockToEntityRef: projection.blockToEntityRef };
       const layoutBlocks = toContractBlocks(projection.blocks);
+      this.#editingSnapshot = buildEditableDocumentSnapshot(semanticModel, projection.blockToEntityRef);
+      if (isEditableDocumentMode(this.#documentMode)) {
+        applyEditableInteractionData(layoutBlocks, this.#editingSnapshot);
+      }
       const layoutOptions = this.#resolveLayoutInput(semanticModel);
       const previousSnapshot = this.#layoutSnapshot;
 
@@ -168,6 +209,7 @@ export class V2StaticRenderHost extends EventEmitter {
         const painter = this.#ensurePainter(layoutBlocks, result.measures);
         painter.setData?.(layoutBlocks, result.measures);
         painter.paint(result.layout, this.#painterHost);
+        this.#applyInteractionMetadata(semanticModel);
       } finally {
         endPaint();
       }
@@ -210,21 +252,21 @@ export class V2StaticRenderHost extends EventEmitter {
       return;
     }
 
-    if (this.#runtime.isActive()) {
+    if (this.#getRenderRuntime().isActive()) {
       void this.render().catch((error) => this.#emitLayoutError(error));
     }
   }
 
   getSemanticModel(): PresentationV2SemanticModel | null {
-    return this.#runtime.semanticModel;
+    return this.#getRenderRuntime().semanticModel;
   }
 
   getSemanticJson(): PresentationV2SemanticDocument | undefined {
-    return this.#runtime.semanticJson;
+    return this.#getRenderRuntime().semanticJson;
   }
 
   getSemanticDocumentApiAdapter(): PresentationV2DocumentApiAdapter | undefined {
-    return this.#runtime.documentApiAdapter;
+    return this.#getRenderRuntime().documentApiAdapter;
   }
 
   getLayoutSnapshot(): V2StaticLayoutSnapshot {
@@ -237,6 +279,93 @@ export class V2StaticRenderHost extends EventEmitter {
 
   getPages(): Layout['pages'] {
     return this.#layoutSnapshot.layout?.pages ?? [];
+  }
+
+  /** Get the latest projection metadata for targeting. */
+  getProjectionSnapshot(): V2ProjectionSnapshot {
+    return this.#projectionSnapshot;
+  }
+
+  getEditingSnapshot(): V2EditingSnapshot {
+    return this.#editingSnapshot;
+  }
+
+  // ---- Editing integration --------------------------------------------------
+
+  /**
+   * Bind an editing controller to this host.
+   *
+   * When bound, the host automatically rerenders after every successful
+   * mutation. The host does not own the controller — the caller retains
+   * ownership and lifecycle responsibility.
+   */
+  bindEditingController(controller: V2EditingController): () => void {
+    this.#unbindEditingController?.();
+    this.#editingController = controller;
+
+    const unsubscribe = controller.on('changed', () => {
+      void this.render().catch((error) => this.#emitLayoutError(error));
+    });
+
+    this.#unbindEditingController = () => {
+      unsubscribe();
+      if (this.#editingController === controller) {
+        this.#editingController = null;
+      }
+      if (this.#unbindEditingController) {
+        this.#unbindEditingController = null;
+      }
+    };
+
+    if (controller.isActive()) {
+      void this.#runtime.close().catch(() => {});
+      void this.render().catch((error) => this.#emitLayoutError(error));
+    }
+
+    return this.#unbindEditingController;
+  }
+
+  /** The currently bound editing controller, if any. */
+  get editingController(): V2EditingController | null {
+    return this.#editingController;
+  }
+
+  /**
+   * Apply a semantic operation through the bound editing controller.
+   * Convenience method — throws if no controller is bound.
+   */
+  async applyOperation(op: SemanticOperation): Promise<SemanticOperationResult> {
+    return this.#requireController().applyOperation(op);
+  }
+
+  /**
+   * Execute a document-api operation through the bound editing controller.
+   * Convenience method — throws if no controller is bound.
+   */
+  async invoke(operationKey: string, args: Record<string, unknown>): Promise<InvokeResult> {
+    return this.#requireController().invoke(operationKey, args);
+  }
+
+  /** Undo through the bound editing controller. */
+  async undo(): Promise<SemanticOperationResult | NoopResult> {
+    return this.#requireController().undo();
+  }
+
+  /** Redo through the bound editing controller. */
+  async redo(): Promise<SemanticOperationResult | NoopResult> {
+    return this.#requireController().redo();
+  }
+
+  /** Save through the bound editing controller. */
+  async save(options?: SaveOptions): Promise<SaveResult> {
+    return this.#requireController().save(options);
+  }
+
+  #requireController(): V2EditingController {
+    if (!this.#editingController) {
+      throw new Error('[V2StaticRenderHost] No editing controller bound — call bindEditingController() first');
+    }
+    return this.#editingController;
   }
 
   onLayoutUpdated(handler: (payload: V2StaticLayoutPayload) => void): () => void {
@@ -259,7 +388,7 @@ export class V2StaticRenderHost extends EventEmitter {
     this.#domPainter?.setZoom?.(zoom);
     this.emit('zoomChange', { zoom });
 
-    if (isSemanticFlow(this.#layoutEngineOptions) && this.#runtime.isActive()) {
+    if (isSemanticFlow(this.#layoutEngineOptions) && this.#getRenderRuntime().isActive()) {
       void this.render().catch((error) => this.#emitLayoutError(error));
     }
   }
@@ -295,6 +424,8 @@ export class V2StaticRenderHost extends EventEmitter {
     }
 
     this.#domPainter = null;
+    this.#unbindEditingController?.();
+    this.#editingController = null;
     this.element.replaceChildren();
     void this.#runtime.close();
     this.emit('destroy');
@@ -326,6 +457,43 @@ export class V2StaticRenderHost extends EventEmitter {
 
     this.#domPainter.setData?.(blocks, measures);
     return this.#domPainter;
+  }
+
+  #getRenderRuntime(): V2DocumentRuntime {
+    return this.#editingController?.isActive() ? this.#editingController.runtime : this.#runtime;
+  }
+
+  #applyInteractionMetadata(semanticModel: PresentationV2SemanticModel): void {
+    const blockElements = Array.from(this.#painterHost.querySelectorAll<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}]`));
+    for (const element of blockElements) {
+      const blockId = element.dataset[DATASET_KEYS.BLOCK_ID];
+      if (!blockId) continue;
+
+      const entityRef = this.#projectionSnapshot.blockToEntityRef.get(blockId);
+      if (!entityRef) {
+        element.removeAttribute(DATA_ATTRS.SD_ENTITY_REF);
+        element.removeAttribute(DATA_ATTRS.SD_STORY_ID);
+        element.removeAttribute(DATA_ATTRS.SD_INTERACTION_KIND);
+        continue;
+      }
+
+      const entity = semanticModel.entity(entityRef);
+      if (!entity) continue;
+
+      element.setAttribute(DATA_ATTRS.SD_ENTITY_REF, entityRef.id);
+      const editableParagraph = this.#editingSnapshot.paragraphsByBlockId.get(blockId);
+      element.setAttribute(
+        DATA_ATTRS.SD_INTERACTION_KIND,
+        editableParagraph?.supported ? 'text' : classifyInteractionKind(entity.kind),
+      );
+
+      const storyId = findStoryIdForEntity(semanticModel, entityRef);
+      if (storyId) {
+        element.setAttribute(DATA_ATTRS.SD_STORY_ID, storyId);
+      } else {
+        element.removeAttribute(DATA_ATTRS.SD_STORY_ID);
+      }
+    }
   }
 
   #resolveLayoutInput(semanticModel: PresentationV2SemanticModel): ResolvedLayoutInput {
@@ -675,6 +843,46 @@ function normalizeSectionTwips(value: number | undefined): number | undefined {
 
 function countMountedPages(container: ParentNode): number {
   return container.querySelectorAll('.superdoc-page').length;
+}
+
+function classifyInteractionKind(entityKind: string): string {
+  switch (entityKind) {
+    case 'paragraph':
+      return 'paragraph';
+    case 'table':
+      return 'table';
+    case 'drawing':
+      return 'image';
+    default:
+      return 'other';
+  }
+}
+
+function isEditableDocumentMode(mode: DocumentMode): boolean {
+  return mode !== 'viewing';
+}
+
+function findStoryIdForEntity(semanticModel: PresentationV2SemanticModel, entityRef: EntityRef): string | undefined {
+  let current = semanticModel.entity(entityRef);
+  while (current) {
+    if (isStoryKind(current.kind)) {
+      return current.ref.id;
+    }
+    current = current.parentRef ? semanticModel.entity(current.parentRef) : undefined;
+  }
+  return undefined;
+}
+
+function isStoryKind(kind: string): boolean {
+  return (
+    kind === 'mainStory' ||
+    kind === 'headerStory' ||
+    kind === 'footerStory' ||
+    kind === 'footnoteStory' ||
+    kind === 'endnoteStory' ||
+    kind === 'commentStory' ||
+    kind === 'textboxStory'
+  );
 }
 
 function toContractBlocks(

@@ -15,6 +15,7 @@ import type { ReadyStage, SaveOptions, SessionStatus } from '../types/session.js
 import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type { EnrichmentResult } from '../enrichment/enrichment-results.js';
 import type { EnrichmentRequest, SerializableEnrichmentRequest } from '../enrichment/enrichment-request.js';
+import type { RuntimeMutationResult, SerializableSemanticOperation } from './runtime-interface.js';
 import type {
   TaskId,
   TaskPriority,
@@ -102,14 +103,12 @@ export class WorkerProxyV2 {
   async projectWindow(params: ProjectWindowParams): Promise<WindowedProjectionResult> {
     const priority =
       params.startBodyChildIndex === 0
-        ? (params.stopAfterPageEstimate != null ? 'critical' : 'background')
+        ? params.stopAfterPageEstimate != null
+          ? 'critical'
+          : 'background'
         : 'near-viewport';
 
-    return this.#send(
-      'projectWindow',
-      params,
-      priority,
-    ) as Promise<WindowedProjectionResult>;
+    return this.#send('projectWindow', params, priority) as Promise<WindowedProjectionResult>;
   }
 
   async projectNextWindow(continuation: WindowContinuation): Promise<WindowedProjectionResult> {
@@ -163,6 +162,26 @@ export class WorkerProxyV2 {
 
   async save(options?: SaveOptions): Promise<Uint8Array> {
     return this.#send('save', { options }, 'critical') as Promise<Uint8Array>;
+  }
+
+  async applyOperation(op: SerializableSemanticOperation): Promise<RuntimeMutationResult> {
+    return this.#send('applyOperation', { op }, 'critical') as Promise<RuntimeMutationResult>;
+  }
+
+  async invokeMutation(operationKey: string, args: Record<string, unknown>): Promise<RuntimeMutationResult> {
+    return this.#send('invokeMutation', { operationKey, args }, 'critical') as Promise<RuntimeMutationResult>;
+  }
+
+  async undo(): Promise<RuntimeMutationResult> {
+    return this.#send('undo', {}, 'critical') as Promise<RuntimeMutationResult>;
+  }
+
+  async redo(): Promise<RuntimeMutationResult> {
+    return this.#send('redo', {}, 'critical') as Promise<RuntimeMutationResult>;
+  }
+
+  async getRevision(): Promise<string | null> {
+    return this.#send('getRevision', {}, 'critical') as Promise<string | null>;
   }
 
   async close(): Promise<void> {

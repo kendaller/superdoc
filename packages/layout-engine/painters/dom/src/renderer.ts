@@ -6206,6 +6206,7 @@ export class DomPainter {
             text: segmentText,
             pmStart: pmSliceStart,
             pmEnd: pmSliceEnd,
+            dataAttrs: sliceTextRunDataAttrs(baseRun as TextRun, segment.fromChar, segment.toChar),
           };
 
           const elem = this.renderRun(segmentRun, context, trackedConfig);
@@ -7594,6 +7595,35 @@ export const applyRunDataAttributes = (element: HTMLElement, dataAttrs?: Record<
     }
   });
 };
+
+function sliceTextRunDataAttrs(run: TextRun, fromChar: number, toChar: number): Record<string, string> | undefined {
+  if (!run.dataAttrs) {
+    return undefined;
+  }
+
+  const dataAttrs = { ...run.dataAttrs };
+  const segmentStart = parseDataAttrNumber(dataAttrs['data-sd-segment-start']);
+  const segmentEnd = parseDataAttrNumber(dataAttrs['data-sd-segment-end']);
+
+  if (segmentStart == null || segmentEnd == null) {
+    return dataAttrs;
+  }
+
+  const slicedStart = segmentStart + fromChar;
+  const slicedEnd = Math.min(segmentEnd, segmentStart + toChar);
+  dataAttrs['data-sd-segment-start'] = String(slicedStart);
+  dataAttrs['data-sd-segment-end'] = String(slicedEnd);
+  return dataAttrs;
+}
+
+function parseDataAttrNumber(value: string | undefined): number | null {
+  if (value == null || value === '') {
+    return null;
+  }
+
+  const numericValue = Number.parseInt(value, 10);
+  return Number.isFinite(numericValue) ? numericValue : null;
+}
 
 const resolveParagraphDirection = (attrs?: ParagraphAttrs): 'ltr' | 'rtl' | undefined => {
   if (attrs?.direction) {

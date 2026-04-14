@@ -101,14 +101,16 @@ describe('V2StaticRenderHost', () => {
           w: twipsToLayoutPx(12240),
           h: twipsToLayoutPx(15840),
         },
-        pages: [{
-          number: 1,
-          fragments: [],
-          size: {
-            w: twipsToLayoutPx(12240),
-            h: twipsToLayoutPx(15840),
+        pages: [
+          {
+            number: 1,
+            fragments: [],
+            size: {
+              w: twipsToLayoutPx(12240),
+              h: twipsToLayoutPx(15840),
+            },
           },
-        }],
+        ],
       },
       measures: [{ blockId: 'v2-paragraph-1', width: 100, height: 20 }],
     });
@@ -128,7 +130,9 @@ describe('V2StaticRenderHost', () => {
     const paginationHandler = vi.fn();
     host.on('paginationUpdate', paginationHandler);
 
-    await host.load(new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }));
+    await host.load(
+      new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+    );
 
     expect(openMock).toHaveBeenCalledTimes(1);
     expect(documentHandle.ready).toHaveBeenCalledWith('structure');
@@ -177,11 +181,77 @@ describe('V2StaticRenderHost', () => {
       documentId: 'doc-2',
     });
 
-    await host.load(new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }));
+    await host.load(
+      new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+    );
 
     host.setZoom(1.5);
 
     expect(painter.setZoom).toHaveBeenLastCalledWith(1.5);
+  });
+
+  it('renders from a bound editing controller runtime', async () => {
+    const hostElement = document.createElement('div');
+    const host = new V2StaticRenderHost({
+      element: hostElement,
+      documentId: 'doc-editable',
+    });
+
+    const controllerSemanticModel = {
+      sections: semanticModel.sections,
+      entity: vi.fn((ref: { id: string }) => {
+        if (ref.id === 'para-1') {
+          return { kind: 'paragraph', ref: { id: 'para-1' }, parentRef: { id: 'story-1' } };
+        }
+        if (ref.id === 'story-1') {
+          return { kind: 'mainStory', ref: { id: 'story-1' }, parentRef: undefined };
+        }
+        return undefined;
+      }),
+    };
+
+    const controllerRuntime = {
+      initialize: vi.fn(),
+      close: vi.fn(),
+      isActive: vi.fn(() => true),
+      semanticModel: controllerSemanticModel,
+      styleResolver: { kind: 'controller-style-resolver' },
+      semanticJson: { kind: 'controller-semantic-document' },
+      documentApiAdapter: { kind: 'controller-adapter' },
+    };
+
+    const controller = {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      isActive: vi.fn(() => true),
+      on: vi.fn(() => vi.fn()),
+      runtime: controllerRuntime,
+    } as any;
+
+    projectToFlowBlocksMock.mockReturnValueOnce({
+      blocks: [
+        {
+          id: 'v2-paragraph-1',
+          kind: 'paragraph',
+          runs: [],
+          attrs: {},
+        },
+      ],
+      blockToEntityRef: new Map([['v2-paragraph-1', { id: 'para-1' }]]),
+    });
+
+    host.bindEditingController(controller);
+    await host.load(
+      new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+    );
+
+    expect(controller.initialize).toHaveBeenCalledTimes(1);
+    expect(openMock).not.toHaveBeenCalled();
+    expect(projectToFlowBlocksMock).toHaveBeenCalledWith(
+      controllerSemanticModel,
+      expect.objectContaining({ resolver: controllerRuntime.styleResolver }),
+    );
+    expect(host.getSemanticModel()).toBe(controllerSemanticModel);
+    expect(host.getSemanticJson()).toEqual({ kind: 'controller-semantic-document' });
   });
 
   it('sizes the viewport from layout.pageSize when page.size is missing', async () => {
@@ -191,11 +261,13 @@ describe('V2StaticRenderHost', () => {
           w: twipsToLayoutPx(12240),
           h: twipsToLayoutPx(15840),
         },
-        pages: [{
-          number: 1,
-          fragments: [],
-          size: null,
-        }],
+        pages: [
+          {
+            number: 1,
+            fragments: [],
+            size: null,
+          },
+        ],
       },
       measures: [{ blockId: 'v2-paragraph-1', width: 100, height: 20 }],
     });
@@ -206,7 +278,9 @@ describe('V2StaticRenderHost', () => {
       documentId: 'doc-3',
     });
 
-    await host.load(new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }));
+    await host.load(
+      new Blob(['docx'], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+    );
 
     const viewport = hostElement.querySelector('.v2-static-renderer__viewport');
     expect(viewport).not.toBeNull();

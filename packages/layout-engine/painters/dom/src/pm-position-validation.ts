@@ -128,17 +128,25 @@ export const globalValidationStats = new ValidationStatsCollector();
  * ```
  */
 export function assertPmPositions(
-  run: { pmStart?: number | null; pmEnd?: number | null; text?: string },
+  run: { pmStart?: number | null; pmEnd?: number | null; text?: string; dataAttrs?: Record<string, string> | null },
   context: string,
 ): void {
   const hasPmStart = run.pmStart != null;
   const hasPmEnd = run.pmEnd != null;
+  const usesNativeV2Addressing =
+    run.dataAttrs?.['data-sd-entity-ref'] != null || run.dataAttrs?.['data-sd-interaction-kind'] != null;
 
   // Record stats regardless of dev mode (for metrics)
   globalValidationStats.record(hasPmStart, hasPmEnd);
 
   // Only warn in development
   if (!isDevelopment()) return;
+
+  // V2 native editing does not rely on PM positions. Its rendered runs carry
+  // semantic addressing metadata instead, so PM warnings here are just noise.
+  if (usesNativeV2Addressing) {
+    return;
+  }
 
   if (!hasPmStart || !hasPmEnd) {
     const textPreview = run.text ? run.text.substring(0, 20) + (run.text.length > 20 ? '...' : '') : '(no text)';

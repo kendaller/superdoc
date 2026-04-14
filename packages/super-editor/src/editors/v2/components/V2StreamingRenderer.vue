@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
-import type { LayoutEngineOptions } from '../../v1/core/presentation-editor/types.js';
 import type { DocumentRuntime } from '@superdoc/v2-model';
+import type { LayoutEngineOptions } from '../../v1/core/presentation-editor/types.js';
+import { V2FastEditingSession } from '../editing/V2FastEditingSession.js';
 import { V2StreamingPaginatedRenderHost } from '../render/V2StreamingPaginatedRenderHost.js';
-import type { LoadingOverlayState, LoadingOverlayTexts, StateChangeEvent } from '../render/streaming-host-types.js';
+import type { LoadingOverlayState, StateChangeEvent } from '../render/streaming-host-types.js';
 import { createDefaultV2DocumentRuntime } from '../runtime/create-default-runtime.js';
+import { V2EditingController } from '../runtime/V2EditingController.js';
 import V2LoadingOverlayExternalMount from './V2LoadingOverlayExternalMount.vue';
 import type { DocumentLoadingConfig, DocumentLoadingHandle } from './loading-overlay-config.js';
 import {
@@ -23,13 +25,9 @@ type Props = {
     documentMode?: DocumentMode;
     disableContextMenu?: boolean;
   } | null;
-  /** Optional runtime override. Defaults to the worker-backed browser runtime. */
   runtime?: DocumentRuntime | null;
-  /** Body children per projection window. Default: 50. */
   windowSize?: number;
-  /** stopAfterPageEstimate for the first window. Default: 2. */
   firstWindowPageEstimate?: number;
-  /** Optional custom loading overlay configuration. */
   loadingOverlay?: boolean | DocumentLoadingConfig | null;
 };
 
@@ -51,12 +49,15 @@ const emit = defineEmits<{
 const rootElement = ref<HTMLElement | null>(null);
 const renderer = shallowRef<V2StreamingPaginatedRenderHost | null>(null);
 const ownedRuntime = shallowRef<DocumentRuntime | null>(null);
+const editingController = shallowRef<V2EditingController | null>(null);
+const editingSession = shallowRef<V2FastEditingSession | null>(null);
 const loadingOverlayState = reactive<LoadingOverlayState>({
   visible: false,
   title: DEFAULT_DOCUMENT_LOADING_TEXTS.title,
   message: DEFAULT_DOCUMENT_LOADING_TEXTS.openingMessage,
   progressPercent: 0,
 });
+
 const resolvedLoadingConfig = computed(() => resolveDocumentLoadingConfig(props.loadingOverlay));
 const resolvedLoadingRendering = computed(() =>
   resolveDocumentLoadingRendering(resolvedLoadingConfig.value, {
@@ -68,6 +69,7 @@ const shouldUseDefaultLoadingOverlay = computed(() => Boolean(resolvedLoadingRen
 const customLoadingComponent = computed(() => resolvedLoadingRendering.value.component ?? null);
 const customLoadingRender = computed(() => resolvedLoadingRendering.value.render ?? null);
 const customLoadingProps = computed(() => resolvedLoadingRendering.value.props ?? {});
+const editableMode = computed(() => props.options?.documentMode !== 'viewing');
 
 const loadingOverlayHandle: DocumentLoadingHandle = {
   get visible() {
@@ -103,12 +105,24 @@ const loadingOverlayHandle: DocumentLoadingHandle = {
   },
 };
 
+let stopLayoutUpdated: (() => void) | null = null;
+let initializeGeneration = 0;
+
 async function initializeRenderer(): Promise<void> {
-  if (!rootElement.value || !props.fileSource) {
+  if (!rootElement.value) {
     return;
   }
 
-  teardownRenderer();
+  if (!props.fileSource) {
+    await teardownRenderer();
+    return;
+  }
+
+  await teardownRenderer();
+  const generation = ++initializeGeneration;
+
+  const runtime = resolveRuntime();
+  const nextEditingController = editableMode.value ? new V2EditingController() : null;
 
   const nextRenderer = new V2StreamingPaginatedRenderHost({
     element: rootElement.value,
@@ -118,7 +132,7 @@ async function initializeRenderer(): Promise<void> {
     disableContextMenu: props.options?.disableContextMenu,
     showDefaultLoadingOverlay: shouldUseDefaultLoadingOverlay.value,
     loadingTexts: resolvedLoadingConfig.value.texts,
-    runtime: resolveRuntime(),
+    runtime,
     windowSize: props.windowSize,
     firstWindowPageEstimate: props.firstWindowPageEstimate,
   });
@@ -140,14 +154,39 @@ async function initializeRenderer(): Promise<void> {
 
   try {
     await nextRenderer.load(props.fileSource);
+    if (generation !== initializeGeneration) {
+      nextRenderer.destroy();
+      await nextEditingController?.close().catch(() => {});
+      return;
+    }
+
     renderer.value = nextRenderer;
+    stopLayoutUpdated = nextRenderer.onLayoutUpdated(() => {
+      editingSession.value?.refresh();
+      editingSession.value?.setReady(nextRenderer.getEditingSurfaceStatus().ready);
+    });
+
     emit('renderer-ready', {
       renderer: nextRenderer,
       documentId: props.documentId,
       container: rootElement.value,
     });
+
+    if (nextEditingController) {
+      void initializeEditingInfrastructure({
+        generation,
+        controller: nextEditingController,
+        container: rootElement.value,
+        renderer: nextRenderer,
+        runtime,
+      });
+    }
   } catch (error) {
+    stopLayoutUpdated?.();
+    stopLayoutUpdated = null;
     nextRenderer.destroy();
+    await nextEditingController?.close().catch(() => {});
+
     emit('renderer-error', {
       error: error instanceof Error ? error : new Error(String(error)),
       documentId: props.documentId,
@@ -156,13 +195,84 @@ async function initializeRenderer(): Promise<void> {
   }
 }
 
-function teardownRenderer(): void {
-  renderer.value?.destroy();
+type EditingInfrastructureOptions = {
+  generation: number;
+  controller: V2EditingController;
+  container: HTMLElement;
+  renderer: V2StreamingPaginatedRenderHost;
+  runtime: DocumentRuntime;
+};
+
+async function initializeEditingInfrastructure(options: EditingInfrastructureOptions): Promise<void> {
+  const { generation, controller, container, renderer: host, runtime } = options;
+  const source = props.fileSource;
+  if (!source) {
+    await controller.close().catch(() => {});
+    return;
+  }
+
+  try {
+    await controller.initialize(source);
+    if (generation !== initializeGeneration || renderer.value !== host) {
+      await controller.close().catch(() => {});
+      return;
+    }
+
+    host.bindEditingController(controller);
+    const editingSurfaceStatus = await host.prepareEditingSurface();
+
+    const session = new V2FastEditingSession({
+      container,
+      controller,
+      runtime,
+      getSnapshot: () => host.getEditingSnapshot(),
+      patchParagraphText: (blockId, text) => host.patchEditableParagraphText(blockId, text),
+      refreshSnapshotFromController: () => host.prepareEditingSurface(),
+    });
+
+    editingController.value = controller;
+    editingSession.value = session;
+    session.attach();
+    session.setReady(editingSurfaceStatus.ready);
+    session.refresh();
+  } catch (error) {
+    if (generation !== initializeGeneration || renderer.value !== host) {
+      await controller.close().catch(() => {});
+      return;
+    }
+
+    await controller.close().catch(() => {});
+    emit('renderer-error', {
+      error: error instanceof Error ? error : new Error(String(error)),
+      documentId: props.documentId,
+      fileSource: props.fileSource,
+    });
+  }
+}
+
+async function teardownRenderer(): Promise<void> {
+  initializeGeneration += 1;
+  stopLayoutUpdated?.();
+  stopLayoutUpdated = null;
+
+  const currentRenderer = renderer.value;
+  const currentEditingController = editingController.value;
+  const currentEditingSession = editingSession.value;
+
   renderer.value = null;
+  editingController.value = null;
+  editingSession.value = null;
   loadingOverlayState.visible = false;
 
+  currentEditingSession?.destroy();
+  currentRenderer?.destroy();
+
+  if (currentEditingController) {
+    await currentEditingController.close().catch(() => {});
+  }
+
   if (ownedRuntime.value) {
-    void ownedRuntime.value.close();
+    await ownedRuntime.value.close().catch(() => {});
     ownedRuntime.value = null;
   }
 }
@@ -195,19 +305,19 @@ watch(
 );
 
 watch(
-  () => props.options?.documentMode,
-  (nextMode) => {
-    if (nextMode) {
-      renderer.value?.setDocumentMode(nextMode);
+  () => props.options?.disableContextMenu,
+  (disabled) => {
+    if (typeof disabled === 'boolean') {
+      renderer.value?.setContextMenuDisabled(disabled);
     }
   },
 );
 
 watch(
-  () => props.options?.disableContextMenu,
-  (disabled) => {
-    if (typeof disabled === 'boolean') {
-      renderer.value?.setContextMenuDisabled(disabled);
+  () => props.options?.documentMode,
+  (nextMode, previousMode) => {
+    if (nextMode !== previousMode) {
+      void initializeRenderer();
     }
   },
 );
@@ -217,7 +327,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  teardownRenderer();
+  void teardownRenderer();
 });
 </script>
 
@@ -239,8 +349,8 @@ onBeforeUnmount(() => {
       <V2LoadingOverlayExternalMount
         :render="customLoadingRender"
         :document-id="documentId"
-        :state="loadingOverlayState"
-        :texts="resolvedLoadingConfig.texts"
+        :loading-overlay="loadingOverlayHandle"
+        v-bind="customLoadingProps"
       />
     </div>
   </div>
@@ -251,7 +361,6 @@ onBeforeUnmount(() => {
   position: relative;
   width: 100%;
   height: 100%;
-  overflow: auto;
 }
 
 .v2-streaming-renderer__host {
@@ -260,12 +369,9 @@ onBeforeUnmount(() => {
 }
 
 .v2-streaming-renderer__custom-loading {
-  position: fixed;
-  top: var(--sd-ui-loader-offset-top, 132px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: var(--sd-ui-loader-width, min(420px, calc(100vw - 48px)));
-  z-index: var(--sd-ui-loader-z-index, 20);
+  position: absolute;
+  inset: 0;
+  z-index: 20;
   pointer-events: none;
 }
 </style>

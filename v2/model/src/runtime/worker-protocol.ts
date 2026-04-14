@@ -136,7 +136,25 @@ export type WorkerRequestV2 =
   | { id: string; taskId: TaskId; method: 'cancelTask'; params: { taskId: TaskId }; priority: TaskPriority }
   | { id: string; taskId: TaskId; method: 'status'; params: Record<string, never>; priority: TaskPriority }
   | { id: string; taskId: TaskId; method: 'save'; params: { options?: SaveOptions }; priority: TaskPriority }
-  | { id: string; taskId: TaskId; method: 'close'; params: Record<string, never>; priority: TaskPriority };
+  | { id: string; taskId: TaskId; method: 'close'; params: Record<string, never>; priority: TaskPriority }
+  // ---- Editing (Phase 4) ----
+  | {
+      id: string;
+      taskId: TaskId;
+      method: 'applyOperation';
+      params: { op: Record<string, unknown> };
+      priority: TaskPriority;
+    }
+  | {
+      id: string;
+      taskId: TaskId;
+      method: 'invokeMutation';
+      params: { operationKey: string; args: Record<string, unknown> };
+      priority: TaskPriority;
+    }
+  | { id: string; taskId: TaskId; method: 'undo'; params: Record<string, never>; priority: TaskPriority }
+  | { id: string; taskId: TaskId; method: 'redo'; params: Record<string, never>; priority: TaskPriority }
+  | { id: string; taskId: TaskId; method: 'getRevision'; params: Record<string, never>; priority: TaskPriority };
 
 // ---- V2 Response messages ---------------------------------------------------
 
@@ -155,7 +173,10 @@ export type WorkerEventV2 =
   | { event: 'revision'; data: { revision: string } }
   | { event: 'memory'; data: { heapUsedMb: number; heapTotalMb: number } }
   | { event: 'workerError'; data: { message: string; filename?: string; lineno?: number } }
-  | { event: 'workerTerminated'; data: { reason: string } };
+  | { event: 'workerTerminated'; data: { reason: string } }
+  | { event: 'mutationCommitted'; data: { revision: string; operationKind: string } }
+  | { event: 'mutationFailed'; data: { error: string; operationKind: string } }
+  | { event: 'revisionChanged'; data: { revision: string } };
 
 // ---- Version-tagged envelope ------------------------------------------------
 

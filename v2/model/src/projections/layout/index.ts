@@ -29,8 +29,9 @@ export { createBlockIdGenerator } from './block-id.js';
 export type { BlockIdGenerator } from './block-id.js';
 
 // Stable ID allocator (source-backed, window-safe)
-export { createStableIdAllocator } from './stable-id.js';
+export { createStableIdAllocator, makeStableBlockId } from './stable-id.js';
 export type { StableIdAllocator } from './stable-id.js';
+export { sourceRefToSourceAnchor } from './source-anchor.js';
 
 // Feeder abstraction
 export type { ProjectionFeeder, FeederNode, FeederNodeKind, SourceAnchor } from './feeder.js';

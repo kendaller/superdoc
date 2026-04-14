@@ -1,6 +1,7 @@
 import { EventEmitter } from 'eventemitter3';
 import { measureBlock } from '@superdoc/measuring-dom';
 import { createDomPainter } from '@superdoc/painter-dom';
+import { DATA_ATTRS } from '@superdoc/dom-contract';
 import type {
   DependencyManifest,
   DocumentRuntime,
@@ -12,6 +13,17 @@ import { validateRenderShell, validateDependencyManifest, applyRenderShellCaps }
 import type { FlowBlock, Layout, Measure, SectionMetadata } from '@superdoc/contracts';
 import type { LayoutEngineOptions, TrackedChangesOverrides } from '../../v1/core/presentation-editor/types.js';
 import { runInstrumentedIncrementalLayout } from '../../../core/perf/runInstrumentedIncrementalLayout.js';
+import type { V2EditingController } from '../runtime/V2EditingController.js';
+import {
+  applyEditableInteractionData,
+  applyEditableInteractionDataToParagraphBlock,
+  buildEditableDocumentSnapshotForBlockIds,
+  buildEditableDocumentSnapshotFromSourceRefs,
+  createOptimisticEditableParagraph,
+  mergeEditableDocumentSnapshots,
+  replaceSnapshotParagraph,
+  type V2EditableDocumentSnapshot,
+} from '../editing/V2EditableDocumentSnapshot.js';
 import {
   v2PerfTimeline,
   SPAN_RENDER,
@@ -45,6 +57,10 @@ import type {
   PageCompleteness,
   DegradedInfo,
   DegradedReason,
+  V2EditingBootstrapPhase,
+  V2EditingHistogramEntry,
+  V2EditingSurfaceStatus,
+  V2EditingSnapshotSource,
 } from './streaming-host-types.js';
 
 // ---- Constants ---------------------------------------------------------------
@@ -70,6 +86,24 @@ const LOADING_PROGRESS_EXACT_FIRST_WINDOW_STARTED = 82;
 const LOADING_PROGRESS_EXACT_FIRST_WINDOW_READY = 92;
 const LOADING_PROGRESS_LAYOUT_STARTED = 97;
 const LOADING_PROGRESS_COMPLETE = 100;
+const EDITING_SURFACE_READY_ATTR = 'data-v2-editing-surface-ready';
+const EDITING_SURFACE_SOURCE_ATTR = 'data-v2-editing-snapshot-source';
+const EDITING_SURFACE_RENDERED_PARAGRAPH_COUNT_ATTR = 'data-v2-editing-rendered-paragraph-count';
+const EDITING_SURFACE_RENDERED_EDITABLE_COUNT_ATTR = 'data-v2-editing-rendered-editable-count';
+const EDITING_SURFACE_DOM_SEGMENT_COUNT_ATTR = 'data-v2-editing-dom-segment-count';
+const EDITING_SURFACE_SNAPSHOT_PARAGRAPH_COUNT_ATTR = 'data-v2-editing-snapshot-paragraph-count';
+const EDITING_SURFACE_SUPPORTED_PARAGRAPH_COUNT_ATTR = 'data-v2-editing-supported-paragraph-count';
+const EDITING_SURFACE_BLOCK_ID_SUPPORTED_COUNT_ATTR = 'data-v2-editing-blockid-supported-count';
+const EDITING_SURFACE_SOURCE_REF_SUPPORTED_COUNT_ATTR = 'data-v2-editing-sourceref-supported-count';
+const EDITING_SURFACE_BOOTSTRAP_PHASE_ATTR = 'data-v2-editing-bootstrap-phase';
+const EDITING_SURFACE_BOOTSTRAP_ISSUE_ATTR = 'data-v2-editing-bootstrap-issue';
+const EDITING_SURFACE_BLOCK_ID_ONLY_SUPPORTED_COUNT_ATTR = 'data-v2-editing-blockid-only-supported-count';
+const EDITING_SURFACE_SOURCE_REF_ONLY_SUPPORTED_COUNT_ATTR = 'data-v2-editing-sourceref-only-supported-count';
+const EDITING_SURFACE_MISSING_RENDERED_COUNT_ATTR = 'data-v2-editing-missing-rendered-count';
+const EDITING_SURFACE_MISSING_RENDERED_SAMPLE_ATTR = 'data-v2-editing-missing-rendered-sample';
+const EDITING_SURFACE_PARAGRAPHS_WITHOUT_SEGMENTS_COUNT_ATTR = 'data-v2-editing-without-dom-segments-count';
+const EDITING_SURFACE_PARAGRAPHS_WITHOUT_SEGMENTS_SAMPLE_ATTR = 'data-v2-editing-without-dom-segments-sample';
+const EDITING_SURFACE_UNSUPPORTED_HISTOGRAM_ATTR = 'data-v2-editing-unsupported-histogram';
 const DEFAULT_LOADING_TEXTS: LoadingOverlayTexts = {
   title: 'Loading document',
   openingMessage: 'Opening document…',
@@ -95,6 +129,13 @@ export type V2StreamingPaginatedRenderHostOptions = {
   firstWindowPageEstimate?: number;
 };
 
+type EditingSnapshotSelection = {
+  snapshot: V2EditableDocumentSnapshot | null;
+  snapshotSource: V2EditingSnapshotSource;
+  blockIdSnapshot: V2EditableDocumentSnapshot | null;
+  sourceRefSnapshot: V2EditableDocumentSnapshot | null;
+};
+
 // ---- Host class --------------------------------------------------------------
 
 /**
@@ -114,6 +155,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   readonly options: { documentId?: string };
 
   #runtime: DocumentRuntime;
+  #editingController: V2EditingController | null = null;
+  #unbindEditingController: (() => void) | null = null;
   #viewportHost: HTMLDivElement;
   #painterHost: HTMLDivElement;
   #loadingOverlay: HTMLDivElement;
@@ -147,6 +190,10 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   #scrollRafPending = false;
   #scrollHandler: (() => void) | null = null;
   #degradedInfo: DegradedInfo | null = null;
+  #editingSnapshotSelection: EditingSnapshotSelection = createEmptyEditingSnapshotSelection();
+  #editingSurfaceStatus: V2EditingSurfaceStatus = createEmptyEditingSurfaceStatus();
+  #editingBootstrapPhase: V2EditingBootstrapPhase = 'idle';
+  #editingBootstrapIssue: string | null = null;
 
   constructor(options: V2StreamingPaginatedRenderHostOptions) {
     super();
@@ -281,7 +328,10 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
           this.#loadingTexts.almostReadyMessage,
           LOADING_PROGRESS_EXACT_FIRST_WINDOW_STARTED,
         );
-        firstWindowResult = await this.#projectExactInitialWindow(gen, firstWindowResult.continuation.nextBodyChildIndex);
+        firstWindowResult = await this.#projectExactInitialWindow(
+          gen,
+          firstWindowResult.continuation.nextBodyChildIndex,
+        );
         if (gen !== this.#generation) return;
         firstWindowMode = 'exact';
       }
@@ -342,6 +392,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#generation++;
     this.#removeScrollListener();
     this.#domPainter = null;
+    this.#unbindEditingController?.();
+    this.#unbindEditingController = null;
+    this.#editingController = null;
     this.element.replaceChildren();
     void this.#runtime.close();
     this.emit('destroy');
@@ -361,6 +414,50 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
   getPages(): Layout['pages'] {
     return this.#accumulated.layout?.pages ?? [];
+  }
+
+  getEditingSnapshot(): V2EditableDocumentSnapshot {
+    return this.#accumulated.editingSnapshot;
+  }
+
+  getEditingSurfaceStatus(): V2EditingSurfaceStatus {
+    return this.#editingSurfaceStatus;
+  }
+
+  refreshEditingSnapshot(): void {
+    if (!this.#editingController) {
+      this.#setEditingBootstrapState('awaiting-controller', 'Editing controller is not bound');
+      return;
+    }
+
+    this.#refreshEditableInteractionData();
+    void this.#refreshRenderedInteractionData();
+  }
+
+  async prepareEditingSurface(): Promise<V2EditingSurfaceStatus> {
+    if (!this.#editingController) {
+      this.#setEditingBootstrapState('awaiting-controller', 'Editing controller is not bound');
+      return this.#editingSurfaceStatus;
+    }
+
+    try {
+      this.#setEditingBootstrapState('preparing-snapshot');
+      this.#refreshEditableInteractionData();
+
+      this.#setEditingBootstrapState('repainting');
+      await this.#refreshRenderedInteractionData();
+
+      this.#publishEditingSurfaceDiagnostics();
+      this.#setEditingBootstrapState(
+        this.#editingSurfaceStatus.ready ? 'ready' : 'blocked',
+        deriveEditingBootstrapIssue(this.#editingSurfaceStatus, true),
+      );
+      return this.#editingSurfaceStatus;
+    } catch (error) {
+      const issue = error instanceof Error ? error.message : String(error);
+      this.#setEditingBootstrapState('failed', issue);
+      throw error;
+    }
   }
 
   getPageCompleteness(pageNumber: number): PageCompleteness {
@@ -445,6 +542,50 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     return () => this.off('loadingStateChange', handler);
   }
 
+  bindEditingController(controller: V2EditingController): () => void {
+    this.#unbindEditingController?.();
+    this.#editingController = controller;
+    this.#editingBootstrapPhase = 'idle';
+    this.#editingBootstrapIssue = null;
+
+    this.#unbindEditingController = () => {
+      if (this.#editingController === controller) {
+        this.#editingController = null;
+      }
+      this.#editingBootstrapPhase = 'awaiting-controller';
+      this.#editingBootstrapIssue = 'Editing controller is not bound';
+      this.#unbindEditingController = null;
+      this.#publishEditingSurfaceDiagnostics();
+    };
+
+    this.#refreshEditableInteractionData();
+    void this.#refreshRenderedInteractionData();
+    return this.#unbindEditingController;
+  }
+
+  patchEditableParagraphText(blockId: string, text: string): boolean {
+    const paragraph = this.#accumulated.editingSnapshot.paragraphsByBlockId.get(blockId);
+    if (!paragraph || !paragraph.supported) {
+      return false;
+    }
+
+    const optimisticParagraph = createOptimisticEditableParagraph(paragraph, text);
+    this.#accumulated.editingSnapshot = replaceSnapshotParagraph(
+      this.#accumulated.editingSnapshot,
+      optimisticParagraph,
+    );
+
+    for (const block of this.#accumulated.blocks) {
+      if (block.id !== blockId || block.kind !== 'paragraph') {
+        continue;
+      }
+
+      applyEditableInteractionDataToParagraphBlock(block, optimisticParagraph);
+    }
+
+    return true;
+  }
+
   // ---- Private: State machine --------------------------------------------------
 
   #transition(next: HostState): void {
@@ -461,15 +602,23 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
   #resetState(): void {
     this.#accumulated = createEmptyAccumulated();
+    this.#editingSnapshotSelection = createEmptyEditingSnapshotSelection();
+    this.#editingSurfaceStatus = createEmptyEditingSurfaceStatus();
+    this.#editingBootstrapPhase = 'idle';
+    this.#editingBootstrapIssue = null;
     this.#completeness.reset();
     this.#renderShell = null;
     this.#appendInFlight = false;
     this.#appendBatchPolicy = createInitialStreamingBatchPolicy(this.#windowSize, DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE);
     this.#degradedInfo = null;
     this.#resetLoadingProgress();
+    applyEditingSurfaceDiagnostics(this.element, this.#editingSurfaceStatus);
   }
 
-  async #projectInitialWindow(): Promise<{ projectionMode: 'preview' | 'exact'; windowResult: WindowedProjectionResult }> {
+  async #projectInitialWindow(): Promise<{
+    projectionMode: 'preview' | 'exact';
+    windowResult: WindowedProjectionResult;
+  }> {
     try {
       const previewResult = await this.#runtime.projectPreviewWindow({
         startBodyChildIndex: 0,
@@ -505,12 +654,27 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     const { blocks, continuation, sectionMetadata, dependencyManifest } = windowResult;
     const bodyChildCount = Math.max(0, continuation.nextBodyChildIndex - startIndex);
     const contractBlocks = toContractFlowBlocks(blocks);
+    const blockIds = contractBlocks.map((block) => block.id);
+    const blockToSourceRef = new Map(this.#accumulated.blockToSourceRef);
+    for (const [blockId, sourceRef] of windowResult.blockToSourceRef) {
+      blockToSourceRef.set(blockId, {
+        partUri: sourceRef.partUri,
+        nodeId: sourceRef.nodeId,
+        ...(sourceRef.sourceNodePath ? { sourceNodePath: sourceRef.sourceNodePath } : {}),
+      });
+    }
+
+    const editingSnapshotSelection = this.#buildEditingSnapshotSelection(blockToSourceRef);
+    if (editingSnapshotSelection.snapshot) {
+      applyEditableInteractionData(contractBlocks, editingSnapshotSelection.snapshot);
+    }
 
     const record: WindowRecord = {
       index: this.#accumulated.windowRecords.length,
       startBodyChildIndex: startIndex,
       bodyChildCount,
       blockCount: contractBlocks.length,
+      blockIds,
       blocks: contractBlocks,
       sectionMetadataDelta: sectionMetadata,
       projectionMode,
@@ -519,6 +683,11 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     };
     this.#accumulated.windowRecords.push(record);
     this.#accumulated.blocks = [...this.#accumulated.blocks, ...contractBlocks];
+    this.#accumulated.blockToSourceRef = blockToSourceRef;
+    if (editingSnapshotSelection.snapshot) {
+      this.#accumulated.editingSnapshot = editingSnapshotSelection.snapshot;
+      this.#editingSnapshotSelection = editingSnapshotSelection;
+    }
     this.#accumulated.nextBodyChildIndex = continuation.nextBodyChildIndex;
     this.#accumulated.totalBodyChildCount = continuation.totalBodyChildCount;
     if (dependencyManifest) {
@@ -579,6 +748,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
     this.#applyZoom();
     this.#completeness.syncWithLayout(result.layout);
+    this.#publishEditingSurfaceDiagnostics();
 
     const payload: V2StreamingLayoutPayload = {
       blocks: acc.blocks,
@@ -1048,6 +1218,99 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       progressPercent: this.#loadingProgressPercent,
     } satisfies LoadingOverlayState);
   }
+
+  #buildEditingSnapshotSelection(
+    blockToSourceRef: ReadonlyMap<string, { partUri: string; nodeId: string; sourceNodePath?: string }>,
+  ): EditingSnapshotSelection {
+    const model = this.#editingController?.semanticModel;
+    if (!model) {
+      return createEmptyEditingSnapshotSelection();
+    }
+
+    const blockIdSnapshot = buildEditableDocumentSnapshotForBlockIds(model, blockToSourceRef.keys());
+    const sourceRefSnapshot = buildEditableDocumentSnapshotFromSourceRefs(model, blockToSourceRef);
+    const orderedBlockIds = blockToSourceRef.keys();
+    const mergedSnapshot = mergeEditableDocumentSnapshots(blockIdSnapshot, sourceRefSnapshot, orderedBlockIds);
+
+    return {
+      snapshot: mergedSnapshot,
+      snapshotSource: resolveEditingSnapshotSource(blockIdSnapshot, sourceRefSnapshot, mergedSnapshot),
+      blockIdSnapshot,
+      sourceRefSnapshot,
+    };
+  }
+
+  #refreshEditableInteractionData(): void {
+    const selection = this.#buildEditingSnapshotSelection(this.#accumulated.blockToSourceRef);
+    this.#editingSnapshotSelection = selection;
+
+    if (!selection.snapshot) {
+      this.#accumulated.editingSnapshot = createEmptyEditingSnapshot();
+      this.#publishEditingSurfaceDiagnostics();
+      return;
+    }
+
+    applyEditableInteractionData(this.#accumulated.blocks, selection.snapshot);
+    this.#accumulated.editingSnapshot = selection.snapshot;
+    this.#publishEditingSurfaceDiagnostics();
+  }
+
+  async #refreshRenderedInteractionData(): Promise<void> {
+    if (!this.#accumulated.layout) {
+      this.#publishEditingSurfaceDiagnostics();
+      return;
+    }
+
+    this.#accumulated.layout = null;
+    try {
+      await this.#measurePaginatePaint();
+    } catch (error) {
+      this.#emitLayoutError(error, 'render');
+    } finally {
+      this.#publishEditingSurfaceDiagnostics();
+    }
+  }
+
+  #publishEditingSurfaceDiagnostics(): void {
+    let nextStatus = buildEditingSurfaceStatus(
+      this.#accumulated,
+      this.#editingSnapshotSelection,
+      this.#painterHost,
+      this.#editingBootstrapPhase,
+      this.#editingBootstrapIssue,
+    );
+
+    if (nextStatus.ready && this.#editingBootstrapPhase !== 'failed' && this.#editingBootstrapPhase !== 'ready') {
+      this.#editingBootstrapPhase = 'ready';
+      this.#editingBootstrapIssue = null;
+      nextStatus = buildEditingSurfaceStatus(
+        this.#accumulated,
+        this.#editingSnapshotSelection,
+        this.#painterHost,
+        this.#editingBootstrapPhase,
+        this.#editingBootstrapIssue,
+      );
+    } else if (!nextStatus.ready && this.#editingBootstrapPhase === 'ready') {
+      this.#editingBootstrapPhase = 'blocked';
+      this.#editingBootstrapIssue = deriveEditingBootstrapIssue(nextStatus, Boolean(this.#editingController));
+      nextStatus = buildEditingSurfaceStatus(
+        this.#accumulated,
+        this.#editingSnapshotSelection,
+        this.#painterHost,
+        this.#editingBootstrapPhase,
+        this.#editingBootstrapIssue,
+      );
+    }
+
+    this.#editingSurfaceStatus = nextStatus;
+    applyEditingSurfaceDiagnostics(this.element, this.#editingSurfaceStatus);
+  }
+
+  #setEditingBootstrapState(phase: V2EditingBootstrapPhase, issue: string | null = null): void {
+    this.#editingBootstrapPhase = phase;
+    this.#editingBootstrapIssue = issue;
+    this.#publishEditingSurfaceDiagnostics();
+  }
 }
 
 // ---- Module-level helpers ----------------------------------------------------
@@ -1058,11 +1321,326 @@ function createEmptyAccumulated(): AccumulatedState {
     measures: [],
     layout: null,
     windowRecords: [],
+    blockToSourceRef: new Map(),
+    editingSnapshot: createEmptyEditingSnapshot(),
     nextBodyChildIndex: 0,
     totalBodyChildCount: 0,
     sectionMetadata: [],
     dependencyManifest: createEmptyDependencyManifest(),
   };
+}
+
+function createEmptyEditingSnapshot(): V2EditableDocumentSnapshot {
+  return {
+    blockToEntityRef: new Map(),
+    paragraphsByBlockId: new Map(),
+    orderedParagraphs: [],
+  };
+}
+
+function createEmptyEditingSnapshotSelection(): EditingSnapshotSelection {
+  return {
+    snapshot: null,
+    snapshotSource: 'none',
+    blockIdSnapshot: null,
+    sourceRefSnapshot: null,
+  };
+}
+
+function createEmptyEditingSurfaceStatus(): V2EditingSurfaceStatus {
+  return {
+    ready: false,
+    bootstrapPhase: 'idle',
+    bootstrapIssue: null,
+    snapshotSource: 'none',
+    renderedParagraphCount: 0,
+    renderedEditableParagraphCount: 0,
+    domSegmentCount: 0,
+    snapshotParagraphCount: 0,
+    supportedParagraphCount: 0,
+    blockIdParagraphCount: 0,
+    blockIdSupportedParagraphCount: 0,
+    sourceRefParagraphCount: 0,
+    sourceRefSupportedParagraphCount: 0,
+    blockIdOnlySupportedParagraphCount: 0,
+    sourceRefOnlySupportedParagraphCount: 0,
+    missingRenderedBlockIdCount: 0,
+    paragraphsWithoutDomSegmentsCount: 0,
+    unsupportedParagraphHistogram: [],
+    missingRenderedBlockIds: [],
+    paragraphsWithoutDomSegments: [],
+  };
+}
+
+function resolveEditingSnapshotSource(
+  blockIdSnapshot: V2EditableDocumentSnapshot,
+  sourceRefSnapshot: V2EditableDocumentSnapshot,
+  mergedSnapshot: V2EditableDocumentSnapshot,
+): V2EditingSnapshotSource {
+  if (mergedSnapshot.orderedParagraphs.length === 0) {
+    return 'none';
+  }
+
+  const blockIdSignature = snapshotSignature(blockIdSnapshot);
+  const sourceRefSignature = snapshotSignature(sourceRefSnapshot);
+  const mergedSignature = snapshotSignature(mergedSnapshot);
+
+  if (mergedSignature === blockIdSignature && mergedSignature === sourceRefSignature) {
+    if (countSupportedParagraphs(blockIdSnapshot) > 0 || countSupportedParagraphs(sourceRefSnapshot) > 0) {
+      return 'merged';
+    }
+
+    return 'none';
+  }
+
+  if (mergedSignature === blockIdSignature) {
+    return 'blockIds';
+  }
+
+  if (mergedSignature === sourceRefSignature) {
+    return 'sourceRefs';
+  }
+
+  return 'merged';
+}
+
+function snapshotSignature(snapshot: V2EditableDocumentSnapshot): string {
+  return snapshot.orderedParagraphs
+    .map(
+      (paragraph) =>
+        `${paragraph.blockId}:${paragraph.supported ? '1' : '0'}:${paragraph.segments.length}:${paragraph.text.length}`,
+    )
+    .join('|');
+}
+
+function countSupportedParagraphs(snapshot: V2EditableDocumentSnapshot): number {
+  return snapshot.orderedParagraphs.filter((paragraph) => paragraph.supported).length;
+}
+
+function countSupportedOnlyInLeftSnapshot(left: V2EditableDocumentSnapshot, right: V2EditableDocumentSnapshot): number {
+  let count = 0;
+
+  for (const paragraph of left.orderedParagraphs) {
+    if (!paragraph.supported) {
+      continue;
+    }
+
+    const rightParagraph = right.paragraphsByBlockId.get(paragraph.blockId);
+    if (!rightParagraph?.supported) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
+function buildUnsupportedParagraphHistogram(snapshot: V2EditableDocumentSnapshot): V2EditingHistogramEntry[] {
+  const counts = new Map<string, number>();
+
+  snapshot.orderedParagraphs.forEach((paragraph) => {
+    if (paragraph.supported) {
+      return;
+    }
+
+    const reason = paragraph.unsupportedReason ?? 'Paragraph has no visible editable segments';
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  });
+
+  return [...counts.entries()]
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((left, right) => {
+      if (right.count !== left.count) {
+        return right.count - left.count;
+      }
+
+      return left.reason.localeCompare(right.reason);
+    });
+}
+
+function deriveEditingBootstrapIssue(status: V2EditingSurfaceStatus, hasController: boolean): string | null {
+  if (status.ready) {
+    return null;
+  }
+
+  if (!hasController) {
+    return 'Editing controller is not bound';
+  }
+
+  if (status.snapshotParagraphCount === 0) {
+    return 'Editing snapshot produced no paragraphs';
+  }
+
+  if (status.supportedParagraphCount === 0) {
+    const topReason = status.unsupportedParagraphHistogram[0];
+    return topReason
+      ? `Editing snapshot produced no supported paragraphs. Top blocker: ${topReason.reason} (${topReason.count})`
+      : 'Editing snapshot produced no supported paragraphs';
+  }
+
+  if (status.renderedParagraphCount === 0) {
+    return 'No rendered paragraph blocks are mounted yet';
+  }
+
+  if (status.renderedEditableParagraphCount === 0 && status.paragraphsWithoutDomSegmentsCount > 0) {
+    return 'Rendered supported paragraphs are missing inline segment anchors';
+  }
+
+  if (status.domSegmentCount === 0) {
+    return 'No inline segment anchors are mounted in the streamed DOM';
+  }
+
+  if (status.missingRenderedBlockIdCount > 0) {
+    return 'Rendered paragraphs are missing from the editing snapshot';
+  }
+
+  return 'Editing surface is still preparing';
+}
+
+function buildEditingSurfaceStatus(
+  accumulated: AccumulatedState,
+  selection: EditingSnapshotSelection,
+  painterHost: HTMLElement,
+  bootstrapPhase: V2EditingBootstrapPhase,
+  bootstrapIssue: string | null,
+): V2EditingSurfaceStatus {
+  const snapshot = selection.snapshot ?? createEmptyEditingSnapshot();
+  const blockIdSnapshot = selection.blockIdSnapshot ?? createEmptyEditingSnapshot();
+  const sourceRefSnapshot = selection.sourceRefSnapshot ?? createEmptyEditingSnapshot();
+  const renderedParagraphBlockIds = collectRenderedParagraphBlockIds(accumulated, painterHost);
+  const blockElementsById = collectRenderedParagraphElementsById(painterHost, renderedParagraphBlockIds);
+  const missingRenderedBlockIds: string[] = [];
+  const paragraphsWithoutDomSegments: string[] = [];
+  let renderedEditableParagraphCount = 0;
+
+  renderedParagraphBlockIds.forEach((blockId) => {
+    const paragraph = snapshot.paragraphsByBlockId.get(blockId);
+    if (!paragraph) {
+      missingRenderedBlockIds.push(blockId);
+      return;
+    }
+
+    if (!paragraph.supported) {
+      return;
+    }
+
+    const blockElement = blockElementsById.get(blockId);
+    const segmentCount = countBlockSegments(blockElement);
+    if (segmentCount > 0) {
+      renderedEditableParagraphCount += 1;
+      return;
+    }
+
+    paragraphsWithoutDomSegments.push(blockId);
+  });
+
+  const domSegmentCount = painterHost.querySelectorAll(`[${DATA_ATTRS.SD_SEGMENT_ID}]`).length;
+  const unsupportedParagraphHistogram = buildUnsupportedParagraphHistogram(snapshot);
+
+  return {
+    ready: renderedEditableParagraphCount > 0 && domSegmentCount > 0,
+    bootstrapPhase,
+    bootstrapIssue,
+    snapshotSource: selection.snapshotSource,
+    renderedParagraphCount: renderedParagraphBlockIds.length,
+    renderedEditableParagraphCount,
+    domSegmentCount,
+    snapshotParagraphCount: snapshot.orderedParagraphs.length,
+    supportedParagraphCount: countSupportedParagraphs(snapshot),
+    blockIdParagraphCount: blockIdSnapshot.orderedParagraphs.length,
+    blockIdSupportedParagraphCount: countSupportedParagraphs(blockIdSnapshot),
+    sourceRefParagraphCount: sourceRefSnapshot.orderedParagraphs.length,
+    sourceRefSupportedParagraphCount: countSupportedParagraphs(sourceRefSnapshot),
+    blockIdOnlySupportedParagraphCount: countSupportedOnlyInLeftSnapshot(blockIdSnapshot, sourceRefSnapshot),
+    sourceRefOnlySupportedParagraphCount: countSupportedOnlyInLeftSnapshot(sourceRefSnapshot, blockIdSnapshot),
+    missingRenderedBlockIdCount: missingRenderedBlockIds.length,
+    paragraphsWithoutDomSegmentsCount: paragraphsWithoutDomSegments.length,
+    unsupportedParagraphHistogram,
+    missingRenderedBlockIds,
+    paragraphsWithoutDomSegments,
+  };
+}
+
+function collectRenderedParagraphBlockIds(accumulated: AccumulatedState, painterHost: HTMLElement): string[] {
+  const renderedBlockIds = new Set<string>();
+  painterHost.querySelectorAll<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}]`).forEach((element) => {
+    const blockId = element.getAttribute(DATA_ATTRS.BLOCK_ID);
+    if (blockId) {
+      renderedBlockIds.add(blockId);
+    }
+  });
+
+  return accumulated.blocks
+    .filter((block) => block.kind === 'paragraph' && renderedBlockIds.has(block.id))
+    .map((block) => block.id);
+}
+
+function collectRenderedParagraphElementsById(
+  painterHost: HTMLElement,
+  blockIds: readonly string[],
+): Map<string, HTMLElement> {
+  const blockIdSet = new Set(blockIds);
+  const elementsById = new Map<string, HTMLElement>();
+
+  painterHost.querySelectorAll<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}]`).forEach((element) => {
+    const blockId = element.getAttribute(DATA_ATTRS.BLOCK_ID);
+    if (!blockId || !blockIdSet.has(blockId) || elementsById.has(blockId)) {
+      return;
+    }
+
+    elementsById.set(blockId, element);
+  });
+
+  return elementsById;
+}
+
+function countBlockSegments(blockElement: HTMLElement | undefined): number {
+  if (!blockElement) {
+    return 0;
+  }
+
+  return blockElement.querySelectorAll(`[${DATA_ATTRS.SD_SEGMENT_ID}]`).length;
+}
+
+function applyEditingSurfaceDiagnostics(element: HTMLElement, status: V2EditingSurfaceStatus): void {
+  element.setAttribute(EDITING_SURFACE_READY_ATTR, String(status.ready));
+  element.setAttribute(EDITING_SURFACE_BOOTSTRAP_PHASE_ATTR, status.bootstrapPhase);
+  element.setAttribute(EDITING_SURFACE_BOOTSTRAP_ISSUE_ATTR, status.bootstrapIssue ?? '');
+  element.setAttribute(EDITING_SURFACE_SOURCE_ATTR, status.snapshotSource);
+  element.setAttribute(EDITING_SURFACE_RENDERED_PARAGRAPH_COUNT_ATTR, String(status.renderedParagraphCount));
+  element.setAttribute(EDITING_SURFACE_RENDERED_EDITABLE_COUNT_ATTR, String(status.renderedEditableParagraphCount));
+  element.setAttribute(EDITING_SURFACE_DOM_SEGMENT_COUNT_ATTR, String(status.domSegmentCount));
+  element.setAttribute(EDITING_SURFACE_SNAPSHOT_PARAGRAPH_COUNT_ATTR, String(status.snapshotParagraphCount));
+  element.setAttribute(EDITING_SURFACE_SUPPORTED_PARAGRAPH_COUNT_ATTR, String(status.supportedParagraphCount));
+  element.setAttribute(EDITING_SURFACE_BLOCK_ID_SUPPORTED_COUNT_ATTR, String(status.blockIdSupportedParagraphCount));
+  element.setAttribute(
+    EDITING_SURFACE_SOURCE_REF_SUPPORTED_COUNT_ATTR,
+    String(status.sourceRefSupportedParagraphCount),
+  );
+  element.setAttribute(
+    EDITING_SURFACE_BLOCK_ID_ONLY_SUPPORTED_COUNT_ATTR,
+    String(status.blockIdOnlySupportedParagraphCount),
+  );
+  element.setAttribute(
+    EDITING_SURFACE_SOURCE_REF_ONLY_SUPPORTED_COUNT_ATTR,
+    String(status.sourceRefOnlySupportedParagraphCount),
+  );
+  element.setAttribute(EDITING_SURFACE_MISSING_RENDERED_COUNT_ATTR, String(status.missingRenderedBlockIdCount));
+  element.setAttribute(
+    EDITING_SURFACE_MISSING_RENDERED_SAMPLE_ATTR,
+    JSON.stringify(status.missingRenderedBlockIds.slice(0, 10)),
+  );
+  element.setAttribute(
+    EDITING_SURFACE_PARAGRAPHS_WITHOUT_SEGMENTS_COUNT_ATTR,
+    String(status.paragraphsWithoutDomSegmentsCount),
+  );
+  element.setAttribute(
+    EDITING_SURFACE_PARAGRAPHS_WITHOUT_SEGMENTS_SAMPLE_ATTR,
+    JSON.stringify(status.paragraphsWithoutDomSegments.slice(0, 10)),
+  );
+  element.setAttribute(
+    EDITING_SURFACE_UNSUPPORTED_HISTOGRAM_ATTR,
+    JSON.stringify(status.unsupportedParagraphHistogram.slice(0, 10)),
+  );
 }
 
 function createLoadingOverlay(loadingTexts: LoadingOverlayTexts): {
@@ -1389,7 +1967,9 @@ function isPreviewUnsupportedError(error: unknown): boolean {
     return false;
   }
 
-  return error.name === 'PreviewWindowUnsupportedError' || error.message.startsWith('Preview projection does not support');
+  return (
+    error.name === 'PreviewWindowUnsupportedError' || error.message.startsWith('Preview projection does not support')
+  );
 }
 
 function createEmptyDependencyManifest(): DependencyManifest {

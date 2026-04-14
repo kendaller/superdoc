@@ -72,7 +72,12 @@ export type {
 
 // ---- Runtime interface ----------------------------------------------------
 
-export type { DocumentRuntime, RuntimeEventHandler } from './runtime/runtime-interface.js';
+export type {
+  DocumentRuntime,
+  RuntimeEventHandler,
+  SerializableSemanticOperation,
+  RuntimeMutationResult,
+} from './runtime/runtime-interface.js';
 export { InProcessRuntimeV2 } from './runtime/in-process-v2.js';
 export { WorkerProxyV2, installWorkerHostV2 } from './runtime/index.js';
 export type {
@@ -188,6 +193,7 @@ export { projectToFlowBlocks } from './projections/layout/index.js';
 export { PreviewWindowUnsupportedError } from './projections/layout/index.js';
 export { projectPreviewWindowToFlowBlocks } from './projections/layout/index.js';
 export { projectWindowToFlowBlocks } from './projections/layout/index.js';
+export { makeStableBlockId, sourceRefToSourceAnchor } from './projections/layout/index.js';
 export type {
   ProjectionResult,
   WindowSpec,

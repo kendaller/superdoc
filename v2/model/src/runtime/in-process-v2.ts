@@ -13,7 +13,12 @@ import type { ArchiveByteSource } from '../types/package.js';
 import { createRenderShellSnapshot } from '../render-shell/index.js';
 import type { WindowedProjectionResult } from '../projections/layout/index.js';
 import type { DocumentHandle, ReadyStage, SaveOptions, SessionStatus } from '../types/session.js';
-import type { DocumentRuntime, RuntimeEventHandler } from './runtime-interface.js';
+import type {
+  DocumentRuntime,
+  RuntimeEventHandler,
+  SerializableSemanticOperation,
+  RuntimeMutationResult,
+} from './runtime-interface.js';
 import type {
   TaskId,
   EnrichmentTarget,
@@ -24,7 +29,11 @@ import type {
 } from './worker-protocol.js';
 import type { EnrichmentResult } from '../enrichment/enrichment-results.js';
 import type { EnrichmentRequest } from '../enrichment/enrichment-request.js';
+import type { SemanticOperation } from '../operations/types.js';
 import { open } from '../session/open.js';
+import { applySemanticOperation } from '../operations/apply.js';
+import { SemanticHistory } from '../operations/history.js';
+import { DocumentApiAdapter } from '../operations/doc-api-adapter.js';
 import { executeEnrichment } from '../enrichment/executors/index.js';
 import { WindowProjectionController } from './window-projection-controller.js';
 
@@ -32,6 +41,7 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
   #handle: DocumentHandle | null = null;
   #eventHandlers = new Map<string, Set<RuntimeEventHandler>>();
   #windowProjection = new WindowProjectionController();
+  #history = new SemanticHistory();
 
   // ---- Lifecycle ------------------------------------------------------------
 
@@ -44,6 +54,7 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
     this.#windowProjection.clear();
 
     this.#handle = await open(source);
+    this.#history.clear();
     return { sessionId: this.#handle.sessionId };
   }
 
@@ -135,6 +146,97 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
     return () => handlers!.delete(handler);
   }
 
+  // ---- Editing (Phase 4) ----------------------------------------------------
+
+  async applyOperation(op: SerializableSemanticOperation): Promise<RuntimeMutationResult> {
+    this.#assertOpen();
+    const model = this.#handle!.semanticModel();
+    if (!model) {
+      return { ok: false, error: 'Semantic model not available — call ready("structure") first' };
+    }
+
+    const result = await applySemanticOperation(
+      op as unknown as SemanticOperation,
+      model,
+      model.session,
+      this.#history,
+      { replayExpandedEntities: false },
+    );
+
+    if (result.ok) {
+      this.#windowProjection.clear();
+      const revision = model.session.currentRevision;
+      this.#emitEvent({ event: 'mutationCommitted', data: { revision, operationKind: op.kind } });
+      this.#emitEvent({ event: 'revisionChanged', data: { revision } });
+      return { ok: true, revision };
+    }
+
+    this.#emitEvent({ event: 'mutationFailed', data: { error: result.error ?? 'unknown', operationKind: op.kind } });
+    return { ok: false, error: result.error };
+  }
+
+  async invokeMutation(operationKey: string, args: Record<string, unknown>): Promise<RuntimeMutationResult> {
+    this.#assertOpen();
+    const model = this.#handle!.semanticModel();
+    if (!model) {
+      return { ok: false, error: 'Semantic model not available' };
+    }
+
+    const adapter = new DocumentApiAdapter(model);
+    const semanticOp = adapter.translate(operationKey, args);
+    if (!semanticOp) {
+      return { ok: false, error: `Unsupported operation: ${operationKey}` };
+    }
+
+    return this.applyOperation(semanticOp as unknown as SerializableSemanticOperation);
+  }
+
+  async undo(): Promise<RuntimeMutationResult> {
+    const reverseOp = this.#history.undo();
+    if (!reverseOp) return { ok: true, noop: true };
+
+    this.#assertOpen();
+    const model = this.#handle!.semanticModel();
+    if (!model) return { ok: false, error: 'Semantic model not available' };
+
+    const result = await applySemanticOperation(reverseOp, model, model.session, undefined, {
+      replayExpandedEntities: false,
+    });
+    if (result.ok) {
+      this.#windowProjection.clear();
+      const revision = model.session.currentRevision;
+      this.#emitEvent({ event: 'revisionChanged', data: { revision } });
+      return { ok: true, revision };
+    }
+    return { ok: false, error: result.error };
+  }
+
+  async redo(): Promise<RuntimeMutationResult> {
+    const forwardOp = this.#history.redo();
+    if (!forwardOp) return { ok: true, noop: true };
+
+    this.#assertOpen();
+    const model = this.#handle!.semanticModel();
+    if (!model) return { ok: false, error: 'Semantic model not available' };
+
+    const result = await applySemanticOperation(forwardOp, model, model.session, undefined, {
+      replayExpandedEntities: false,
+    });
+    if (result.ok) {
+      this.#windowProjection.clear();
+      const revision = model.session.currentRevision;
+      this.#emitEvent({ event: 'revisionChanged', data: { revision } });
+      return { ok: true, revision };
+    }
+    return { ok: false, error: result.error };
+  }
+
+  async getRevision(): Promise<string | null> {
+    if (!this.#handle) return null;
+    const model = this.#handle.semanticModel();
+    return model?.session.currentRevision ?? null;
+  }
+
   // ---- Internal access (for testing/CLI) ------------------------------------
 
   /** Direct access to the underlying DocumentHandle (not part of DocumentRuntime). */
@@ -146,5 +248,17 @@ export class InProcessRuntimeV2 implements DocumentRuntime {
 
   #assertOpen(): void {
     if (!this.#handle) throw new Error('No session open');
+  }
+
+  #emitEvent(event: import('./worker-protocol.js').WorkerEventV2): void {
+    const handlers = this.#eventHandlers.get(event.event);
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try {
+        handler(event);
+      } catch {
+        // Event handler errors must not break the runtime.
+      }
+    }
   }
 }

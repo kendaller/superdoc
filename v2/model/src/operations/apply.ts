@@ -14,17 +14,17 @@
 // No consumer should bypass this function to apply primitive steps directly.
 // ---------------------------------------------------------------------------
 
-import type { SemanticOperation } from "./types.js";
-import type { SemanticModel } from "../model.js";
-import type { PackageSession } from "../types/session.js";
-import type { MutationApplyResult, NodeRef } from "../mutations/types.js";
-import type { IntentViolation } from "./validate.js";
-import type { EntityRef } from "../identity/types.js";
-import { compileOperation } from "./compile.js";
-import { validateIntentPreservation } from "./validate.js";
-import { SemanticHistory, capturePreOpSnapshot, computeReverse } from "./history.js";
-import { applyTransaction } from "../mutations/engine.js";
-import { createSourceRef } from "../identity/types.js";
+import type { SemanticOperation } from './types.js';
+import type { SemanticModel } from '../model.js';
+import type { PackageSession } from '../types/session.js';
+import type { MutationApplyResult, NodeRef } from '../mutations/types.js';
+import type { IntentViolation } from './validate.js';
+import type { EntityRef } from '../identity/types.js';
+import { compileOperation } from './compile.js';
+import { validateIntentPreservation } from './validate.js';
+import { SemanticHistory, capturePreOpSnapshot, computeReverse } from './history.js';
+import { applyTransaction } from '../mutations/engine.js';
+import { createSourceRef } from '../identity/types.js';
 
 // ---- Result type ------------------------------------------------------------
 
@@ -80,6 +80,7 @@ export async function applySemanticOperation(
   model: SemanticModel,
   session: PackageSession,
   history?: SemanticHistory,
+  options?: { replayExpandedEntities?: boolean },
 ): Promise<SemanticOperationResult> {
   // ---- Step 1: Capture pre-op state ----
   const preOpSnapshot = capturePreOpSnapshot(op, model);
@@ -100,7 +101,7 @@ export async function applySemanticOperation(
     return {
       ok: false,
       op,
-      error: "Compilation produced zero steps — nothing to apply",
+      error: 'Compilation produced zero steps — nothing to apply',
     };
   }
 
@@ -111,7 +112,7 @@ export async function applySemanticOperation(
       ok: false,
       op,
       violations,
-      error: `Intent-preservation violated: ${violations.map((v) => v.rule).join(", ")}`,
+      error: `Intent-preservation violated: ${violations.map((v) => v.rule).join(', ')}`,
     };
   }
 
@@ -119,7 +120,7 @@ export async function applySemanticOperation(
   const txResult = await applyTransaction(session, {
     id: nextTransactionId(),
     baseRevision: session.currentRevision,
-    origin: { kind: "local", source: "semantic-operation" },
+    origin: { kind: 'local', source: 'semantic-operation' },
     metadata: {
       label: op.label,
       userFacing: true,
@@ -138,7 +139,9 @@ export async function applySemanticOperation(
   }
 
   // ---- Step 5: Rebuild the model ----
-  model.rebuild();
+  model.rebuild({
+    replayExpandedEntities: options?.replayExpandedEntities,
+  });
 
   // ---- Step 6: Record in history ----
   if (history) {
@@ -160,12 +163,12 @@ function resolveCreatedParagraphRef(
   txResult: Extract<MutationApplyResult, { ok: true }>,
   model: SemanticModel,
 ): EntityRef | undefined {
-  if (op.kind !== "insertParagraph" && op.kind !== "splitParagraph") {
+  if (op.kind !== 'insertParagraph' && op.kind !== 'splitParagraph') {
     return undefined;
   }
 
   for (const createdRef of txResult.createdRefs) {
-    if (createdRef.kind !== "node") {
+    if (createdRef.kind !== 'node') {
       continue;
     }
 
@@ -178,12 +181,7 @@ function resolveCreatedParagraphRef(
   return undefined;
 }
 
-function resolveParagraphEntityFromCreatedNode(
-  createdNode: NodeRef,
-  model: SemanticModel,
-) {
+function resolveParagraphEntityFromCreatedNode(createdNode: NodeRef, model: SemanticModel) {
   const entity = model.entityBySourceRef(createSourceRef(createdNode.partUri, createdNode.nodeId));
-  return entity?.kind === "paragraph"
-    ? entity
-    : undefined;
+  return entity?.kind === 'paragraph' ? entity : undefined;
 }

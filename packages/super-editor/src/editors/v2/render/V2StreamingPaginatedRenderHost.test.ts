@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { V2StreamingPaginatedRenderHost } from './V2StreamingPaginatedRenderHost.js';
 import type { DocumentRuntime, RenderShellSnapshot, WindowedProjectionResult } from '@superdoc/v2-model';
 import type { HostState, StateChangeEvent, DegradedInfo } from './streaming-host-types.js';
+import type { V2EditableDocumentSnapshot, V2EditableParagraph } from '../editing/V2EditableDocumentSnapshot.js';
+import * as editingSnapshotModule from '../editing/V2EditableDocumentSnapshot.js';
 
 // ---- Hoisted mocks -----------------------------------------------------------
 
@@ -156,6 +158,51 @@ function createMockRuntime(overrides?: Partial<DocumentRuntime>): DocumentRuntim
   };
 }
 
+function createEditableSnapshot(paragraphs: readonly V2EditableParagraph[]): V2EditableDocumentSnapshot {
+  return {
+    blockToEntityRef: new Map(paragraphs.map((paragraph) => [paragraph.blockId, paragraph.paragraphRef])),
+    paragraphsByBlockId: new Map(paragraphs.map((paragraph) => [paragraph.blockId, paragraph])),
+    orderedParagraphs: [...paragraphs],
+  };
+}
+
+function createEditableParagraph(
+  overrides: Partial<V2EditableParagraph> & Pick<V2EditableParagraph, 'blockId' | 'text'>,
+): V2EditableParagraph {
+  return {
+    blockId: overrides.blockId,
+    storyId: overrides.storyId ?? 'story-1',
+    paragraphRef: overrides.paragraphRef ?? { id: `${overrides.blockId}-paragraph` },
+    paragraphSourceRef: overrides.paragraphSourceRef ?? {
+      partUri: '/word/document.xml',
+      nodeId: `${overrides.blockId}-node`,
+    },
+    text: overrides.text,
+    supported: overrides.supported ?? true,
+    segments: overrides.segments ?? [],
+    unsupportedReason: overrides.unsupportedReason,
+  };
+}
+
+function createEditableSegment(
+  overrides: Pick<V2EditableParagraph['segments'][number], 'segmentId' | 'text' | 'paragraphStart' | 'paragraphEnd'> & {
+    runId: string;
+  },
+): V2EditableParagraph['segments'][number] {
+  return {
+    runRef: { id: overrides.runId },
+    runSourceRef: { partUri: '/word/document.xml', nodeId: `${overrides.runId}-node` },
+    runIndex: 0,
+    segmentIndex: 0,
+    segmentId: overrides.segmentId,
+    text: overrides.text,
+    paragraphStart: overrides.paragraphStart,
+    paragraphEnd: overrides.paragraphEnd,
+    runTextStart: 0,
+    runTextEnd: overrides.text.length,
+  };
+}
+
 const painter = {
   setData: vi.fn(),
   paint: vi.fn(),
@@ -168,6 +215,7 @@ const painter = {
 
 describe('V2StreamingPaginatedRenderHost', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
     incrementalLayoutMock.mockImplementation(
       async (_prev: unknown, _prevLayout: unknown, nextBlocks: { id: string }[]) => {
@@ -315,6 +363,148 @@ describe('V2StreamingPaginatedRenderHost', () => {
         visible: false,
         progressPercent: 100,
       });
+    });
+  });
+
+  describe('editing surface preparation', () => {
+    it('waits for the repainted streamed DOM and exposes real editing-surface diagnostics', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, {
+        totalBodyChildCount: 1,
+        firstWindowBlockIds: ['block-1'],
+        firstWindowNextBodyChildIndex: 1,
+      });
+
+      const paragraph = createEditableParagraph({
+        blockId: 'block-1',
+        text: 'Hello world',
+        segments: [
+          createEditableSegment({
+            runId: 'run-1',
+            segmentId: 'segment-1',
+            text: 'Hello world',
+            paragraphStart: 0,
+            paragraphEnd: 11,
+          }),
+        ],
+      });
+
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotForBlockIds').mockReturnValue(
+        createEditableSnapshot([]),
+      );
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotFromSourceRefs').mockReturnValue(
+        createEditableSnapshot([paragraph]),
+      );
+
+      painter.paint.mockImplementation((_layout: unknown, hostElement: HTMLElement) => {
+        hostElement.innerHTML = `
+          <div data-block-id="block-1">
+            <div class="superdoc-line">
+              <span
+                data-sd-segment-id="segment-1"
+                data-sd-segment-start="0"
+                data-sd-segment-end="11"
+              >Hello world</span>
+            </div>
+          </div>
+        `;
+      });
+
+      const hostElement = document.createElement('div');
+      const host = new V2StreamingPaginatedRenderHost({
+        element: hostElement,
+        runtime,
+        windowSize: 1,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+      host.bindEditingController({
+        semanticModel: {} as never,
+      } as never);
+
+      const status = await host.prepareEditingSurface();
+
+      expect(status).toMatchObject({
+        ready: true,
+        bootstrapPhase: 'ready',
+        bootstrapIssue: null,
+        snapshotSource: 'sourceRefs',
+        renderedParagraphCount: 1,
+        renderedEditableParagraphCount: 1,
+        domSegmentCount: 1,
+        snapshotParagraphCount: 1,
+        supportedParagraphCount: 1,
+        sourceRefOnlySupportedParagraphCount: 1,
+      });
+      expect(hostElement.getAttribute('data-v2-editing-surface-ready')).toBe('true');
+      expect(hostElement.getAttribute('data-v2-editing-bootstrap-phase')).toBe('ready');
+      expect(hostElement.getAttribute('data-v2-editing-snapshot-source')).toBe('sourceRefs');
+      expect(hostElement.getAttribute('data-v2-editing-dom-segment-count')).toBe('1');
+
+      host.destroy();
+    });
+
+    it('reports blocked bootstrap diagnostics when supported paragraphs have no DOM anchors', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, {
+        totalBodyChildCount: 1,
+        firstWindowBlockIds: ['block-1'],
+        firstWindowNextBodyChildIndex: 1,
+      });
+
+      const paragraph = createEditableParagraph({
+        blockId: 'block-1',
+        text: 'Hello world',
+        segments: [
+          createEditableSegment({
+            runId: 'run-1',
+            segmentId: 'segment-1',
+            text: 'Hello world',
+            paragraphStart: 0,
+            paragraphEnd: 11,
+          }),
+        ],
+      });
+
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotForBlockIds').mockReturnValue(
+        createEditableSnapshot([paragraph]),
+      );
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotFromSourceRefs').mockReturnValue(
+        createEditableSnapshot([]),
+      );
+
+      painter.paint.mockImplementation((_layout: unknown, hostElement: HTMLElement) => {
+        hostElement.innerHTML = `<div data-block-id="block-1"><div class="superdoc-line">Hello world</div></div>`;
+      });
+
+      const hostElement = document.createElement('div');
+      const host = new V2StreamingPaginatedRenderHost({
+        element: hostElement,
+        runtime,
+        windowSize: 1,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+      host.bindEditingController({
+        semanticModel: {} as never,
+      } as never);
+
+      const status = await host.prepareEditingSurface();
+
+      expect(status).toMatchObject({
+        ready: false,
+        bootstrapPhase: 'blocked',
+        bootstrapIssue: 'Rendered supported paragraphs are missing inline segment anchors',
+        renderedEditableParagraphCount: 0,
+        paragraphsWithoutDomSegmentsCount: 1,
+      });
+      expect(hostElement.getAttribute('data-v2-editing-bootstrap-phase')).toBe('blocked');
+      expect(hostElement.getAttribute('data-v2-editing-bootstrap-issue')).toBe(
+        'Rendered supported paragraphs are missing inline segment anchors',
+      );
+      expect(hostElement.getAttribute('data-v2-editing-without-dom-segments-count')).toBe('1');
+
+      host.destroy();
     });
   });
 

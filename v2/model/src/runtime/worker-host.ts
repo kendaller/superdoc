@@ -19,6 +19,10 @@ import type {
   WorkerSourceDescriptor,
 } from './worker-protocol.js';
 import { open } from '../session/open.js';
+import { applySemanticOperation } from '../operations/apply.js';
+import { DocumentApiAdapter } from '../operations/doc-api-adapter.js';
+import { SemanticHistory } from '../operations/history.js';
+import type { SemanticOperation } from '../operations/types.js';
 import { TaskQueue, type QueuedTask } from './task-queue.js';
 import { createPortBackedReader, closePortBackedReader } from './range-reader-proxy.js';
 import type { ArchiveByteSource } from '../types/package.js';
@@ -110,6 +114,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
   let rangeReaderPort: MessagePort | null = null;
   const queue = new TaskQueue();
   const windowProjection = new WindowProjectionController();
+  const mutationHistory = new SemanticHistory();
 
   // Wire task lifecycle events to worker event messages
   queue.onLifecycle((event) => {
@@ -236,6 +241,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
       queue.cancelAll('new-document-open');
       cleanupRangeReaderPort();
       windowProjection.clear();
+      mutationHistory.clear();
       if (handle) {
         void handle.close();
         handle = null;
@@ -278,6 +284,7 @@ export function installWorkerHostV2(scope: WorkerScope): void {
       case 'openSource': {
         const source = await resolveSourceDescriptor(req.params.source);
         handle = await open(source);
+        mutationHistory.clear();
         return { sessionId: handle.sessionId };
       }
 
@@ -343,6 +350,115 @@ export function installWorkerHostV2(scope: WorkerScope): void {
         return handle.save(options);
       }
 
+      case 'applyOperation': {
+        const model = await requireMutableModel(signal);
+        const result = await applySemanticOperation(
+          req.params.op as SemanticOperation,
+          model,
+          model.session,
+          mutationHistory,
+          { replayExpandedEntities: false },
+        );
+
+        if (result.ok) {
+          windowProjection.clear();
+          const revision = model.session.currentRevision;
+          emitEvent(scope, {
+            event: 'mutationCommitted',
+            data: { revision, operationKind: String(req.params.op.kind) },
+          });
+          emitEvent(scope, { event: 'revisionChanged', data: { revision } });
+          return { ok: true, revision };
+        }
+
+        emitEvent(scope, {
+          event: 'mutationFailed',
+          data: { error: result.error ?? 'unknown', operationKind: String(req.params.op.kind) },
+        });
+        return { ok: false, error: result.error };
+      }
+
+      case 'invokeMutation': {
+        const model = await requireMutableModel(signal);
+        const adapter = new DocumentApiAdapter(model);
+        const semanticOp = adapter.translate(req.params.operationKey, req.params.args);
+        if (!semanticOp) {
+          const error = `Unsupported operation: ${req.params.operationKey}`;
+          emitEvent(scope, {
+            event: 'mutationFailed',
+            data: { error, operationKind: req.params.operationKey },
+          });
+          return { ok: false, error };
+        }
+
+        const result = await applySemanticOperation(semanticOp, model, model.session, mutationHistory, {
+          replayExpandedEntities: false,
+        });
+        if (result.ok) {
+          windowProjection.clear();
+          const revision = model.session.currentRevision;
+          emitEvent(scope, { event: 'mutationCommitted', data: { revision, operationKind: semanticOp.kind } });
+          emitEvent(scope, { event: 'revisionChanged', data: { revision } });
+          return { ok: true, revision };
+        }
+
+        emitEvent(scope, {
+          event: 'mutationFailed',
+          data: { error: result.error ?? 'unknown', operationKind: semanticOp.kind },
+        });
+        return { ok: false, error: result.error };
+      }
+
+      case 'undo': {
+        const reverseOp = mutationHistory.undo();
+        if (!reverseOp) return { ok: true, noop: true };
+
+        const model = await requireMutableModel(signal);
+        const result = await applySemanticOperation(reverseOp, model, model.session, undefined, {
+          replayExpandedEntities: false,
+        });
+        if (result.ok) {
+          windowProjection.clear();
+          const revision = model.session.currentRevision;
+          emitEvent(scope, { event: 'revisionChanged', data: { revision } });
+          return { ok: true, revision };
+        }
+
+        emitEvent(scope, {
+          event: 'mutationFailed',
+          data: { error: result.error ?? 'unknown', operationKind: reverseOp.kind },
+        });
+        return { ok: false, error: result.error };
+      }
+
+      case 'redo': {
+        const forwardOp = mutationHistory.redo();
+        if (!forwardOp) return { ok: true, noop: true };
+
+        const model = await requireMutableModel(signal);
+        const result = await applySemanticOperation(forwardOp, model, model.session, undefined, {
+          replayExpandedEntities: false,
+        });
+        if (result.ok) {
+          windowProjection.clear();
+          const revision = model.session.currentRevision;
+          emitEvent(scope, { event: 'revisionChanged', data: { revision } });
+          return { ok: true, revision };
+        }
+
+        emitEvent(scope, {
+          event: 'mutationFailed',
+          data: { error: result.error ?? 'unknown', operationKind: forwardOp.kind },
+        });
+        return { ok: false, error: result.error };
+      }
+
+      case 'getRevision': {
+        if (!handle) return null;
+        const model = handle.semanticModel();
+        return model?.session.currentRevision ?? null;
+      }
+
       default:
         throw new Error(`Unknown v2 method: ${(req as WorkerRequestV2).method}`);
     }
@@ -394,10 +510,21 @@ export function installWorkerHostV2(scope: WorkerScope): void {
       await handle!.close();
       handle = null;
       windowProjection.clear();
+      mutationHistory.clear();
       sendV2Response(scope, req, null);
     } catch (err) {
       sendV2Error(scope, req, err);
     }
+  }
+
+  async function requireMutableModel(signal: AbortSignal) {
+    if (!handle) throw new Error('No session open');
+    await handle.ready('structure', signal);
+    const model = handle.semanticModel();
+    if (!model) {
+      throw new Error('Semantic model not available');
+    }
+    return model;
   }
 }
 

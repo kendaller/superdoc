@@ -51,6 +51,32 @@ export const DATA_ATTRS = {
 
   /** Element type discriminator (annotation variant, etc.). */
   TYPE: 'data-type',
+
+  // ---- V2 native interaction metadata ----------------------------------------
+
+  /** Stable block identifier from v2 projection (already exists as data-block-id in painter). */
+  BLOCK_ID: 'data-block-id',
+
+  /** V2 entity ref ID — maps the rendered element back to its semantic entity. */
+  SD_ENTITY_REF: 'data-sd-entity-ref',
+
+  /** V2 story ID — which story this element belongs to. */
+  SD_STORY_ID: 'data-sd-story-id',
+
+  /** V2 run entity ref — identifies a specific run within a paragraph. */
+  SD_RUN_REF: 'data-sd-run-ref',
+
+  /** V2 inline segment ID — identifies a specific inline segment within a run. */
+  SD_SEGMENT_ID: 'data-sd-segment-id',
+
+  /** V2 segment text start offset (character index within the segment). */
+  SD_SEGMENT_START: 'data-sd-segment-start',
+
+  /** V2 segment text end offset (character index within the segment). */
+  SD_SEGMENT_END: 'data-sd-segment-end',
+
+  /** V2 interaction kind — categorizes what kind of editable target this is. */
+  SD_INTERACTION_KIND: 'data-sd-interaction-kind',
 } as const;
 
 /**
@@ -71,4 +97,15 @@ export const DATASET_KEYS = {
   DISPLAY_LABEL: 'displayLabel',
   VARIANT: 'variant',
   TYPE: 'type',
+
+  // ---- V2 native interaction metadata ----------------------------------------
+
+  BLOCK_ID: 'blockId',
+  SD_ENTITY_REF: 'sdEntityRef',
+  SD_STORY_ID: 'sdStoryId',
+  SD_RUN_REF: 'sdRunRef',
+  SD_SEGMENT_ID: 'sdSegmentId',
+  SD_SEGMENT_START: 'sdSegmentStart',
+  SD_SEGMENT_END: 'sdSegmentEnd',
+  SD_INTERACTION_KIND: 'sdInteractionKind',
 } as const;
