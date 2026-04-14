@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import type { DocumentRuntime } from '@superdoc/v2-model';
 import type { LayoutEngineOptions } from '../../v1/core/presentation-editor/types.js';
-import { V2FastEditingSession } from '../editing/V2FastEditingSession.js';
+import { V2EditingSession } from '../editing/V2EditingSession.js';
 import { V2StreamingPaginatedRenderHost } from '../render/V2StreamingPaginatedRenderHost.js';
 import type { LoadingOverlayState, StateChangeEvent } from '../render/streaming-host-types.js';
 import { createDefaultV2DocumentRuntime } from '../runtime/create-default-runtime.js';
@@ -50,7 +50,7 @@ const rootElement = ref<HTMLElement | null>(null);
 const renderer = shallowRef<V2StreamingPaginatedRenderHost | null>(null);
 const ownedRuntime = shallowRef<DocumentRuntime | null>(null);
 const editingController = shallowRef<V2EditingController | null>(null);
-const editingSession = shallowRef<V2FastEditingSession | null>(null);
+const editingSession = shallowRef<V2EditingSession | null>(null);
 const loadingOverlayState = reactive<LoadingOverlayState>({
   visible: false,
   title: DEFAULT_DOCUMENT_LOADING_TEXTS.title,
@@ -123,6 +123,15 @@ async function initializeRenderer(): Promise<void> {
 
   const runtime = resolveRuntime();
   const nextEditingController = editableMode.value ? new V2EditingController() : null;
+  const nextEditingControllerReady = nextEditingController
+    ? nextEditingController.initialize(props.fileSource).then(
+        () => nextEditingController,
+        async (error) => {
+          await nextEditingController.close().catch(() => {});
+          throw error;
+        },
+      )
+    : null;
 
   const nextRenderer = new V2StreamingPaginatedRenderHost({
     element: rootElement.value,
@@ -136,6 +145,10 @@ async function initializeRenderer(): Promise<void> {
     windowSize: props.windowSize,
     firstWindowPageEstimate: props.firstWindowPageEstimate,
   });
+
+  if (nextEditingControllerReady) {
+    nextRenderer.setInitialEditingControllerBootstrap(nextEditingControllerReady);
+  }
 
   nextRenderer.onFirstPaintComplete((payload) => {
     emit('first-paint-complete', payload);
@@ -175,10 +188,9 @@ async function initializeRenderer(): Promise<void> {
     if (nextEditingController) {
       void initializeEditingInfrastructure({
         generation,
-        controller: nextEditingController,
+        controllerReady: nextEditingControllerReady!,
         container: rootElement.value,
         renderer: nextRenderer,
-        runtime,
       });
     }
   } catch (error) {
@@ -197,22 +209,16 @@ async function initializeRenderer(): Promise<void> {
 
 type EditingInfrastructureOptions = {
   generation: number;
-  controller: V2EditingController;
+  controllerReady: Promise<V2EditingController>;
   container: HTMLElement;
   renderer: V2StreamingPaginatedRenderHost;
-  runtime: DocumentRuntime;
 };
 
 async function initializeEditingInfrastructure(options: EditingInfrastructureOptions): Promise<void> {
-  const { generation, controller, container, renderer: host, runtime } = options;
-  const source = props.fileSource;
-  if (!source) {
-    await controller.close().catch(() => {});
-    return;
-  }
+  const { generation, controllerReady, container, renderer: host } = options;
 
   try {
-    await controller.initialize(source);
+    const controller = await controllerReady;
     if (generation !== initializeGeneration || renderer.value !== host) {
       await controller.close().catch(() => {});
       return;
@@ -220,14 +226,29 @@ async function initializeEditingInfrastructure(options: EditingInfrastructureOpt
 
     host.bindEditingController(controller);
     const editingSurfaceStatus = await host.prepareEditingSurface();
+    console.debug('[V2StreamingRenderer] Editing surface prepared', {
+      generation,
+      documentId: props.documentId ?? null,
+      ready: editingSurfaceStatus.ready,
+      bootstrapPhase: editingSurfaceStatus.bootstrapPhase,
+      bootstrapIssue: editingSurfaceStatus.bootstrapIssue,
+      snapshotSource: editingSurfaceStatus.snapshotSource,
+      renderedParagraphCount: editingSurfaceStatus.renderedParagraphCount,
+      renderedEditableParagraphCount: editingSurfaceStatus.renderedEditableParagraphCount,
+      renderedEmptyEditableParagraphCount: editingSurfaceStatus.renderedEmptyEditableParagraphCount,
+      domSegmentCount: editingSurfaceStatus.domSegmentCount,
+      supportedParagraphCount: editingSurfaceStatus.supportedParagraphCount,
+      emptyEditableParagraphCount: editingSurfaceStatus.emptyEditableParagraphCount,
+      missingRenderedBlockIdCount: editingSurfaceStatus.missingRenderedBlockIdCount,
+      paragraphsWithoutDomSegmentsCount: editingSurfaceStatus.paragraphsWithoutDomSegmentsCount,
+      unsupportedParagraphHistogram: editingSurfaceStatus.unsupportedParagraphHistogram.slice(0, 5),
+    });
 
-    const session = new V2FastEditingSession({
+    const session = new V2EditingSession({
       container,
       controller,
-      runtime,
       getSnapshot: () => host.getEditingSnapshot(),
-      patchParagraphText: (blockId, text) => host.patchEditableParagraphText(blockId, text),
-      refreshSnapshotFromController: () => host.prepareEditingSurface(),
+      refreshView: (options) => host.refreshEditingSnapshotView(options),
     });
 
     editingController.value = controller;
@@ -235,6 +256,11 @@ async function initializeEditingInfrastructure(options: EditingInfrastructureOpt
     session.attach();
     session.setReady(editingSurfaceStatus.ready);
     session.refresh();
+    console.debug('[V2StreamingRenderer] Editing session attached', {
+      generation,
+      documentId: props.documentId ?? null,
+      ready: editingSurfaceStatus.ready,
+    });
   } catch (error) {
     if (generation !== initializeGeneration || renderer.value !== host) {
       await controller.close().catch(() => {});

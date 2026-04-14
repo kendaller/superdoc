@@ -10,7 +10,9 @@ const { hostInstances, controllerInstances, sessionInstances } = vi.hoisted(() =
 vi.mock('../render/V2StreamingPaginatedRenderHost.js', () => ({
   V2StreamingPaginatedRenderHost: class V2StreamingPaginatedRenderHostMock {
     readonly bindEditingController = vi.fn();
+    readonly setInitialEditingControllerBootstrap = vi.fn();
     readonly refreshEditingSnapshot = vi.fn();
+    readonly refreshEditingSnapshotView = vi.fn();
     readonly prepareEditingSurface = vi.fn().mockResolvedValue({
       ready: true,
       bootstrapPhase: 'ready',
@@ -18,9 +20,11 @@ vi.mock('../render/V2StreamingPaginatedRenderHost.js', () => ({
       snapshotSource: 'merged',
       renderedParagraphCount: 1,
       renderedEditableParagraphCount: 1,
+      renderedEmptyEditableParagraphCount: 0,
       domSegmentCount: 1,
       snapshotParagraphCount: 1,
       supportedParagraphCount: 1,
+      emptyEditableParagraphCount: 0,
       blockIdParagraphCount: 1,
       blockIdSupportedParagraphCount: 1,
       sourceRefParagraphCount: 1,
@@ -51,9 +55,11 @@ vi.mock('../render/V2StreamingPaginatedRenderHost.js', () => ({
       snapshotSource: 'merged',
       renderedParagraphCount: 1,
       renderedEditableParagraphCount: 1,
+      renderedEmptyEditableParagraphCount: 0,
       domSegmentCount: 1,
       snapshotParagraphCount: 1,
       supportedParagraphCount: 1,
+      emptyEditableParagraphCount: 0,
       blockIdParagraphCount: 1,
       blockIdSupportedParagraphCount: 1,
       sourceRefParagraphCount: 1,
@@ -83,6 +89,10 @@ vi.mock('../runtime/V2EditingController.js', () => ({
   V2EditingController: class V2EditingControllerMock {
     readonly initialize = vi.fn().mockResolvedValue(undefined);
     readonly close = vi.fn().mockResolvedValue(undefined);
+    readonly on = vi.fn(() => () => {});
+    readonly applyOperation = vi.fn();
+    readonly semanticModel = null;
+    readonly isActive = vi.fn(() => true);
 
     constructor() {
       controllerInstances.push(this);
@@ -90,8 +100,8 @@ vi.mock('../runtime/V2EditingController.js', () => ({
   },
 }));
 
-vi.mock('../editing/V2FastEditingSession.js', () => ({
-  V2FastEditingSession: class V2FastEditingSessionMock {
+vi.mock('../editing/V2EditingSession.js', () => ({
+  V2EditingSession: class V2EditingSessionMock {
     readonly attach = vi.fn();
     readonly refresh = vi.fn();
     readonly setReady = vi.fn();
@@ -112,7 +122,7 @@ describe('V2StreamingRenderer editing mode', () => {
     sessionInstances.length = 0;
   });
 
-  it('attaches the fast editing session in editable mode on the streaming host', async () => {
+  it('attaches the selection-based editing session in editable mode on the streaming host', async () => {
     const wrapper = mount(V2StreamingRenderer, {
       props: {
         documentId: 'doc-1',

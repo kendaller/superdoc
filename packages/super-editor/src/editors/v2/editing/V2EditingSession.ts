@@ -1,22 +1,41 @@
 import type { V2EditingController } from '../runtime/V2EditingController.js';
 import { buildEditableDocumentSnapshot, type V2EditableDocumentSnapshot } from './V2EditableDocumentSnapshot.js';
 import { V2EditableIndex } from './V2EditableIndex.js';
-import { computeCaretRect, computeRangeRects, resolveTextPositionFromClientPoint } from './V2EditingDom.js';
+import { V2EditingDomContext } from './V2EditingDom.js';
 import { V2HiddenInputHost } from './V2HiddenInputHost.js';
 import type { V2ResolvedSelection, V2ResolvedTextPosition, V2PendingSelection } from './V2EditingTypes.js';
 import { deleteBackward, deleteForward, replaceSelectionWithText, splitSelection } from './V2MutationPlanner.js';
 import { V2SelectionOverlay, ensureV2SelectionOverlayStyles } from './V2SelectionOverlay.js';
+import type { SourceRef } from '@superdoc/v2-model';
+
+export type V2EditingMutationKind =
+  | 'replaceText'
+  | 'deleteBackward'
+  | 'deleteForward'
+  | 'splitSelection'
+  | 'undo'
+  | 'redo';
+
+export type V2EditingViewRefreshOptions = {
+  readonly repaint?: boolean;
+  readonly pendingSelection?: V2PendingSelection | null;
+  readonly anchorParagraphSourceRef?: SourceRef | null;
+  readonly mutationKind?: V2EditingMutationKind;
+};
 
 type V2EditingSessionOptions = {
   readonly container: HTMLElement;
   readonly controller: V2EditingController;
   readonly getSnapshot: () => V2EditableDocumentSnapshot;
+  readonly refreshView?: ((options?: V2EditingViewRefreshOptions) => void | Promise<void>) | null;
 };
 
 export class V2EditingSession {
   readonly #container: HTMLElement;
   readonly #controller: V2EditingController;
   readonly #getSnapshot: () => V2EditableDocumentSnapshot;
+  readonly #refreshView: ((options?: V2EditingViewRefreshOptions) => void | Promise<void>) | null;
+  readonly #domContext: V2EditingDomContext;
   readonly #overlay: V2SelectionOverlay;
   readonly #hiddenInputHost: V2HiddenInputHost;
   #index: V2EditableIndex;
@@ -26,13 +45,14 @@ export class V2EditingSession {
   #goalX: number | null = null;
   #isPointerSelecting = false;
   #isMutating = false;
+  #isReady = true;
 
   readonly #handlePointerDown = (event: PointerEvent) => {
-    if (event.button !== 0 || this.#isMutating) {
+    if (!this.#isReady || event.button !== 0 || this.#isMutating) {
       return;
     }
 
-    const position = resolveTextPositionFromClientPoint(this.#container, this.#index, event.clientX, event.clientY);
+    const position = this.#domContext.resolveTextPositionFromClientPoint(this.#index, event.clientX, event.clientY);
 
     if (!position) {
       this.clearSelection();
@@ -58,7 +78,7 @@ export class V2EditingSession {
       return;
     }
 
-    const position = resolveTextPositionFromClientPoint(this.#container, this.#index, event.clientX, event.clientY);
+    const position = this.#domContext.resolveTextPositionFromClientPoint(this.#index, event.clientX, event.clientY);
     if (!position) {
       return;
     }
@@ -77,7 +97,7 @@ export class V2EditingSession {
   };
 
   readonly #handleBeforeInput = (event: InputEvent) => {
-    if (this.#selection.kind === 'none' || this.#isMutating) {
+    if (!this.#isReady || this.#selection.kind === 'none' || this.#isMutating) {
       return;
     }
 
@@ -121,7 +141,7 @@ export class V2EditingSession {
   };
 
   readonly #handleKeyDown = (event: KeyboardEvent) => {
-    if (this.#isMutating) {
+    if (!this.#isReady || this.#isMutating) {
       return;
     }
 
@@ -166,10 +186,12 @@ export class V2EditingSession {
   };
 
   readonly #handleScroll = () => {
+    this.#domContext.invalidate();
     this.renderSelection();
   };
 
   readonly #handleResize = () => {
+    this.#domContext.invalidate();
     this.renderSelection();
   };
 
@@ -177,6 +199,8 @@ export class V2EditingSession {
     this.#container = options.container;
     this.#controller = options.controller;
     this.#getSnapshot = options.getSnapshot;
+    this.#refreshView = options.refreshView ?? null;
+    this.#domContext = new V2EditingDomContext(this.#container);
     this.#index = new V2EditableIndex(options.getSnapshot());
     ensureV2SelectionOverlayStyles(this.#container.ownerDocument);
     this.#overlay = new V2SelectionOverlay(this.#container);
@@ -198,6 +222,7 @@ export class V2EditingSession {
   }
 
   refresh(): void {
+    this.#domContext.invalidate();
     this.#index = new V2EditableIndex(this.#getSnapshot());
 
     if (this.#pendingSelection) {
@@ -209,6 +234,15 @@ export class V2EditingSession {
     }
 
     this.renderSelection();
+  }
+
+  setReady(isReady: boolean): void {
+    this.#isReady = isReady;
+    if (!isReady) {
+      this.#isPointerSelecting = false;
+      this.#pointerAnchor = null;
+      this.#overlay.clear();
+    }
   }
 
   renderSelection(): void {
@@ -224,7 +258,7 @@ export class V2EditingSession {
     }
 
     if (this.#selection.kind === 'caret') {
-      const caretRect = computeCaretRect(this.#container, this.#selection.focus);
+      const caretRect = this.#domContext.computeCaretRect(this.#selection.focus);
       if (!caretRect) {
         this.#overlay.clear();
         return;
@@ -234,7 +268,7 @@ export class V2EditingSession {
       return;
     }
 
-    const rects = computeRangeRects(this.#container, bounds.start, bounds.end);
+    const rects = this.#domContext.computeRangeRects(bounds.start, bounds.end);
     if (rects.length === 0) {
       this.#overlay.clear();
       return;
@@ -269,23 +303,29 @@ export class V2EditingSession {
       return;
     }
 
-    await this.#runMutation(async () => replaceSelectionWithText(this.#controller, this.#index, bounds, text));
+    await this.#runMutation('replaceText', async () =>
+      replaceSelectionWithText(this.#controller, this.#index, bounds, text),
+    );
   }
 
   async #deleteBackward(): Promise<void> {
-    await this.#runMutation(async () => deleteBackward(this.#controller, this.#index, this.#selection));
+    await this.#runMutation('deleteBackward', async () =>
+      deleteBackward(this.#controller, this.#index, this.#selection),
+    );
   }
 
   async #deleteForward(): Promise<void> {
-    await this.#runMutation(async () => deleteForward(this.#controller, this.#index, this.#selection));
+    await this.#runMutation('deleteForward', async () => deleteForward(this.#controller, this.#index, this.#selection));
   }
 
   async #splitSelection(): Promise<void> {
-    await this.#runMutation(async () => splitSelection(this.#controller, this.#index, this.#selection));
+    await this.#runMutation('splitSelection', async () =>
+      splitSelection(this.#controller, this.#index, this.#selection),
+    );
   }
 
   async #applyHistoryMutation(direction: 'undo' | 'redo'): Promise<void> {
-    await this.#runMutation(async () => {
+    await this.#runMutation(direction, async () => {
       const result = direction === 'undo' ? await this.#controller.undo() : await this.#controller.redo();
 
       if ('noop' in result && result.noop) {
@@ -300,19 +340,35 @@ export class V2EditingSession {
     });
   }
 
-  async #runMutation(action: () => Promise<V2PendingSelection | null>): Promise<void> {
+  async #runMutation(
+    mutationKind: V2EditingMutationKind,
+    action: () => Promise<V2PendingSelection | null>,
+  ): Promise<void> {
     if (this.#isMutating) {
       return;
     }
 
     this.#isMutating = true;
+    const anchorParagraphSourceRef = selectionAnchorParagraphSourceRef(this.#selection);
 
     try {
       const pendingSelection = await action();
       if (pendingSelection) {
         this.#pendingSelection = pendingSelection;
+      }
+
+      if (this.#refreshView) {
+        await this.#refreshView({
+          repaint: true,
+          pendingSelection,
+          anchorParagraphSourceRef,
+          mutationKind,
+        });
+        this.refresh();
+      } else if (pendingSelection) {
         this.#applyOptimisticSelection(pendingSelection);
       }
+
       this.#hiddenInputHost.reset();
       this.#hiddenInputHost.focus();
     } finally {
@@ -362,7 +418,7 @@ export class V2EditingSession {
       return;
     }
 
-    const caretRect = computeCaretRect(this.#container, position);
+    const caretRect = this.#domContext.computeCaretRect(position);
     if (!caretRect) {
       return;
     }
@@ -372,8 +428,7 @@ export class V2EditingSession {
     const verticalStep = Math.max(14, caretRect.height * 1.4);
     const targetY = direction === 'up' ? caretRect.top - verticalStep : caretRect.top + verticalStep;
 
-    const nextPosition = resolveTextPositionFromClientPoint(
-      this.#container,
+    const nextPosition = this.#domContext.resolveTextPositionFromClientPoint(
       this.#index,
       containerRect.left + targetX,
       containerRect.top + targetY,
@@ -485,4 +540,12 @@ function normalizeInsertedText(value: string): string | null {
   }
 
   return normalized;
+}
+
+function selectionAnchorParagraphSourceRef(selection: V2ResolvedSelection): SourceRef | null {
+  if (selection.kind === 'none') {
+    return null;
+  }
+
+  return selection.anchor.paragraphSourceRef;
 }

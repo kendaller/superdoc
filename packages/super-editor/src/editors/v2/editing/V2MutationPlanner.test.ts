@@ -85,6 +85,37 @@ describe('V2MutationPlanner', () => {
       planParagraphTextEditForParagraph(paragraph, 'Topic\t12', 'Topic 12');
     }).toThrow(/protected inline content/);
   });
+
+  it('plans insertion into empty paragraphs through a zero-length mutable segment', () => {
+    const paragraph = createParagraph({
+      text: '',
+      segments: [
+        createSegment({
+          runId: 'run-empty',
+          segmentId: 'seg-empty',
+          text: '',
+          paragraphStart: 0,
+          paragraphEnd: 0,
+          runTextStart: 0,
+          runTextEnd: 0,
+        }),
+      ],
+    });
+
+    const plannedEdit = planParagraphTextEditForParagraph(paragraph, '', 'Hello');
+
+    expect(plannedEdit).not.toBeNull();
+    expect(plannedEdit?.operations).toHaveLength(1);
+    expect(plannedEdit?.operations[0]).toMatchObject({
+      kind: 'insertText',
+      target: { id: 'run-empty' },
+      text: 'Hello',
+      position: {
+        segmentIndex: 0,
+        charOffset: 0,
+      },
+    });
+  });
 });
 
 function createParagraph(

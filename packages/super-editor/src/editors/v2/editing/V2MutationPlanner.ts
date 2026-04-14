@@ -57,6 +57,31 @@ export function planParagraphTextEditForParagraph(
   originalText: string,
   editedText: string,
 ): PlannedParagraphTextEdit | null {
+  return planParagraphTextEditForParagraphWithOperationFactory(
+    paragraph,
+    originalText,
+    editedText,
+    createInsertTextOperation,
+  );
+}
+
+export function planParagraphTextEditForLiveParagraph(
+  controller: V2EditingController,
+  paragraph: V2EditableParagraph,
+  originalText: string,
+  editedText: string,
+): PlannedParagraphTextEdit | null {
+  return planParagraphTextEditForParagraphWithOperationFactory(paragraph, originalText, editedText, (step) =>
+    createResolvedInsertTextOperation(controller, step),
+  );
+}
+
+function planParagraphTextEditForParagraphWithOperationFactory(
+  paragraph: V2EditableParagraph,
+  originalText: string,
+  editedText: string,
+  createOperation: (step: InsertTextStep) => SemanticOperation,
+): PlannedParagraphTextEdit | null {
   if (originalText === editedText) {
     return null;
   }
@@ -66,7 +91,13 @@ export function planParagraphTextEditForParagraph(
   const insertedText = editedText.slice(prefixLength, editedText.length - suffixLength);
   assertSupportedInsertedText(insertedText);
 
-  return planReplaceWithinParagraph(paragraph, prefixLength, prefixLength + deleteLength, insertedText);
+  return planReplaceWithinParagraph(
+    paragraph,
+    prefixLength,
+    prefixLength + deleteLength,
+    insertedText,
+    createOperation,
+  );
 }
 
 export async function applyParagraphTextEdit(
@@ -437,6 +468,7 @@ function planReplaceWithinParagraph(
   startOffset: number,
   endOffset: number,
   text: string,
+  createOperation: (step: InsertTextStep) => SemanticOperation = createInsertTextOperation,
 ): PlannedParagraphTextEdit {
   const normalizedStart = Math.max(0, Math.min(startOffset, paragraph.text.length));
   const normalizedEnd = Math.max(normalizedStart, Math.min(endOffset, paragraph.text.length));
@@ -445,7 +477,7 @@ function planReplaceWithinParagraph(
     const insertionTarget = requireMutableInsertionTarget(paragraph, normalizedStart);
     return {
       operations: [
-        createInsertTextOperation({
+        createOperation({
           type: 'insertText',
           runRefId: insertionTarget.segment.runRef.id,
           runSourceRef: insertionTarget.segment.runSourceRef,
@@ -480,7 +512,7 @@ function planReplaceWithinParagraph(
   assertSegmentsAreMutable(affectedSegments, paragraph);
   const steps = buildReplaceSteps(affectedSegments, normalizedStart, normalizedEnd, text);
   return {
-    operations: steps.map((step) => createInsertTextOperation(step)),
+    operations: steps.map((step) => createOperation(step)),
     pendingSelection: {
       kind: 'caret',
       paragraphSourceRef: paragraph.paragraphSourceRef,
@@ -575,16 +607,16 @@ function createInsertTextOperation(step: InsertTextStep): SemanticOperation {
 }
 
 function createResolvedInsertTextOperation(controller: V2EditingController, step: InsertTextStep): SemanticOperation {
-  const runEntity = controller.semanticModel?.entityBySourceRef(step.runSourceRef);
-  if (!runEntity || runEntity.kind !== 'run') {
-    throw new Error(`Unable to resolve live run for ${step.runSourceRef.nodeId}`);
+  const targetEntity = controller.semanticModel?.entityBySourceRef(step.runSourceRef);
+  if (!targetEntity || (targetEntity.kind !== 'run' && targetEntity.kind !== 'paragraph')) {
+    throw new Error(`Unable to resolve live text target for ${step.runSourceRef.nodeId}`);
   }
 
   return {
     id: nextOperationId('insertText'),
     label: step.deleteLength > 0 ? 'Replace text' : 'Insert text',
     kind: 'insertText',
-    target: runEntity.ref,
+    target: targetEntity.ref,
     text: step.text,
     ...(step.deleteLength > 0 ? { deleteLength: step.deleteLength } : {}),
     position: {

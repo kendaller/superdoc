@@ -4,8 +4,9 @@ import {
   makeStableBlockId,
   sourceRefToSourceAnchor,
   type EntityRef,
+  type InlineSegment,
   type SemanticModel,
-  type SourceRef, InlineSegment 
+  type SourceRef,
 } from '@superdoc/v2-model';
 
 export type V2EditableSegmentKind =
@@ -48,6 +49,18 @@ export type V2EditableDocumentSnapshot = {
   readonly paragraphsByBlockId: ReadonlyMap<string, V2EditableParagraph>;
   readonly orderedParagraphs: readonly V2EditableParagraph[];
 };
+
+export const EMPTY_EDITABLE_TEXT_PLACEHOLDER = '\u200B';
+
+type ParagraphInteractionRewriteResult =
+  | {
+      ok: true;
+      runs: ParagraphBlock['runs'];
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
 
 export function buildEditableDocumentSnapshot(
   model: SemanticModel,
@@ -162,12 +175,23 @@ export function applyEditableInteractionDataToParagraphBlock(
     return false;
   }
 
-  const rewrittenRuns = rewriteParagraphRunsForEditing(block, paragraph);
-  if (!rewrittenRuns) {
+  const rewriteResult = prepareParagraphInteractionRewrite(block, paragraph);
+  if (!rewriteResult.ok) {
+    console.debug('[V2EditableDocumentSnapshot] Paragraph interaction rewrite skipped', {
+      blockId: block.id,
+      paragraphSourceNodeId: paragraph.paragraphSourceRef.nodeId,
+      reason: rewriteResult.reason,
+      paragraphTextPreview: paragraph.text.slice(0, 80),
+      renderedTextPreview: block.runs
+        .filter(isEditableTextCarrierRun)
+        .map((run) => run.text)
+        .join('')
+        .slice(0, 80),
+    });
     return false;
   }
 
-  block.runs = rewrittenRuns;
+  block.runs = rewriteResult.runs;
   return true;
 }
 
@@ -250,6 +274,7 @@ function describeParagraph(model: SemanticModel, blockId: string, paragraphRef: 
   }
 
   const segments: V2EditableTextSegment[] = [];
+  let emptyInsertionSegment: V2EditableTextSegment | null = null;
   let paragraphOffset = 0;
   let unsupportedReason: string | undefined;
 
@@ -283,6 +308,9 @@ function describeParagraph(model: SemanticModel, blockId: string, paragraphRef: 
       }
 
       if (editableSegment.segment.text.length === 0) {
+        if (editableSegment.segment.isMutableText && !emptyInsertionSegment) {
+          emptyInsertionSegment = editableSegment.segment;
+        }
         return;
       }
 
@@ -292,10 +320,32 @@ function describeParagraph(model: SemanticModel, blockId: string, paragraphRef: 
     });
   });
 
+  const resolvedSegments = segments.length > 0 ? segments : emptyInsertionSegment ? [emptyInsertionSegment] : [];
+  const runlessInsertionSegments =
+    resolvedSegments.length === 0 && runs.length === 0 ? [createRunlessParagraphSegment(paragraph)] : [];
+  const finalSegments = resolvedSegments.length > 0 ? resolvedSegments : runlessInsertionSegments;
   const text = segments.map((segment) => segment.text).join('');
   const resolvedUnsupportedReason =
-    unsupportedReason ?? (segments.length === 0 ? 'Paragraph has no visible editable segments' : undefined);
-  const supported = !resolvedUnsupportedReason && segments.length > 0;
+    unsupportedReason ?? (finalSegments.length === 0 ? 'Paragraph has no visible editable segments' : undefined);
+  const supported = !resolvedUnsupportedReason && finalSegments.length > 0;
+
+  if (resolvedUnsupportedReason === 'Paragraph has no visible editable segments') {
+    console.debug('[V2EditableDocumentSnapshot] Unsupported empty-looking paragraph', {
+      blockId,
+      paragraphSourceNodeId: paragraphSourceRef.nodeId,
+      runCount: runs.length,
+      runSourceNodeIds: runs.map((run) => run.sourceRefs[0]?.nodeId ?? null),
+      segmentKindsByRun: runs.map((run) => ({
+        runSourceNodeId: run.sourceRefs[0]?.nodeId ?? null,
+        segmentKinds: model.segments(run.ref).map((segment) => segment.segmentKind),
+        segmentTexts: model
+          .segments(run.ref)
+          .map((segment) =>
+            segment.segmentKind === 'text' ? segment.text : segment.segmentKind === 'symbol' ? segment.char : null,
+          ),
+      })),
+    });
+  }
 
   return {
     blockId,
@@ -303,9 +353,43 @@ function describeParagraph(model: SemanticModel, blockId: string, paragraphRef: 
     paragraphRef,
     paragraphSourceRef,
     text,
-    segments,
+    segments: finalSegments,
     supported,
     ...(resolvedUnsupportedReason ? { unsupportedReason: resolvedUnsupportedReason } : {}),
+  };
+}
+
+export function isEmptyEditableParagraph(paragraph: V2EditableParagraph): boolean {
+  return (
+    paragraph.supported &&
+    paragraph.text.length === 0 &&
+    paragraph.segments.length > 0 &&
+    paragraph.segments.every((segment) => segment.isMutableText && segment.text.length === 0)
+  );
+}
+
+function createRunlessParagraphSegment(paragraph: {
+  readonly ref: EntityRef;
+  readonly sourceRefs: readonly SourceRef[];
+}): V2EditableTextSegment {
+  const paragraphSourceRef = paragraph.sourceRefs[0];
+  if (!paragraphSourceRef) {
+    throw new Error(`Paragraph ${paragraph.ref.id} is missing a source ref`);
+  }
+
+  return {
+    segmentKind: 'text',
+    isMutableText: true,
+    runRef: paragraph.ref,
+    runSourceRef: paragraphSourceRef,
+    runIndex: 0,
+    segmentIndex: 0,
+    segmentId: `${paragraph.ref.id}:empty-paragraph`,
+    text: '',
+    paragraphStart: 0,
+    paragraphEnd: 0,
+    runTextStart: 0,
+    runTextEnd: 0,
   };
 }
 
@@ -468,19 +552,29 @@ function choosePreferredParagraph(
   return left;
 }
 
-function rewriteParagraphRunsForEditing(
+function prepareParagraphInteractionRewrite(
   block: ParagraphBlock,
   paragraph: V2EditableParagraph,
-): ParagraphBlock['runs'] | null {
+): ParagraphInteractionRewriteResult {
+  if (isEmptyEditableParagraph(paragraph)) {
+    return rewriteEmptyEditableParagraph(block, paragraph);
+  }
+
   const visibleRuns = block.runs.filter(isEditableTextCarrierRun);
   const projectedText = visibleRuns.map((run) => run.text).join('');
 
   if (projectedText !== paragraph.text) {
-    return null;
+    return {
+      ok: false,
+      reason: 'Rendered paragraph text does not match editable snapshot text',
+    };
   }
 
   if (paragraph.segments.length === 0) {
-    return block.runs;
+    return {
+      ok: true,
+      runs: block.runs,
+    };
   }
 
   const rewrittenRuns: ParagraphBlock['runs'] = [];
@@ -497,7 +591,10 @@ function rewriteParagraphRunsForEditing(
     while (runOffset < run.text.length) {
       const segment = paragraph.segments[segmentCursor];
       if (!segment) {
-        return null;
+        return {
+          ok: false,
+          reason: 'Rendered paragraph has more visible text than the editable snapshot',
+        };
       }
 
       const segmentOffset = paragraphOffset - segment.paragraphStart;
@@ -506,13 +603,19 @@ function rewriteParagraphRunsForEditing(
       const sliceLength = Math.min(remainingSegmentText, remainingRunText);
 
       if (sliceLength <= 0) {
-        return null;
+        return {
+          ok: false,
+          reason: 'Rendered paragraph slice length resolved to zero during editable rewrite',
+        };
       }
 
       const sliceText = run.text.slice(runOffset, runOffset + sliceLength);
       const expectedText = segment.text.slice(segmentOffset, segmentOffset + sliceLength);
       if (sliceText !== expectedText) {
-        return null;
+        return {
+          ok: false,
+          reason: 'Rendered paragraph slice text diverged from the editable snapshot',
+        };
       }
 
       rewrittenRuns.push(createEditableRunSlice(run, paragraph, segment, runOffset, paragraphOffset, sliceText));
@@ -527,10 +630,100 @@ function rewriteParagraphRunsForEditing(
   }
 
   if (paragraphOffset !== paragraph.text.length) {
-    return null;
+    return {
+      ok: false,
+      reason: 'Editable snapshot has more visible text than the rendered paragraph',
+    };
   }
 
-  return rewrittenRuns;
+  return {
+    ok: true,
+    runs: rewrittenRuns,
+  };
+}
+
+function rewriteEmptyEditableParagraph(
+  block: ParagraphBlock,
+  paragraph: V2EditableParagraph,
+): ParagraphInteractionRewriteResult {
+  const [emptySegment] = paragraph.segments;
+  if (!emptySegment) {
+    return {
+      ok: false,
+      reason: 'Empty editable paragraph is missing its insertion segment',
+    };
+  }
+
+  const visibleRuns = block.runs.filter(isEditableTextCarrierRun);
+  const projectedText = visibleRuns.map((run) => run.text).join('');
+  if (!isRenderedEmptyParagraphPlaceholder(projectedText)) {
+    return {
+      ok: false,
+      reason: 'Rendered paragraph is not an empty-placeholder paragraph',
+    };
+  }
+
+  const rewrittenRuns = block.runs.map((run) => {
+    if (!isEditableTextCarrierRun(run)) {
+      return run;
+    }
+
+    return createEmptyEditableRun(run, paragraph, emptySegment);
+  });
+
+  if (rewrittenRuns.some(isEditableTextCarrierRun)) {
+    return {
+      ok: true,
+      runs: rewrittenRuns,
+    };
+  }
+
+  return {
+    ok: true,
+    runs: [createSyntheticEmptyEditableRun(paragraph, emptySegment)],
+  };
+}
+
+function isRenderedEmptyParagraphPlaceholder(text: string): boolean {
+  return text.replace(/\u00A0/g, ' ').trim().length === 0;
+}
+
+function createEmptyEditableRun(
+  baseRun: EditableTextCarrierRun,
+  paragraph: V2EditableParagraph,
+  segment: V2EditableTextSegment,
+): EditableTextCarrierRun {
+  return {
+    ...baseRun,
+    text: EMPTY_EDITABLE_TEXT_PLACEHOLDER,
+    ...(baseRun.pmStart != null ? { pmEnd: baseRun.pmStart } : {}),
+    dataAttrs: {
+      ...(baseRun.dataAttrs ?? {}),
+      [DATA_ATTRS.SD_ENTITY_REF]: paragraph.paragraphRef.id,
+      [DATA_ATTRS.SD_STORY_ID]: paragraph.storyId,
+      [DATA_ATTRS.SD_RUN_REF]: segment.runRef.id,
+      [DATA_ATTRS.SD_SEGMENT_ID]: segment.segmentId,
+      [DATA_ATTRS.SD_SEGMENT_START]: '0',
+      [DATA_ATTRS.SD_SEGMENT_END]: '0',
+      [DATA_ATTRS.SD_INTERACTION_KIND]: 'empty-text',
+    },
+  } as EditableTextCarrierRun;
+}
+
+function createSyntheticEmptyEditableRun(
+  paragraph: V2EditableParagraph,
+  segment: V2EditableTextSegment,
+): EditableTextCarrierRun {
+  return createEmptyEditableRun(
+    {
+      kind: 'text',
+      text: '',
+      fontFamily: 'Arial',
+      fontSize: 12,
+    } as EditableTextCarrierRun,
+    paragraph,
+    segment,
+  );
 }
 
 function createEditableRunSlice(

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { V2StreamingPaginatedRenderHost } from './V2StreamingPaginatedRenderHost.js';
 import type { DocumentRuntime, RenderShellSnapshot, WindowedProjectionResult } from '@superdoc/v2-model';
+import { DATA_ATTRS } from '@superdoc/dom-contract';
 import type { HostState, StateChangeEvent, DegradedInfo } from './streaming-host-types.js';
 import type { V2EditableDocumentSnapshot, V2EditableParagraph } from '../editing/V2EditableDocumentSnapshot.js';
 import * as editingSnapshotModule from '../editing/V2EditableDocumentSnapshot.js';
@@ -106,6 +107,20 @@ function makeWindowResult(
   };
 }
 
+function createBlockSourceRefMap(
+  blockIds: readonly string[],
+): Map<string, { partUri: string; nodeId: string; sourceNodePath?: string }> {
+  return new Map(
+    blockIds.map((blockId) => [
+      blockId,
+      {
+        partUri: '/word/document.xml',
+        nodeId: `${blockId}-node`,
+      },
+    ]),
+  );
+}
+
 function configureDocumentWindow(
   runtime: DocumentRuntime,
   {
@@ -190,6 +205,8 @@ function createEditableSegment(
   },
 ): V2EditableParagraph['segments'][number] {
   return {
+    segmentKind: 'text',
+    isMutableText: true,
     runRef: { id: overrides.runId },
     runSourceRef: { partUri: '/word/document.xml', nodeId: `${overrides.runId}-node` },
     runIndex: 0,
@@ -419,6 +436,7 @@ describe('V2StreamingPaginatedRenderHost', () => {
 
       await host.load(new Uint8Array([1, 2, 3]));
       host.bindEditingController({
+        on: vi.fn(() => () => {}),
         semanticModel: {} as never,
       } as never);
 
@@ -431,15 +449,340 @@ describe('V2StreamingPaginatedRenderHost', () => {
         snapshotSource: 'sourceRefs',
         renderedParagraphCount: 1,
         renderedEditableParagraphCount: 1,
+        renderedEmptyEditableParagraphCount: 0,
         domSegmentCount: 1,
         snapshotParagraphCount: 1,
         supportedParagraphCount: 1,
+        emptyEditableParagraphCount: 0,
         sourceRefOnlySupportedParagraphCount: 1,
       });
       expect(hostElement.getAttribute('data-v2-editing-surface-ready')).toBe('true');
       expect(hostElement.getAttribute('data-v2-editing-bootstrap-phase')).toBe('ready');
       expect(hostElement.getAttribute('data-v2-editing-snapshot-source')).toBe('sourceRefs');
       expect(hostElement.getAttribute('data-v2-editing-dom-segment-count')).toBe('1');
+
+      host.destroy();
+    });
+
+    it('reconciles simple paragraph block text when optimistic editing updates the snapshot', async () => {
+      const runtime = createMockRuntime();
+      const editableBlock = {
+        id: 'block-1',
+        kind: 'paragraph' as const,
+        attrs: {},
+        runs: [
+          {
+            text: 'Hello world',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            pmStart: 0,
+            pmEnd: 11,
+          },
+        ],
+      };
+
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(1));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([editableBlock], 1, 1),
+        blockToSourceRef: new Map([['block-1', { partUri: '/word/document.xml', nodeId: 'block-1-node' }]]),
+      });
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([editableBlock], 1, 1),
+        blockToSourceRef: new Map([['block-1', { partUri: '/word/document.xml', nodeId: 'block-1-node' }]]),
+      });
+
+      const paragraph = createEditableParagraph({
+        blockId: 'block-1',
+        text: 'Hello world',
+        segments: [
+          createEditableSegment({
+            runId: 'run-1',
+            segmentId: 'segment-1',
+            text: 'Hello world',
+            paragraphStart: 0,
+            paragraphEnd: 11,
+          }),
+        ],
+      });
+
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotForBlockIds').mockReturnValue(
+        createEditableSnapshot([]),
+      );
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotFromSourceRefs').mockReturnValue(
+        createEditableSnapshot([paragraph]),
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 1,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+      host.bindEditingController({
+        on: vi.fn(() => () => {}),
+        semanticModel: {} as never,
+      } as never);
+
+      expect(host.patchEditableParagraphText('block-1', 'Hello brave world')).toBe(true);
+      expect(host.getLayoutSnapshot().blocks[0]).toMatchObject({
+        id: 'block-1',
+        runs: [
+          {
+            text: 'Hello brave world',
+          },
+        ],
+      });
+
+      host.destroy();
+    });
+
+    it('hydrates the first streamed window with editing metadata when the controller is ready during load', async () => {
+      const runtime = createMockRuntime();
+      const editableBlock = {
+        id: 'block-1',
+        kind: 'paragraph' as const,
+        attrs: {},
+        runs: [{ text: 'Hello world', fontFamily: 'Arial', fontSize: 16 }],
+      };
+
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(1));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([editableBlock], 1, 1),
+        blockToSourceRef: createBlockSourceRefMap(['block-1']),
+      });
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([editableBlock], 1, 1),
+        blockToSourceRef: createBlockSourceRefMap(['block-1']),
+      });
+
+      const paragraph = createEditableParagraph({
+        blockId: 'block-1',
+        text: 'Hello world',
+        segments: [
+          createEditableSegment({
+            runId: 'run-1',
+            segmentId: 'segment-1',
+            text: 'Hello world',
+            paragraphStart: 0,
+            paragraphEnd: 11,
+          }),
+        ],
+      });
+
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotForBlockIds').mockReturnValue(
+        createEditableSnapshot([]),
+      );
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotFromSourceRefs').mockReturnValue(
+        createEditableSnapshot([paragraph]),
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 1,
+      });
+
+      host.setInitialEditingControllerBootstrap(
+        Promise.resolve({
+          on: vi.fn(() => () => {}),
+          semanticModel: {} as never,
+        } as never),
+      );
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      expect(host.getLayoutSnapshot().blocks[0]).toMatchObject({
+        id: 'block-1',
+        runs: [
+          {
+            text: 'Hello world',
+            dataAttrs: expect.objectContaining({
+              [DATA_ATTRS.SD_SEGMENT_ID]: 'segment-1',
+              [DATA_ATTRS.SD_INTERACTION_KIND]: 'text',
+            }),
+          },
+        ],
+      });
+
+      host.destroy();
+    });
+
+    it('rebuilds multi-segment paragraph runs when committed inline edits refresh the snapshot', async () => {
+      const runtime = createMockRuntime();
+      const editableBlock = {
+        id: 'block-1',
+        kind: 'paragraph' as const,
+        attrs: {},
+        runs: [
+          {
+            text: 'Hello ',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            dataAttrs: {
+              [DATA_ATTRS.SD_RUN_REF]: 'run-1',
+            },
+          },
+          {
+            text: 'wrapped ',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            dataAttrs: {
+              [DATA_ATTRS.SD_RUN_REF]: 'run-2',
+            },
+          },
+          {
+            text: 'world',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            dataAttrs: {
+              [DATA_ATTRS.SD_RUN_REF]: 'run-3',
+            },
+          },
+        ],
+      };
+
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(1));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([editableBlock], 1, 1),
+        blockToSourceRef: new Map([['block-1', { partUri: '/word/document.xml', nodeId: 'block-1-node' }]]),
+      });
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([editableBlock], 1, 1),
+        blockToSourceRef: new Map([['block-1', { partUri: '/word/document.xml', nodeId: 'block-1-node' }]]),
+      });
+
+      let currentSnapshot = createEditableSnapshot([
+        createEditableParagraph({
+          blockId: 'block-1',
+          text: 'Hello wrapped world',
+          segments: [
+            {
+              ...createEditableSegment({
+                runId: 'run-1',
+                segmentId: 'segment-1',
+                text: 'Hello ',
+                paragraphStart: 0,
+                paragraphEnd: 6,
+              }),
+              runIndex: 0,
+              segmentIndex: 0,
+            },
+            {
+              ...createEditableSegment({
+                runId: 'run-2',
+                segmentId: 'segment-2',
+                text: 'wrapped ',
+                paragraphStart: 6,
+                paragraphEnd: 14,
+              }),
+              runIndex: 1,
+              segmentIndex: 1,
+            },
+            {
+              ...createEditableSegment({
+                runId: 'run-3',
+                segmentId: 'segment-3',
+                text: 'world',
+                paragraphStart: 14,
+                paragraphEnd: 19,
+              }),
+              runIndex: 2,
+              segmentIndex: 2,
+            },
+          ],
+        }),
+      ]);
+
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotForBlockIds').mockReturnValue(
+        createEditableSnapshot([]),
+      );
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotFromSourceRefs').mockImplementation(
+        () => currentSnapshot,
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 1,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+      host.bindEditingController({
+        on: vi.fn(() => () => {}),
+        semanticModel: {} as never,
+      } as never);
+
+      currentSnapshot = createEditableSnapshot([
+        createEditableParagraph({
+          blockId: 'block-1',
+          text: 'Hello wrapped Qworld',
+          segments: [
+            {
+              ...createEditableSegment({
+                runId: 'run-1',
+                segmentId: 'segment-1',
+                text: 'Hello ',
+                paragraphStart: 0,
+                paragraphEnd: 6,
+              }),
+              runIndex: 0,
+              segmentIndex: 0,
+            },
+            {
+              ...createEditableSegment({
+                runId: 'run-2',
+                segmentId: 'segment-2',
+                text: 'wrapped ',
+                paragraphStart: 6,
+                paragraphEnd: 14,
+              }),
+              runIndex: 1,
+              segmentIndex: 1,
+            },
+            {
+              ...createEditableSegment({
+                runId: 'run-3',
+                segmentId: 'segment-3',
+                text: 'Qworld',
+                paragraphStart: 14,
+                paragraphEnd: 20,
+              }),
+              runIndex: 2,
+              segmentIndex: 2,
+            },
+          ],
+        }),
+      ]);
+
+      await host.refreshEditingSnapshotView({ repaint: false, mutationKind: 'replaceText' });
+
+      expect(host.getLayoutSnapshot().blocks[0]).toMatchObject({
+        id: 'block-1',
+        runs: [
+          {
+            text: 'Hello ',
+            dataAttrs: expect.objectContaining({
+              [DATA_ATTRS.SD_SEGMENT_ID]: 'segment-1',
+              [DATA_ATTRS.SD_RUN_REF]: 'run-1',
+            }),
+          },
+          {
+            text: 'wrapped ',
+            dataAttrs: expect.objectContaining({
+              [DATA_ATTRS.SD_SEGMENT_ID]: 'segment-2',
+              [DATA_ATTRS.SD_RUN_REF]: 'run-2',
+            }),
+          },
+          {
+            text: 'Qworld',
+            dataAttrs: expect.objectContaining({
+              [DATA_ATTRS.SD_SEGMENT_ID]: 'segment-3',
+              [DATA_ATTRS.SD_RUN_REF]: 'run-3',
+            }),
+          },
+        ],
+      });
 
       host.destroy();
     });
@@ -486,6 +829,7 @@ describe('V2StreamingPaginatedRenderHost', () => {
 
       await host.load(new Uint8Array([1, 2, 3]));
       host.bindEditingController({
+        on: vi.fn(() => () => {}),
         semanticModel: {} as never,
       } as never);
 
@@ -496,6 +840,8 @@ describe('V2StreamingPaginatedRenderHost', () => {
         bootstrapPhase: 'blocked',
         bootstrapIssue: 'Rendered supported paragraphs are missing inline segment anchors',
         renderedEditableParagraphCount: 0,
+        renderedEmptyEditableParagraphCount: 0,
+        emptyEditableParagraphCount: 0,
         paragraphsWithoutDomSegmentsCount: 1,
       });
       expect(hostElement.getAttribute('data-v2-editing-bootstrap-phase')).toBe('blocked');
@@ -503,6 +849,149 @@ describe('V2StreamingPaginatedRenderHost', () => {
         'Rendered supported paragraphs are missing inline segment anchors',
       );
       expect(hostElement.getAttribute('data-v2-editing-without-dom-segments-count')).toBe('1');
+
+      host.destroy();
+    });
+
+    it('hydrates appended streamed windows with editable segment metadata before paint', async () => {
+      const runtime = createMockRuntime();
+      configureDocumentWindow(runtime, {
+        totalBodyChildCount: 2,
+        firstWindowBlockIds: ['block-1'],
+        firstWindowNextBodyChildIndex: 1,
+      });
+
+      const block1 = {
+        id: 'block-1',
+        kind: 'paragraph' as const,
+        attrs: {},
+        runs: [{ text: 'First paragraph', fontFamily: 'Arial', fontSize: 12 }],
+      };
+      const block2 = {
+        id: 'block-2',
+        kind: 'paragraph' as const,
+        attrs: {},
+        runs: [{ text: 'Second paragraph', fontFamily: 'Arial', fontSize: 12 }],
+      };
+
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([block1], 1, 2),
+        blockToSourceRef: createBlockSourceRefMap(['block-1']),
+      });
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ...makeWindowResult([block1], 1, 2),
+        blockToSourceRef: createBlockSourceRefMap(['block-1']),
+      });
+
+      let resolveAppendWindow!: (value: WindowedProjectionResult) => void;
+      const appendWindowPromise = new Promise<WindowedProjectionResult>((resolve) => {
+        resolveAppendWindow = resolve;
+      });
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockImplementationOnce(() => appendWindowPromise);
+
+      const paragraphsByBlockId = new Map([
+        [
+          'block-1',
+          createEditableParagraph({
+            blockId: 'block-1',
+            text: 'First paragraph',
+            segments: [
+              createEditableSegment({
+                runId: 'run-1',
+                segmentId: 'segment-1',
+                text: 'First paragraph',
+                paragraphStart: 0,
+                paragraphEnd: 15,
+              }),
+            ],
+          }),
+        ],
+        [
+          'block-2',
+          createEditableParagraph({
+            blockId: 'block-2',
+            text: 'Second paragraph',
+            segments: [
+              createEditableSegment({
+                runId: 'run-2',
+                segmentId: 'segment-2',
+                text: 'Second paragraph',
+                paragraphStart: 0,
+                paragraphEnd: 16,
+              }),
+            ],
+          }),
+        ],
+      ]);
+
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotForBlockIds').mockImplementation(
+        (_model, blockIds) =>
+          createEditableSnapshot([...blockIds].flatMap((blockId) => paragraphsByBlockId.get(blockId) ?? [])),
+      );
+      vi.spyOn(editingSnapshotModule, 'buildEditableDocumentSnapshotFromSourceRefs').mockImplementation(
+        (_model, blockToSourceRef) =>
+          createEditableSnapshot(
+            [...blockToSourceRef.keys()].flatMap((blockId) => paragraphsByBlockId.get(blockId) ?? []),
+          ),
+      );
+
+      let latestBlocks: Array<typeof block1 | typeof block2> = [];
+      painter.setData.mockImplementation((blocks: typeof latestBlocks) => {
+        latestBlocks = blocks;
+      });
+      painter.paint.mockImplementation((_layout: unknown, hostElement: HTMLElement) => {
+        hostElement.replaceChildren(
+          ...latestBlocks.map((block) => {
+            const blockElement = document.createElement('div');
+            blockElement.setAttribute('data-block-id', block.id);
+            const line = document.createElement('div');
+            line.className = 'superdoc-line';
+
+            block.runs.forEach((run) => {
+              const span = document.createElement('span');
+              span.textContent = run.text;
+              if ('dataAttrs' in run && run.dataAttrs) {
+                Object.entries(run.dataAttrs).forEach(([name, value]) => span.setAttribute(name, value));
+              }
+              line.appendChild(span);
+            });
+
+            blockElement.appendChild(line);
+            return blockElement;
+          }),
+        );
+      });
+
+      const hostElement = document.createElement('div');
+      const host = new V2StreamingPaginatedRenderHost({
+        element: hostElement,
+        runtime,
+        windowSize: 1,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      host.bindEditingController({
+        on: vi.fn(() => () => {}),
+        semanticModel: {} as never,
+      } as never);
+
+      await host.prepareEditingSurface();
+
+      resolveAppendWindow({
+        ...makeWindowResult([block2], 2, 2),
+        blockToSourceRef: createBlockSourceRefMap(['block-2']),
+      });
+
+      await vi.waitFor(() => {
+        expect(host.getEditingSurfaceStatus()).toMatchObject({
+          ready: true,
+          renderedEditableParagraphCount: 2,
+          paragraphsWithoutDomSegmentsCount: 0,
+        });
+      });
+
+      expect(hostElement.querySelector('[data-block-id="block-2"] [data-sd-segment-id="segment-2"]')).not.toBeNull();
 
       host.destroy();
     });

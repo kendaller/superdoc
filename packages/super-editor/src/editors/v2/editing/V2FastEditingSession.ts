@@ -1,14 +1,15 @@
-import type { DocumentRuntime, SemanticOperation } from '@superdoc/v2-model';
+import type { SemanticOperation } from '@superdoc/v2-model';
 import { DATA_ATTRS } from '@superdoc/dom-contract';
 import type { V2EditingController } from '../runtime/V2EditingController.js';
 import { V2EditableIndex } from './V2EditableIndex.js';
 import {
   createOptimisticEditableParagraph,
+  describeEditableParagraphBySourceRef,
   type V2EditableDocumentSnapshot,
   type V2EditableParagraph,
 } from './V2EditableDocumentSnapshot.js';
 import { resolveParagraphOffsetFromClientPoint, resolveTextPositionFromClientPoint } from './V2EditingDom.js';
-import { planParagraphTextEditForParagraph } from './V2MutationPlanner.js';
+import { planParagraphTextEditForLiveParagraph } from './V2MutationPlanner.js';
 
 const PATCH_LAYER_CLASS = 'v2-fast-editing-session__layer';
 const PATCHED_BLOCK_ATTR = 'data-v2-fast-editing-patched';
@@ -17,16 +18,18 @@ const READY_ATTR = 'data-v2-fast-editing-ready';
 const EDITABLE_COUNT_ATTR = 'data-v2-fast-editable-count';
 const SUPPORTED_COUNT_ATTR = 'data-v2-fast-supported-count';
 const FLUSH_DEBOUNCE_MS = 140;
-const CONTROLLER_SYNC_IDLE_MS = 900;
 const STYLE_ID = 'v2-fast-editing-session-styles';
+
+type RefreshEditingSurfaceOptions = {
+  readonly repaint?: boolean;
+};
 
 type V2FastEditingSessionOptions = {
   readonly container: HTMLElement;
   readonly controller: V2EditingController;
-  readonly runtime: DocumentRuntime;
   readonly getSnapshot: () => V2EditableDocumentSnapshot;
   readonly patchParagraphText: (blockId: string, text: string) => boolean;
-  readonly refreshSnapshotFromController?: (() => void | Promise<void>) | null;
+  readonly refreshSnapshotFromController?: ((options?: RefreshEditingSurfaceOptions) => void | Promise<void>) | null;
 };
 
 type ParagraphLayerRecord = {
@@ -40,6 +43,7 @@ type ParagraphLayerRecord = {
   flushTimerId: number | null;
   flushInFlight: boolean;
   flushRequestedWhileBusy: boolean;
+  teardownRequestedOnBlur: boolean;
 };
 
 type ParagraphActivation = {
@@ -50,21 +54,18 @@ type ParagraphActivation = {
 export class V2FastEditingSession {
   readonly #container: HTMLElement;
   readonly #controller: V2EditingController;
-  readonly #runtime: DocumentRuntime;
   readonly #getSnapshot: () => V2EditableDocumentSnapshot;
   readonly #patchParagraphText: (blockId: string, text: string) => boolean;
-  readonly #refreshSnapshotFromController: (() => void | Promise<void>) | null;
+  readonly #refreshSnapshotFromController: ((options?: RefreshEditingSurfaceOptions) => void | Promise<void>) | null;
 
   #index: V2EditableIndex;
   #records = new Map<string, ParagraphLayerRecord>();
   #activeBlockId: string | null = null;
-  #controllerSyncTimerId: number | null = null;
-  #controllerSyncInFlight = false;
-  #controllerSyncRequestedWhileBusy = false;
   #isReady = false;
 
   readonly #handlePointerDown = (event: PointerEvent) => {
     if (!this.#isReady) {
+      console.debug('[V2FastEditingSession] Ignoring pointerdown while not ready');
       return;
     }
 
@@ -77,11 +78,13 @@ export class V2FastEditingSession {
     if (existingLayer) {
       const blockId = existingLayer.dataset.blockId;
       if (!blockId) {
+        console.debug('[V2FastEditingSession] Existing layer missing block id');
         return;
       }
 
       const record = this.#records.get(blockId);
       if (!record) {
+        console.debug('[V2FastEditingSession] Existing layer has no record', { blockId });
         return;
       }
 
@@ -92,32 +95,57 @@ export class V2FastEditingSession {
         event.clientY,
       );
       if (paragraphOffset == null) {
+        console.debug('[V2FastEditingSession] Existing layer click could not resolve paragraph offset', {
+          blockId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
         return;
       }
 
       event.preventDefault();
+      console.debug('[V2FastEditingSession] Re-activating existing layer', {
+        blockId,
+        paragraphOffset,
+      });
       this.#activateRecord(record, paragraphOffset);
       return;
     }
 
     const activation = this.#resolveActivation(target, event.clientX, event.clientY);
     if (!activation) {
+      console.debug('[V2FastEditingSession] Pointerdown did not resolve editable activation', {
+        targetTag: target?.tagName ?? null,
+        targetClass: target?.className ?? null,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      });
       return;
     }
 
     event.preventDefault();
     const record = this.#ensureRecord(activation.paragraph);
     if (!record) {
+      console.debug('[V2FastEditingSession] Activation resolved paragraph but no record could be mounted', {
+        blockId: activation.paragraph.blockId,
+        paragraphSourceNodeId: activation.paragraph.paragraphSourceRef.nodeId,
+      });
       return;
     }
 
+    console.debug('[V2FastEditingSession] Activating paragraph', {
+      blockId: activation.paragraph.blockId,
+      paragraphSourceNodeId: activation.paragraph.paragraphSourceRef.nodeId,
+      paragraphOffset: activation.paragraphOffset,
+      textLength: activation.paragraph.text.length,
+      segmentCount: activation.paragraph.segments.length,
+    });
     this.#activateRecord(record, activation.paragraphOffset);
   };
 
   constructor(options: V2FastEditingSessionOptions) {
     this.#container = options.container;
     this.#controller = options.controller;
-    this.#runtime = options.runtime;
     this.#getSnapshot = options.getSnapshot;
     this.#patchParagraphText = options.patchParagraphText;
     this.#refreshSnapshotFromController = options.refreshSnapshotFromController ?? null;
@@ -127,17 +155,27 @@ export class V2FastEditingSession {
 
   attach(): void {
     this.#container.addEventListener('pointerdown', this.#handlePointerDown);
+    console.debug('[V2FastEditingSession] Attached', {
+      ready: this.#isReady,
+      snapshotParagraphCount: this.#index.snapshot.orderedParagraphs.length,
+    });
     this.refresh();
   }
 
   setReady(isReady: boolean): void {
     this.#isReady = isReady;
     this.#container.setAttribute(READY_ATTR, String(isReady));
+    console.debug('[V2FastEditingSession] Ready state changed', { isReady });
   }
 
   refresh(): void {
     this.#index = new V2EditableIndex(this.#getSnapshot());
     this.#updateDebugCounts();
+    console.debug('[V2FastEditingSession] Refreshed snapshot', {
+      paragraphCount: this.#index.snapshot.orderedParagraphs.length,
+      supportedParagraphCount: this.#index.snapshot.orderedParagraphs.filter((paragraph) => paragraph.supported).length,
+      mountedRecordCount: this.#records.size,
+    });
 
     for (const [blockId, record] of this.#records) {
       const paragraph = this.#index.paragraphByBlockId(blockId);
@@ -162,10 +200,19 @@ export class V2FastEditingSession {
   #updateDebugCounts(): void {
     const paragraphs = this.#index.snapshot.orderedParagraphs;
     const supportedCount = paragraphs.filter((paragraph) => paragraph.supported).length;
-    const fastEditableCount = paragraphs.filter((paragraph) => supportsFastParagraphEditing(paragraph)).length;
+    const fastEditableCount = paragraphs.filter((paragraph) => this.#isParagraphActivatable(paragraph)).length;
 
     this.#container.setAttribute(EDITABLE_COUNT_ATTR, String(fastEditableCount));
     this.#container.setAttribute(SUPPORTED_COUNT_ATTR, String(supportedCount));
+  }
+
+  #isParagraphActivatable(paragraph: V2EditableParagraph): boolean {
+    if (!supportsFastParagraphEditing(paragraph)) {
+      return false;
+    }
+
+    const blockElement = this.#findBlockElement(paragraph.blockId);
+    return blockElement != null && blockHasInlineSegmentAnchors(blockElement);
   }
 
   destroy(): void {
@@ -173,10 +220,6 @@ export class V2FastEditingSession {
     this.#container.removeAttribute(READY_ATTR);
     this.#container.removeAttribute(EDITABLE_COUNT_ATTR);
     this.#container.removeAttribute(SUPPORTED_COUNT_ATTR);
-    if (this.#controllerSyncTimerId != null) {
-      window.clearTimeout(this.#controllerSyncTimerId);
-      this.#controllerSyncTimerId = null;
-    }
 
     for (const record of this.#records.values()) {
       this.#destroyRecord(record);
@@ -191,6 +234,12 @@ export class V2FastEditingSession {
     if (resolvedPosition) {
       const paragraph = this.#index.paragraphByBlockId(resolvedPosition.blockId);
       if (supportsFastParagraphEditing(paragraph)) {
+        console.debug('[V2FastEditingSession] Resolved activation from segment hit-test', {
+          blockId: resolvedPosition.blockId,
+          paragraphOffset: resolvedPosition.paragraphOffset,
+          runRefId: resolvedPosition.runRef.id,
+          segmentId: resolvedPosition.segmentId,
+        });
         return {
           paragraph,
           paragraphOffset: resolvedPosition.paragraphOffset,
@@ -201,20 +250,39 @@ export class V2FastEditingSession {
     const blockElement = target?.closest<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}]`) ?? null;
     const blockId = blockElement?.getAttribute(DATA_ATTRS.BLOCK_ID);
     if (!blockElement || !blockId) {
+      console.debug('[V2FastEditingSession] Activation miss: no block element under target', {
+        targetTag: target?.tagName ?? null,
+        targetClass: target?.className ?? null,
+      });
       return null;
     }
 
     const paragraph = this.#index.paragraphByBlockId(blockId);
     if (!supportsFastParagraphEditing(paragraph)) {
+      console.debug('[V2FastEditingSession] Activation miss: paragraph is not fast-editable', {
+        blockId,
+        paragraphSupported: paragraph?.supported ?? false,
+        segmentCount: paragraph?.segments.length ?? 0,
+        unsupportedReason: paragraph?.unsupportedReason ?? null,
+      });
       return null;
     }
 
     if (!blockHasInlineSegmentAnchors(blockElement)) {
+      console.debug('[V2FastEditingSession] Activation miss: paragraph has no inline segment anchors in DOM', {
+        blockId,
+        paragraphSourceNodeId: paragraph.paragraphSourceRef.nodeId,
+      });
       return null;
     }
 
     const paragraphOffset = resolveParagraphOffsetFromClientPoint(this.#container, paragraph, clientX, clientY);
     if (paragraphOffset == null) {
+      console.debug('[V2FastEditingSession] Activation miss: could not resolve caret offset from client point', {
+        blockId,
+        clientX,
+        clientY,
+      });
       return null;
     }
 
@@ -228,11 +296,17 @@ export class V2FastEditingSession {
     const existingRecord = this.#records.get(paragraph.blockId);
     if (existingRecord) {
       existingRecord.paragraph = paragraph;
+      console.debug('[V2FastEditingSession] Reusing existing record', {
+        blockId: paragraph.blockId,
+      });
       return existingRecord;
     }
 
     const blockElement = this.#findBlockElement(paragraph.blockId);
     if (!blockElement) {
+      console.debug('[V2FastEditingSession] Cannot create record because block element is missing', {
+        blockId: paragraph.blockId,
+      });
       return null;
     }
 
@@ -248,6 +322,7 @@ export class V2FastEditingSession {
       flushTimerId: null,
       flushInFlight: false,
       flushRequestedWhileBusy: false,
+      teardownRequestedOnBlur: false,
     };
 
     layer.addEventListener('input', () => {
@@ -262,7 +337,7 @@ export class V2FastEditingSession {
     });
 
     layer.addEventListener('blur', () => {
-      this.#scheduleControllerSync();
+      this.#requestRecordTeardown(record);
     });
 
     layer.addEventListener('keydown', (event) => {
@@ -273,6 +348,12 @@ export class V2FastEditingSession {
 
     this.#records.set(paragraph.blockId, record);
     this.#updateRecordLayout(record);
+    console.debug('[V2FastEditingSession] Created record', {
+      blockId: paragraph.blockId,
+      paragraphSourceNodeId: paragraph.paragraphSourceRef.nodeId,
+      textLength: paragraph.text.length,
+      segmentCount: paragraph.segments.length,
+    });
     return record;
   }
 
@@ -281,12 +362,18 @@ export class V2FastEditingSession {
     this.#updateRecordLayout(record);
     record.element.focus({ preventScroll: true });
     setSelectionOffsets(record.element, paragraphOffset);
+    console.debug('[V2FastEditingSession] Record activated', {
+      blockId: record.blockId,
+      paragraphOffset,
+      activeElementTag: record.element.ownerDocument.activeElement?.tagName ?? null,
+      activeElementClass: record.element.ownerDocument.activeElement?.className ?? null,
+    });
   }
 
-  #setActiveBlock(blockId: string): void {
+  #setActiveBlock(blockId: string | null): void {
     this.#activeBlockId = blockId;
     for (const record of this.#records.values()) {
-      const isActive = record.blockId === blockId;
+      const isActive = blockId != null && record.blockId === blockId;
       record.element.contentEditable = isActive ? 'plaintext-only' : 'false';
       record.element.setAttribute(ACTIVE_LAYER_ATTR, isActive ? 'true' : 'false');
     }
@@ -316,30 +403,64 @@ export class V2FastEditingSession {
     record.flushInFlight = true;
 
     try {
-      const plannedEdit = planParagraphTextEditForParagraph(record.paragraph, record.committedText, record.currentText);
+      const plannedEdit = planParagraphTextEditForLiveParagraph(
+        this.#controller,
+        record.paragraph,
+        record.committedText,
+        record.currentText,
+      );
+      console.debug('[V2FastEditingSession] Planned flush', {
+        blockId: record.blockId,
+        paragraphSourceNodeId: record.paragraph.paragraphSourceRef.nodeId,
+        currentLength: record.currentText.length,
+        committedLength: record.committedText.length,
+        operations:
+          plannedEdit?.operations.map((operation) => ({
+            kind: operation.kind,
+            target: operation.target,
+            position: 'position' in operation ? operation.position : undefined,
+            textLength: 'text' in operation && typeof operation.text === 'string' ? operation.text.length : undefined,
+            deleteLength: 'deleteLength' in operation ? operation.deleteLength : undefined,
+          })) ?? [],
+      });
       if (!plannedEdit || plannedEdit.operations.length === 0) {
         record.committedText = record.currentText;
         record.paragraph = createOptimisticEditableParagraph(record.paragraph, record.committedText);
         return;
       }
 
-      await this.#applyRuntimeOperations(plannedEdit.operations);
+      await this.#applyControllerOperations(plannedEdit.operations);
 
       record.committedText = record.currentText;
-      if (requiresImmediateControllerResync(record.paragraph)) {
-        await this.#syncControllerFromRuntime();
-      } else {
-        record.paragraph = createOptimisticEditableParagraph(record.paragraph, record.committedText);
-        this.#scheduleControllerSync();
-      }
+      const nextParagraph = this.#resolveLiveParagraph(record.paragraph);
+      record.paragraph = nextParagraph ?? createOptimisticEditableParagraph(record.paragraph, record.committedText);
+
+      await this.#refreshSnapshotFromController?.({ repaint: true });
+      this.refresh();
+      this.#completeDeferredTeardown(record);
     } catch (error) {
-      console.error('[V2FastEditingSession] Runtime flush failed', error);
+      console.error('[V2FastEditingSession] Mutation flush failed', {
+        error,
+        blockId: record.blockId,
+        paragraphSourceNodeId: record.paragraph.paragraphSourceRef.nodeId,
+        paragraphRefId: record.paragraph.paragraphRef.id,
+        segmentRefs: record.paragraph.segments.map((segment) => ({
+          runRefId: segment.runRef.id,
+          runSourceNodeId: segment.runSourceRef.nodeId,
+          segmentId: segment.segmentId,
+          segmentIndex: segment.segmentIndex,
+          paragraphStart: segment.paragraphStart,
+          paragraphEnd: segment.paragraphEnd,
+          textPreview: segment.text.slice(0, 40),
+        })),
+      });
       record.currentText = record.committedText;
       this.#syncRecordText(record, record.committedText);
       this.#patchParagraphText(record.blockId, record.committedText);
       this.#updateRecordLayout(record);
     } finally {
       record.flushInFlight = false;
+      this.#completeDeferredTeardown(record);
       if (record.flushRequestedWhileBusy) {
         record.flushRequestedWhileBusy = false;
         void this.#flushRecord(record);
@@ -347,52 +468,22 @@ export class V2FastEditingSession {
     }
   }
 
-  async #applyRuntimeOperations(operations: readonly SemanticOperation[]): Promise<void> {
-    if (!this.#runtime.applyOperation) {
-      throw new Error('Fast editing requires runtime.applyOperation() support');
-    }
-
+  async #applyControllerOperations(operations: readonly SemanticOperation[]): Promise<void> {
     for (const operation of operations) {
-      const result = await this.#runtime.applyOperation(operation);
+      const result = await this.#controller.applyOperation(operation);
       if (!result.ok) {
-        throw new Error(result.error ?? `Runtime mutation failed for ${operation.kind}`);
+        throw new Error(result.error ?? `Controller mutation failed for ${operation.kind}`);
       }
     }
   }
 
-  #scheduleControllerSync(): void {
-    if (this.#controllerSyncTimerId != null) {
-      window.clearTimeout(this.#controllerSyncTimerId);
+  #resolveLiveParagraph(paragraph: V2EditableParagraph): V2EditableParagraph | null {
+    const model = this.#controller.semanticModel;
+    if (!model) {
+      return null;
     }
 
-    this.#controllerSyncTimerId = window.setTimeout(() => {
-      this.#controllerSyncTimerId = null;
-      void this.#syncControllerFromRuntime();
-    }, CONTROLLER_SYNC_IDLE_MS);
-  }
-
-  async #syncControllerFromRuntime(): Promise<void> {
-    if (this.#controllerSyncInFlight) {
-      this.#controllerSyncRequestedWhileBusy = true;
-      return;
-    }
-
-    this.#controllerSyncInFlight = true;
-
-    try {
-      const bytes = await this.#runtime.save();
-      await this.#controller.initialize(bytes);
-      await this.#refreshSnapshotFromController?.();
-      this.refresh();
-    } catch (error) {
-      console.error('[V2FastEditingSession] Controller resync failed', error);
-    } finally {
-      this.#controllerSyncInFlight = false;
-      if (this.#controllerSyncRequestedWhileBusy) {
-        this.#controllerSyncRequestedWhileBusy = false;
-        this.#scheduleControllerSync();
-      }
-    }
+    return describeEditableParagraphBySourceRef(model, paragraph.paragraphSourceRef, paragraph.blockId);
   }
 
   #destroyRecord(record: ParagraphLayerRecord): void {
@@ -407,6 +498,27 @@ export class V2FastEditingSession {
     }
 
     record.element.remove();
+  }
+
+  #requestRecordTeardown(record: ParagraphLayerRecord): void {
+    record.teardownRequestedOnBlur = true;
+    if (this.#activeBlockId === record.blockId) {
+      this.#setActiveBlock(null);
+    }
+    this.#completeDeferredTeardown(record);
+  }
+
+  #completeDeferredTeardown(record: ParagraphLayerRecord): void {
+    if (!record.teardownRequestedOnBlur) {
+      return;
+    }
+
+    if (record.flushInFlight || record.currentText !== record.committedText) {
+      return;
+    }
+
+    this.#records.delete(record.blockId);
+    this.#destroyRecord(record);
   }
 
   #remountRecord(record: ParagraphLayerRecord): void {
@@ -544,14 +656,6 @@ function supportsFastParagraphEditing(paragraph: V2EditableParagraph | undefined
   }
 
   return paragraph.segments.some((segment) => segment.isMutableText);
-}
-
-function requiresImmediateControllerResync(paragraph: V2EditableParagraph): boolean {
-  const mutableRunIds = new Set(
-    paragraph.segments.filter((segment) => segment.isMutableText).map((segment) => segment.runRef.id),
-  );
-  const hasProtectedInlineContent = paragraph.segments.some((segment) => !segment.isMutableText);
-  return hasProtectedInlineContent || mutableRunIds.size > 1;
 }
 
 function shouldBlockStructuralEdit(event: KeyboardEvent): boolean {

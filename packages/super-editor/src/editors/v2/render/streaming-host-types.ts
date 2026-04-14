@@ -165,9 +165,11 @@ export type V2EditingSurfaceStatus = {
   snapshotSource: V2EditingSnapshotSource;
   renderedParagraphCount: number;
   renderedEditableParagraphCount: number;
+  renderedEmptyEditableParagraphCount: number;
   domSegmentCount: number;
   snapshotParagraphCount: number;
   supportedParagraphCount: number;
+  emptyEditableParagraphCount: number;
   blockIdParagraphCount: number;
   blockIdSupportedParagraphCount: number;
   sourceRefParagraphCount: number;

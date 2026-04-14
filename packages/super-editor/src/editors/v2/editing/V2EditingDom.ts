@@ -15,48 +15,240 @@ type DomEndpoint = {
   readonly offset: number;
 };
 
+type SegmentFragment = {
+  readonly element: HTMLElement;
+  readonly textNode: Text | null;
+  readonly runRefId: string | null;
+  readonly segmentId: string | null;
+  readonly start: number;
+  readonly end: number;
+};
+
+type ParagraphGeometry = {
+  readonly blockElement: HTMLElement;
+  readonly fragments: readonly SegmentFragment[];
+  characterBoxes: CharacterBox[] | null;
+};
+
+export class V2EditingDomContext {
+  readonly #container: HTMLElement;
+  readonly #paragraphGeometryByBlockId = new Map<string, ParagraphGeometry>();
+
+  constructor(container: HTMLElement) {
+    this.#container = container;
+  }
+
+  invalidate(): void {
+    this.#paragraphGeometryByBlockId.clear();
+  }
+
+  resolveTextPositionFromClientPoint(
+    index: V2EditableIndex,
+    clientX: number,
+    clientY: number,
+  ): V2ResolvedTextPosition | null {
+    const doc = this.#container.ownerDocument;
+    const domPoint = getDomPointFromClientPoint(doc, clientX, clientY);
+    if (domPoint) {
+      const segmentElement = findSegmentElement(domPoint.node);
+      if (segmentElement) {
+        const paragraph = resolveParagraphForElement(segmentElement, index);
+        if (!paragraph?.supported) {
+          return null;
+        }
+
+        const geometry = this.#geometryForParagraph(paragraph);
+        const fragment = geometry ? findFragmentForElement(geometry.fragments, segmentElement) : null;
+        const fragmentStart = fragment?.start ?? parseDatasetNumber(segmentElement, DATASET_KEYS.SD_SEGMENT_START);
+        const fragmentEnd = fragment?.end ?? parseDatasetNumber(segmentElement, DATASET_KEYS.SD_SEGMENT_END);
+        if (fragmentStart == null || fragmentEnd == null) {
+          return null;
+        }
+
+        const offsetWithinElement = clampOffset(
+          measureOffsetWithinElement(segmentElement, domPoint.node, domPoint.offset),
+          fragmentEnd - fragmentStart,
+        );
+
+        return index.resolveParagraphOffset(paragraph, fragmentStart + offsetWithinElement, 'forward');
+      }
+    }
+
+    const fallbackElement = doc.elementFromPoint(clientX, clientY);
+    if (!(fallbackElement instanceof HTMLElement)) {
+      return null;
+    }
+
+    const paragraph = resolveParagraphForElement(fallbackElement, index);
+    if (!paragraph?.supported) {
+      return null;
+    }
+
+    return this.resolveTextPositionWithinParagraph(index, paragraph, clientX, clientY);
+  }
+
+  resolveParagraphOffsetFromClientPoint(
+    paragraph: V2EditableParagraph,
+    clientX: number,
+    clientY: number,
+  ): number | null {
+    return this.resolveParagraphCaretTarget(paragraph, clientX, clientY)?.offset ?? null;
+  }
+
+  computeCaretRect(position: V2ResolvedTextPosition): DOMRect | null {
+    const endpoint = this.resolveDomEndpoint(position);
+    if (!endpoint) {
+      return null;
+    }
+
+    const doc = this.#container.ownerDocument;
+    const range = doc.createRange();
+    range.setStart(endpoint.textNode, endpoint.offset);
+    range.collapse(true);
+
+    const collapsedRect = range.getBoundingClientRect();
+    if (hasVisibleRect(collapsedRect)) {
+      return toLocalRect(collapsedRect, this.#container);
+    }
+
+    const textLength = endpoint.textNode.textContent?.length ?? 0;
+    if (endpoint.offset < textLength) {
+      range.setEnd(endpoint.textNode, endpoint.offset + 1);
+      const nextRect = range.getBoundingClientRect();
+      if (hasVisibleRect(nextRect)) {
+        return toLocalCaretRect(nextRect.left, nextRect.top, nextRect.height, this.#container);
+      }
+    }
+
+    if (endpoint.offset > 0) {
+      range.setStart(endpoint.textNode, endpoint.offset - 1);
+      range.setEnd(endpoint.textNode, endpoint.offset);
+      const previousRect = range.getBoundingClientRect();
+      if (hasVisibleRect(previousRect)) {
+        return toLocalCaretRect(previousRect.right, previousRect.top, previousRect.height, this.#container);
+      }
+    }
+
+    const elementRect = endpoint.element.getBoundingClientRect();
+    if (!hasVisibleRect(elementRect)) {
+      return null;
+    }
+
+    return toLocalCaretRect(elementRect.left, elementRect.top, elementRect.height, this.#container);
+  }
+
+  computeRangeRects(start: V2ResolvedTextPosition, end: V2ResolvedTextPosition): DOMRect[] {
+    const startEndpoint = this.resolveDomEndpoint(start);
+    const endEndpoint = this.resolveDomEndpoint(end);
+    if (!startEndpoint || !endEndpoint) {
+      return [];
+    }
+
+    const doc = this.#container.ownerDocument;
+    const range = doc.createRange();
+    range.setStart(startEndpoint.textNode, startEndpoint.offset);
+    range.setEnd(endEndpoint.textNode, endEndpoint.offset);
+
+    return Array.from(range.getClientRects())
+      .filter(hasVisibleRect)
+      .map((rect) => toLocalRect(rect, this.#container));
+  }
+
+  private resolveTextPositionWithinParagraph(
+    index: V2EditableIndex,
+    paragraph: V2EditableParagraph,
+    clientX: number,
+    clientY: number,
+  ): V2ResolvedTextPosition | null {
+    const caretTarget = this.resolveParagraphCaretTarget(paragraph, clientX, clientY);
+    if (!caretTarget) {
+      return null;
+    }
+
+    return index.resolveParagraphOffset(paragraph, caretTarget.offset, caretTarget.affinity);
+  }
+
+  private resolveParagraphCaretTarget(
+    paragraph: V2EditableParagraph,
+    clientX: number,
+    clientY: number,
+  ): { offset: number; affinity: 'backward' | 'forward' } | null {
+    const geometry = this.#geometryForParagraph(paragraph);
+    if (!geometry || geometry.fragments.length === 0) {
+      return null;
+    }
+
+    const characterBoxes = this.#characterBoxesForParagraph(geometry);
+    const characterTarget = resolveOffsetFromCharacterBoxes(characterBoxes, clientX, clientY);
+    if (characterTarget) {
+      return characterTarget;
+    }
+
+    return resolveNearestSegmentBoundary(geometry.fragments, paragraph.text.length, clientX, clientY);
+  }
+
+  private resolveDomEndpoint(position: V2ResolvedTextPosition): DomEndpoint | null {
+    const geometry = this.#geometryForBlockId(position.blockId);
+    if (!geometry) {
+      return null;
+    }
+
+    const fragment = chooseFragment(geometry.fragments, position);
+    const textNode = fragment?.textNode;
+    if (!fragment || !textNode) {
+      return null;
+    }
+
+    const localOffset = resolveLocalOffsetForFragment(position.paragraphOffset, fragment.start, fragment.end);
+    return {
+      element: fragment.element,
+      textNode,
+      offset: clampOffset(localOffset, textNode.textContent?.length ?? 0),
+    };
+  }
+
+  #geometryForParagraph(paragraph: V2EditableParagraph): ParagraphGeometry | null {
+    return this.#geometryForBlockId(paragraph.blockId);
+  }
+
+  #geometryForBlockId(blockId: string): ParagraphGeometry | null {
+    const cachedGeometry = this.#paragraphGeometryByBlockId.get(blockId);
+    if (cachedGeometry && cachedGeometry.blockElement.isConnected) {
+      return cachedGeometry;
+    }
+
+    const blockElement = this.#container.querySelector<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}="${blockId}"]`);
+    if (!blockElement) {
+      this.#paragraphGeometryByBlockId.delete(blockId);
+      return null;
+    }
+
+    const geometry: ParagraphGeometry = {
+      blockElement,
+      fragments: collectSegmentFragments(blockElement),
+      characterBoxes: null,
+    };
+    this.#paragraphGeometryByBlockId.set(blockId, geometry);
+    return geometry;
+  }
+
+  #characterBoxesForParagraph(geometry: ParagraphGeometry): readonly CharacterBox[] {
+    if (geometry.characterBoxes) {
+      return geometry.characterBoxes;
+    }
+
+    geometry.characterBoxes = measureParagraphCharacterBoxes(geometry.fragments);
+    return geometry.characterBoxes;
+  }
+}
+
 export function resolveTextPositionFromClientPoint(
   container: HTMLElement,
   index: V2EditableIndex,
   clientX: number,
   clientY: number,
 ): V2ResolvedTextPosition | null {
-  const doc = container.ownerDocument;
-  const domPoint = getDomPointFromClientPoint(doc, clientX, clientY);
-  if (domPoint) {
-    const segmentElement = findSegmentElement(domPoint.node);
-    if (segmentElement) {
-      const paragraph = resolveParagraphForElement(segmentElement, index);
-      if (!paragraph?.supported) {
-        return null;
-      }
-
-      const segmentStart = parseDatasetNumber(segmentElement, DATASET_KEYS.SD_SEGMENT_START);
-      const segmentEnd = parseDatasetNumber(segmentElement, DATASET_KEYS.SD_SEGMENT_END);
-      if (segmentStart == null || segmentEnd == null) {
-        return null;
-      }
-
-      const offsetWithinElement = clampOffset(
-        measureOffsetWithinElement(segmentElement, domPoint.node, domPoint.offset),
-        segmentEnd - segmentStart,
-      );
-
-      return index.resolveParagraphOffset(paragraph, segmentStart + offsetWithinElement, 'forward');
-    }
-  }
-
-  const fallbackElement = doc.elementFromPoint(clientX, clientY);
-  if (!(fallbackElement instanceof HTMLElement)) {
-    return null;
-  }
-
-  const paragraph = resolveParagraphForElement(fallbackElement, index);
-  if (!paragraph?.supported) {
-    return null;
-  }
-
-  return resolveTextPositionWithinParagraph(container, index, paragraph, clientX, clientY);
+  return new V2EditingDomContext(container).resolveTextPositionFromClientPoint(index, clientX, clientY);
 }
 
 export function resolveParagraphOffsetFromClientPoint(
@@ -65,49 +257,11 @@ export function resolveParagraphOffsetFromClientPoint(
   clientX: number,
   clientY: number,
 ): number | null {
-  return resolveParagraphCaretTarget(container, paragraph, clientX, clientY)?.offset ?? null;
+  return new V2EditingDomContext(container).resolveParagraphOffsetFromClientPoint(paragraph, clientX, clientY);
 }
 
 export function computeCaretRect(container: HTMLElement, position: V2ResolvedTextPosition): DOMRect | null {
-  const endpoint = resolveDomEndpoint(container, position);
-  if (!endpoint) {
-    return null;
-  }
-
-  const doc = container.ownerDocument;
-  const range = doc.createRange();
-  range.setStart(endpoint.textNode, endpoint.offset);
-  range.collapse(true);
-
-  const collapsedRect = range.getBoundingClientRect();
-  if (hasVisibleRect(collapsedRect)) {
-    return toLocalRect(collapsedRect, container);
-  }
-
-  const textLength = endpoint.textNode.textContent?.length ?? 0;
-  if (endpoint.offset < textLength) {
-    range.setEnd(endpoint.textNode, endpoint.offset + 1);
-    const nextRect = range.getBoundingClientRect();
-    if (hasVisibleRect(nextRect)) {
-      return toLocalCaretRect(nextRect.left, nextRect.top, nextRect.height, container);
-    }
-  }
-
-  if (endpoint.offset > 0) {
-    range.setStart(endpoint.textNode, endpoint.offset - 1);
-    range.setEnd(endpoint.textNode, endpoint.offset);
-    const previousRect = range.getBoundingClientRect();
-    if (hasVisibleRect(previousRect)) {
-      return toLocalCaretRect(previousRect.right, previousRect.top, previousRect.height, container);
-    }
-  }
-
-  const elementRect = endpoint.element.getBoundingClientRect();
-  if (!hasVisibleRect(elementRect)) {
-    return null;
-  }
-
-  return toLocalCaretRect(elementRect.left, elementRect.top, elementRect.height, container);
+  return new V2EditingDomContext(container).computeCaretRect(position);
 }
 
 export function computeRangeRects(
@@ -115,20 +269,7 @@ export function computeRangeRects(
   start: V2ResolvedTextPosition,
   end: V2ResolvedTextPosition,
 ): DOMRect[] {
-  const startEndpoint = resolveDomEndpoint(container, start);
-  const endEndpoint = resolveDomEndpoint(container, end);
-  if (!startEndpoint || !endEndpoint) {
-    return [];
-  }
-
-  const doc = container.ownerDocument;
-  const range = doc.createRange();
-  range.setStart(startEndpoint.textNode, startEndpoint.offset);
-  range.setEnd(endEndpoint.textNode, endEndpoint.offset);
-
-  return Array.from(range.getClientRects())
-    .filter(hasVisibleRect)
-    .map((rect) => toLocalRect(rect, container));
+  return new V2EditingDomContext(container).computeRangeRects(start, end);
 }
 
 function resolveParagraphForElement(element: HTMLElement, index: V2EditableIndex): V2EditableParagraph | undefined {
@@ -141,95 +282,24 @@ function resolveParagraphForElement(element: HTMLElement, index: V2EditableIndex
   return index.paragraphByBlockId(blockId);
 }
 
-function resolveTextPositionWithinParagraph(
-  container: HTMLElement,
-  index: V2EditableIndex,
-  paragraph: V2EditableParagraph,
-  clientX: number,
-  clientY: number,
-): V2ResolvedTextPosition | null {
-  const caretTarget = resolveParagraphCaretTarget(container, paragraph, clientX, clientY);
-  if (!caretTarget) {
-    return null;
-  }
-
-  return index.resolveParagraphOffset(paragraph, caretTarget.offset, caretTarget.affinity);
-}
-
-function resolveParagraphCaretTarget(
-  container: HTMLElement,
-  paragraph: V2EditableParagraph,
-  clientX: number,
-  clientY: number,
-): { offset: number; affinity: 'backward' | 'forward' } | null {
-  const blockElement = container.querySelector<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}="${paragraph.blockId}"]`);
-  if (!blockElement) {
-    return null;
-  }
-
-  const segmentElements = collectOrderedSegmentElements(blockElement);
-  if (segmentElements.length === 0) {
-    return null;
-  }
-
-  const characterBoxes = measureParagraphCharacterBoxes(segmentElements);
-  const characterTarget = resolveOffsetFromCharacterBoxes(characterBoxes, clientX, clientY);
-  if (characterTarget) {
-    return characterTarget;
-  }
-
-  return resolveNearestSegmentBoundary(segmentElements, paragraph.text.length, clientX, clientY);
-}
-
-function resolveDomEndpoint(container: HTMLElement, position: V2ResolvedTextPosition): DomEndpoint | null {
-  const blockElement = container.querySelector<HTMLElement>(`[${DATA_ATTRS.BLOCK_ID}="${position.blockId}"]`);
-  if (!blockElement) {
-    return null;
-  }
-
-  const segmentElements = Array.from(blockElement.querySelectorAll<HTMLElement>(`[${DATA_ATTRS.SD_SEGMENT_ID}]`));
-  const fragmentElement = chooseFragmentElement(segmentElements, position);
-  if (!fragmentElement) {
-    return null;
-  }
-
-  const fragmentStart = parseDatasetNumber(fragmentElement, DATASET_KEYS.SD_SEGMENT_START) ?? position.segmentStart;
-  const fragmentEnd = parseDatasetNumber(fragmentElement, DATASET_KEYS.SD_SEGMENT_END) ?? position.segmentEnd;
-  const textNode = findFirstTextNode(fragmentElement);
-  if (!textNode) {
-    return null;
-  }
-
-  const localOffset = resolveLocalOffsetForFragment(position.paragraphOffset, fragmentStart, fragmentEnd);
-
-  return {
-    element: fragmentElement,
-    textNode,
-    offset: clampOffset(localOffset, textNode.textContent?.length ?? 0),
-  };
-}
-
-function chooseFragmentElement(
-  segmentElements: readonly HTMLElement[],
+function chooseFragment(
+  fragments: readonly SegmentFragment[],
   position: V2ResolvedTextPosition,
-): HTMLElement | null {
-  const matchingFragments = segmentElements.filter((element) => {
-    if (element.dataset[DATASET_KEYS.SD_RUN_REF] !== position.runRef.id) {
+): SegmentFragment | null {
+  const matchingFragments = fragments.filter((fragment) => {
+    if (fragment.runRefId !== position.runRef.id) {
       return false;
     }
 
-    if (element.dataset[DATASET_KEYS.SD_SEGMENT_ID] !== position.segmentId) {
+    if (fragment.segmentId !== position.segmentId) {
       return false;
     }
-
-    const fragmentStart = parseDatasetNumber(element, DATASET_KEYS.SD_SEGMENT_START) ?? position.segmentStart;
-    const fragmentEnd = parseDatasetNumber(element, DATASET_KEYS.SD_SEGMENT_END) ?? position.segmentEnd;
 
     if (position.paragraphOffset === position.paragraphLength) {
-      return fragmentEnd === position.paragraphOffset;
+      return fragment.end === position.paragraphOffset;
     }
 
-    return position.paragraphOffset >= fragmentStart && position.paragraphOffset < fragmentEnd;
+    return position.paragraphOffset >= fragment.start && position.paragraphOffset < fragment.end;
   });
 
   if (matchingFragments.length === 0) {
@@ -237,14 +307,12 @@ function chooseFragmentElement(
   }
 
   return matchingFragments.sort((left, right) => {
-    const leftStart = parseDatasetNumber(left, DATASET_KEYS.SD_SEGMENT_START) ?? 0;
-    const rightStart = parseDatasetNumber(right, DATASET_KEYS.SD_SEGMENT_START) ?? 0;
-    if (leftStart !== rightStart) {
-      return leftStart - rightStart;
+    if (left.start !== right.start) {
+      return left.start - right.start;
     }
 
-    const leftRect = left.getBoundingClientRect();
-    const rightRect = right.getBoundingClientRect();
+    const leftRect = left.element.getBoundingClientRect();
+    const rightRect = right.element.getBoundingClientRect();
     if (leftRect.top !== rightRect.top) {
       return leftRect.top - rightRect.top;
     }
@@ -253,18 +321,36 @@ function chooseFragmentElement(
   })[0];
 }
 
-function collectOrderedSegmentElements(blockElement: HTMLElement): HTMLElement[] {
+function findFragmentForElement(fragments: readonly SegmentFragment[], element: HTMLElement): SegmentFragment | null {
+  return fragments.find((fragment) => fragment.element === element) ?? null;
+}
+
+function collectSegmentFragments(blockElement: HTMLElement): SegmentFragment[] {
   return Array.from(blockElement.querySelectorAll<HTMLElement>(`[${DATA_ATTRS.SD_SEGMENT_ID}]`))
-    .filter((element) => parseDatasetNumber(element, DATASET_KEYS.SD_SEGMENT_START) != null)
-    .sort((left, right) => {
-      const leftStart = parseDatasetNumber(left, DATASET_KEYS.SD_SEGMENT_START) ?? 0;
-      const rightStart = parseDatasetNumber(right, DATASET_KEYS.SD_SEGMENT_START) ?? 0;
-      if (leftStart !== rightStart) {
-        return leftStart - rightStart;
+    .map((element) => {
+      const start = parseDatasetNumber(element, DATASET_KEYS.SD_SEGMENT_START);
+      const end = parseDatasetNumber(element, DATASET_KEYS.SD_SEGMENT_END);
+      if (start == null || end == null) {
+        return null;
       }
 
-      const leftRect = left.getBoundingClientRect();
-      const rightRect = right.getBoundingClientRect();
+      return {
+        element,
+        textNode: findFirstTextNode(element),
+        runRefId: element.dataset[DATASET_KEYS.SD_RUN_REF] ?? null,
+        segmentId: element.dataset[DATASET_KEYS.SD_SEGMENT_ID] ?? null,
+        start,
+        end,
+      } satisfies SegmentFragment;
+    })
+    .filter((fragment): fragment is SegmentFragment => fragment != null)
+    .sort((left, right) => {
+      if (left.start !== right.start) {
+        return left.start - right.start;
+      }
+
+      const leftRect = left.element.getBoundingClientRect();
+      const rightRect = right.element.getBoundingClientRect();
       if (leftRect.top !== rightRect.top) {
         return leftRect.top - rightRect.top;
       }
@@ -273,17 +359,16 @@ function collectOrderedSegmentElements(blockElement: HTMLElement): HTMLElement[]
     });
 }
 
-function measureParagraphCharacterBoxes(segmentElements: readonly HTMLElement[]): CharacterBox[] {
+function measureParagraphCharacterBoxes(fragments: readonly SegmentFragment[]): CharacterBox[] {
   const boxes: CharacterBox[] = [];
 
-  for (const segmentElement of segmentElements) {
-    const segmentStart = parseDatasetNumber(segmentElement, DATASET_KEYS.SD_SEGMENT_START);
-    if (segmentStart == null) {
+  for (const fragment of fragments) {
+    if (fragment.textNode == null) {
       continue;
     }
 
     let localOffset = 0;
-    for (const textNode of collectTextNodes(segmentElement)) {
+    for (const textNode of collectTextNodes(fragment.element)) {
       const text = textNode.textContent ?? '';
       for (let index = 0; index < text.length; index += 1) {
         const rect = measureCharacterRect(textNode, index);
@@ -292,8 +377,8 @@ function measureParagraphCharacterBoxes(segmentElements: readonly HTMLElement[])
         }
 
         boxes.push({
-          fromOffset: segmentStart + localOffset + index,
-          toOffset: segmentStart + localOffset + index + 1,
+          fromOffset: fragment.start + localOffset + index,
+          toOffset: fragment.start + localOffset + index + 1,
           left: rect.left,
           right: rect.right,
           top: rect.top,
@@ -364,21 +449,19 @@ function combineRects(rects: readonly DOMRect[] | readonly DOMRectReadOnly[]): D
 }
 
 function resolveNearestSegmentBoundary(
-  segmentElements: readonly HTMLElement[],
+  fragments: readonly SegmentFragment[],
   paragraphLength: number,
   clientX: number,
   clientY: number,
 ): { offset: number; affinity: 'backward' | 'forward' } | null {
-  const nearestElement = findNearestSegmentElement(segmentElements, clientX, clientY);
-  if (!nearestElement) {
+  const nearestFragment = findNearestFragment(fragments, clientX, clientY);
+  if (!nearestFragment) {
     return null;
   }
 
-  const nearestRect = nearestElement.getBoundingClientRect();
+  const nearestRect = nearestFragment.element.getBoundingClientRect();
   const isBeforeMidpoint = clientX <= nearestRect.left + nearestRect.width / 2;
-  const offset = isBeforeMidpoint
-    ? (parseDatasetNumber(nearestElement, DATASET_KEYS.SD_SEGMENT_START) ?? 0)
-    : (parseDatasetNumber(nearestElement, DATASET_KEYS.SD_SEGMENT_END) ?? paragraphLength);
+  const offset = isBeforeMidpoint ? nearestFragment.start : (nearestFragment.end ?? paragraphLength);
 
   return {
     offset,
@@ -386,22 +469,22 @@ function resolveNearestSegmentBoundary(
   };
 }
 
-function findNearestSegmentElement(
-  segmentElements: readonly HTMLElement[],
+function findNearestFragment(
+  fragments: readonly SegmentFragment[],
   clientX: number,
   clientY: number,
-): HTMLElement | null {
-  let nearest: HTMLElement | null = null;
+): SegmentFragment | null {
+  let nearest: SegmentFragment | null = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
 
-  segmentElements.forEach((element) => {
-    const rect = element.getBoundingClientRect();
+  fragments.forEach((fragment) => {
+    const rect = fragment.element.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
     const distance = Math.abs(centerY - clientY) * 1000 + Math.abs(centerX - clientX);
 
     if (distance < nearestDistance) {
-      nearest = element;
+      nearest = fragment;
       nearestDistance = distance;
     }
   });

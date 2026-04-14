@@ -9,7 +9,7 @@
 // construct MutationStep[] directly — they must go through the compiler.
 // ---------------------------------------------------------------------------
 
-import type { EntityRef } from "../identity/types.js";
+import type { EntityRef } from '../identity/types.js';
 
 // ---- Operation base --------------------------------------------------------
 
@@ -24,8 +24,14 @@ type OpBase = {
 // ---- Concrete operation types -----------------------------------------------
 
 export type InsertTextOp = OpBase & {
-  readonly kind: "insertText";
-  /** Run entity ref whose text content to modify. */
+  readonly kind: 'insertText';
+  /**
+   * Text-bearing target to modify.
+   *
+   * In the common case this is a run entity ref.
+   * For runless empty paragraphs, the paragraph entity ref itself is allowed so
+   * the compiler can materialize the first run on demand.
+   */
   readonly target: EntityRef;
   /** Text to insert at the target position. */
   readonly text: string;
@@ -42,7 +48,7 @@ export type InsertTextOp = OpBase & {
 };
 
 export type SplitParagraphOp = OpBase & {
-  readonly kind: "splitParagraph";
+  readonly kind: 'splitParagraph';
   /** Paragraph entity ref to split. */
   readonly target: EntityRef;
   /** Split point: which run and where within its text. */
@@ -50,7 +56,7 @@ export type SplitParagraphOp = OpBase & {
 };
 
 export type MergeParagraphsOp = OpBase & {
-  readonly kind: "mergeParagraphs";
+  readonly kind: 'mergeParagraphs';
   /** First paragraph — content is preserved in place. */
   readonly first: EntityRef;
   /** Second paragraph — its runs are appended to `first`, then it is removed. */
@@ -58,9 +64,9 @@ export type MergeParagraphsOp = OpBase & {
 };
 
 export type InsertParagraphOp = OpBase & {
-  readonly kind: "insertParagraph";
+  readonly kind: 'insertParagraph';
   /** Insert before or after the reference paragraph. */
-  readonly position: "before" | "after";
+  readonly position: 'before' | 'after';
   /** Existing paragraph to anchor the insertion against. */
   readonly relativeTo: EntityRef;
   /** Optional style reference for the new paragraph. */
@@ -68,7 +74,7 @@ export type InsertParagraphOp = OpBase & {
 };
 
 export type SetParagraphStyleOp = OpBase & {
-  readonly kind: "setParagraphStyle";
+  readonly kind: 'setParagraphStyle';
   /** Paragraph entity ref to restyle. */
   readonly target: EntityRef;
   /** Style ID to apply. Must reference an existing style in the document. */
@@ -76,7 +82,7 @@ export type SetParagraphStyleOp = OpBase & {
 };
 
 export type ToggleBoldOp = OpBase & {
-  readonly kind: "toggleBold";
+  readonly kind: 'toggleBold';
   /** Run entity ref to modify. */
   readonly target: EntityRef;
   /** true = bold, false = not bold. */
@@ -95,4 +101,4 @@ export type SemanticOperation =
   | ToggleBoldOp;
 
 /** All recognized operation kind strings. */
-export type SemanticOperationKind = SemanticOperation["kind"];
+export type SemanticOperationKind = SemanticOperation['kind'];

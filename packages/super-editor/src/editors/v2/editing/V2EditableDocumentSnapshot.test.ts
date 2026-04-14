@@ -3,8 +3,10 @@ import type { ParagraphBlock } from '@superdoc/contracts';
 import { DATA_ATTRS } from '@superdoc/dom-contract';
 import type { V2EditableDocumentSnapshot, V2EditableParagraph } from './V2EditableDocumentSnapshot.js';
 import {
+  EMPTY_EDITABLE_TEXT_PLACEHOLDER,
   applyEditableInteractionData,
   buildEditableDocumentSnapshotFromSourceRefs,
+  isEmptyEditableParagraph,
   mergeEditableDocumentSnapshots,
 } from './V2EditableDocumentSnapshot.js';
 
@@ -156,6 +158,56 @@ describe('applyEditableInteractionData', () => {
       dataAttrs: {
         [DATA_ATTRS.SD_SEGMENT_ID]: 'seg-tab',
         [DATA_ATTRS.SD_INTERACTION_KIND]: 'protected-text',
+      },
+    });
+  });
+
+  it('rewrites empty placeholder paragraphs into synthetic editable anchors', () => {
+    const block: ParagraphBlock = {
+      kind: 'paragraph',
+      id: 'block-empty',
+      runs: [
+        {
+          text: '\u00A0',
+          fontFamily: 'Arial',
+          fontSize: 12,
+          pmStart: 10,
+          pmEnd: 11,
+        },
+      ],
+    };
+
+    const paragraph = createParagraph({
+      blockId: 'block-empty',
+      text: '',
+      segments: [
+        createSegment({
+          runId: 'run-empty',
+          segmentId: 'seg-empty',
+          text: '',
+          paragraphStart: 0,
+          paragraphEnd: 0,
+          runTextStart: 0,
+          runTextEnd: 0,
+        }),
+      ],
+    });
+
+    expect(isEmptyEditableParagraph(paragraph)).toBe(true);
+
+    applyEditableInteractionData([block], createSnapshot(paragraph));
+
+    expect(block.runs).toHaveLength(1);
+    expect(block.runs[0]).toMatchObject({
+      text: EMPTY_EDITABLE_TEXT_PLACEHOLDER,
+      pmStart: 10,
+      pmEnd: 10,
+      dataAttrs: {
+        [DATA_ATTRS.SD_RUN_REF]: 'run-empty',
+        [DATA_ATTRS.SD_SEGMENT_ID]: 'seg-empty',
+        [DATA_ATTRS.SD_SEGMENT_START]: '0',
+        [DATA_ATTRS.SD_SEGMENT_END]: '0',
+        [DATA_ATTRS.SD_INTERACTION_KIND]: 'empty-text',
       },
     });
   });
@@ -327,6 +379,125 @@ describe('buildEditableDocumentSnapshotFromSourceRefs', () => {
       '\t',
       '423',
     ]);
+  });
+
+  it('keeps a zero-length mutable segment so empty paragraphs stay editable', () => {
+    const paragraphRef = { id: 'paragraph-empty' };
+    const runRef = { id: 'run-empty' };
+    const paragraphSourceRef = { partUri: '/word/document.xml', nodeId: 'p-empty' };
+    const runSourceRef = { partUri: '/word/document.xml', nodeId: 'r-empty' };
+
+    const model = {
+      entityBySourceRef(sourceRef: { partUri: string; nodeId: string }) {
+        if (sourceRef.partUri === paragraphSourceRef.partUri && sourceRef.nodeId === paragraphSourceRef.nodeId) {
+          return {
+            kind: 'paragraph',
+            ref: paragraphRef,
+            storyId: 'story-1',
+            sourceRefs: [paragraphSourceRef],
+          };
+        }
+        return null;
+      },
+      entity(ref: { id: string }) {
+        if (ref.id === paragraphRef.id) {
+          return {
+            kind: 'paragraph',
+            ref: paragraphRef,
+            storyId: 'story-1',
+            sourceRefs: [paragraphSourceRef],
+          };
+        }
+        return null;
+      },
+      runs(ref: { id: string }) {
+        return ref.id === paragraphRef.id ? [{ ref: runRef, sourceRefs: [runSourceRef] }] : [];
+      },
+      segments(ref: { id: string }) {
+        return ref.id === runRef.id
+          ? [
+              {
+                segmentKind: 'text',
+                localId: 'seg-empty',
+                text: '',
+              },
+            ]
+          : [];
+      },
+    } as any;
+
+    const snapshot = buildEditableDocumentSnapshotFromSourceRefs(model, new Map([['block-empty', paragraphSourceRef]]));
+
+    expect(snapshot.orderedParagraphs).toHaveLength(1);
+    expect(snapshot.orderedParagraphs[0]).toMatchObject({
+      blockId: 'block-empty',
+      supported: true,
+      text: '',
+    });
+    expect(snapshot.orderedParagraphs[0].segments).toHaveLength(1);
+    expect(snapshot.orderedParagraphs[0].segments[0]).toMatchObject({
+      segmentId: 'seg-empty',
+      text: '',
+      isMutableText: true,
+      paragraphStart: 0,
+      paragraphEnd: 0,
+    });
+  });
+
+  it('creates a synthetic insertion segment when a paragraph has no runs yet', () => {
+    const paragraphRef = { id: 'paragraph-runless' };
+    const paragraphSourceRef = { partUri: '/word/document.xml', nodeId: 'p-runless' };
+
+    const model = {
+      entityBySourceRef(sourceRef: { partUri: string; nodeId: string }) {
+        if (sourceRef.partUri === paragraphSourceRef.partUri && sourceRef.nodeId === paragraphSourceRef.nodeId) {
+          return {
+            kind: 'paragraph',
+            ref: paragraphRef,
+            storyId: 'story-1',
+            sourceRefs: [paragraphSourceRef],
+          };
+        }
+        return null;
+      },
+      entity(ref: { id: string }) {
+        if (ref.id === paragraphRef.id) {
+          return {
+            kind: 'paragraph',
+            ref: paragraphRef,
+            storyId: 'story-1',
+            sourceRefs: [paragraphSourceRef],
+          };
+        }
+        return null;
+      },
+      runs() {
+        return [];
+      },
+      segments() {
+        return [];
+      },
+    } as any;
+
+    const snapshot = buildEditableDocumentSnapshotFromSourceRefs(
+      model,
+      new Map([['block-runless', paragraphSourceRef]]),
+    );
+
+    expect(snapshot.orderedParagraphs).toHaveLength(1);
+    expect(snapshot.orderedParagraphs[0]).toMatchObject({
+      blockId: 'block-runless',
+      supported: true,
+      text: '',
+    });
+    expect(snapshot.orderedParagraphs[0].segments).toHaveLength(1);
+    expect(snapshot.orderedParagraphs[0].segments[0]).toMatchObject({
+      runRef: paragraphRef,
+      runSourceRef: paragraphSourceRef,
+      text: '',
+      paragraphStart: 0,
+      paragraphEnd: 0,
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { createDomPainter, sanitizeUrl, linkMetrics, applyRunDataAttributes } from './index.js';
-import { DomPainter } from './renderer.js';
+import { DomPainter, sliceRunsForLine } from './renderer.js';
 import type { DomPainterOptions, DomPainterInput, PaintSnapshot } from './index.js';
 import { resolveListMarkerGeometry } from '../../../../../shared/common/list-marker-utils.js';
 import type {
@@ -10,6 +10,7 @@ import type {
   Layout,
   Line,
   ParagraphMeasure,
+  ParagraphBlock,
   FlowRunLink,
   Fragment,
   ResolvedLayout,
@@ -10918,6 +10919,219 @@ describe('applyRunDataAttributes', () => {
       expect(() => {
         painter.paint(lineBreakLayout, mount);
       }).not.toThrow();
+    });
+
+    it('preserves sliced segment data attributes when a text run wraps across lines', () => {
+      const wrappedBlock: ParagraphBlock = {
+        kind: 'paragraph',
+        id: 'wrapped-segments',
+        runs: [
+          {
+            text: 'Wrapping',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            pmStart: 0,
+            pmEnd: 8,
+            dataAttrs: {
+              'data-sd-segment-id': 'segment-1',
+              'data-sd-segment-start': '0',
+              'data-sd-segment-end': '8',
+            },
+          },
+        ],
+      };
+
+      const slicedRuns = sliceRunsForLine(wrappedBlock, {
+        fromRun: 0,
+        fromChar: 3,
+        toRun: 0,
+        toChar: 8,
+        width: 0,
+        ascent: 0,
+        descent: 0,
+        lineHeight: 0,
+      });
+
+      expect(slicedRuns).toHaveLength(1);
+      expect(slicedRuns[0]).toMatchObject({
+        text: 'pping',
+        dataAttrs: {
+          'data-sd-segment-id': 'segment-1',
+          'data-sd-segment-start': '3',
+          'data-sd-segment-end': '8',
+        },
+      });
+    });
+
+    it('paints wrapped text runs with editable segment attributes on each rendered line', () => {
+      const wrappedBlock: FlowBlock = {
+        kind: 'paragraph',
+        id: 'wrapped-render',
+        runs: [
+          {
+            text: 'Wrapping',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            pmStart: 0,
+            pmEnd: 8,
+            dataAttrs: {
+              'data-sd-segment-id': 'segment-1',
+              'data-sd-segment-start': '0',
+              'data-sd-segment-end': '8',
+            },
+          },
+        ],
+      };
+
+      const wrappedMeasure: ParagraphMeasure = {
+        kind: 'paragraph',
+        lines: [
+          {
+            fromRun: 0,
+            fromChar: 0,
+            toRun: 0,
+            toChar: 4,
+            width: 40,
+            ascent: 12,
+            descent: 4,
+            lineHeight: 20,
+          },
+          {
+            fromRun: 0,
+            fromChar: 4,
+            toRun: 0,
+            toChar: 8,
+            width: 40,
+            ascent: 12,
+            descent: 4,
+            lineHeight: 20,
+          },
+        ],
+        totalHeight: 40,
+      };
+
+      const wrappedLayout: Layout = {
+        pageSize: { w: 400, h: 500 },
+        pages: [
+          {
+            number: 1,
+            fragments: [
+              {
+                kind: 'para',
+                blockId: 'wrapped-render',
+                fromLine: 0,
+                toLine: 2,
+                x: 20,
+                y: 20,
+                width: 300,
+              },
+            ],
+          },
+        ],
+      };
+
+      const painter = createTestPainter({
+        blocks: [wrappedBlock],
+        measures: [wrappedMeasure],
+      });
+
+      painter.paint(wrappedLayout, mount);
+
+      const segmentSpans = Array.from(mount.querySelectorAll('[data-sd-segment-id="segment-1"]'));
+      expect(segmentSpans).toHaveLength(2);
+      expect(segmentSpans[0]?.textContent).toBe('Wrap');
+      expect(segmentSpans[0]?.getAttribute('data-sd-segment-start')).toBe('0');
+      expect(segmentSpans[0]?.getAttribute('data-sd-segment-end')).toBe('4');
+      expect(segmentSpans[1]?.textContent).toBe('ping');
+      expect(segmentSpans[1]?.getAttribute('data-sd-segment-start')).toBe('4');
+      expect(segmentSpans[1]?.getAttribute('data-sd-segment-end')).toBe('8');
+    });
+
+    it('repaints a paragraph when only editable data attributes change', () => {
+      const baseBlock: FlowBlock = {
+        kind: 'paragraph',
+        id: 'editable-cache',
+        runs: [
+          {
+            text: 'Editable paragraph',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            pmStart: 0,
+            pmEnd: 18,
+          },
+        ],
+      };
+
+      const updatedBlock: FlowBlock = {
+        kind: 'paragraph',
+        id: 'editable-cache',
+        runs: [
+          {
+            text: 'Editable paragraph',
+            fontFamily: 'Arial',
+            fontSize: 16,
+            pmStart: 0,
+            pmEnd: 18,
+            dataAttrs: {
+              'data-sd-segment-id': 'segment-1',
+              'data-sd-segment-start': '0',
+              'data-sd-segment-end': '18',
+            },
+          },
+        ],
+      };
+
+      const paragraphMeasure: ParagraphMeasure = {
+        kind: 'paragraph',
+        lines: [
+          {
+            fromRun: 0,
+            fromChar: 0,
+            toRun: 0,
+            toChar: 18,
+            width: 180,
+            ascent: 12,
+            descent: 4,
+            lineHeight: 20,
+          },
+        ],
+        totalHeight: 20,
+      };
+
+      const paragraphLayout: Layout = {
+        pageSize: { w: 400, h: 500 },
+        pages: [
+          {
+            number: 1,
+            fragments: [
+              {
+                kind: 'para',
+                blockId: 'editable-cache',
+                fromLine: 0,
+                toLine: 1,
+                x: 20,
+                y: 20,
+                width: 300,
+              },
+            ],
+          },
+        ],
+      };
+
+      const painter = createTestPainter({
+        blocks: [baseBlock],
+        measures: [paragraphMeasure],
+      });
+
+      painter.paint(paragraphLayout, mount);
+      expect(mount.querySelector('[data-sd-segment-id="segment-1"]')).toBeNull();
+
+      painter.setData([updatedBlock], [paragraphMeasure]);
+      painter.paint(paragraphLayout, mount);
+
+      const segment = mount.querySelector('[data-sd-segment-id="segment-1"]');
+      expect(segment).toBeTruthy();
+      expect(segment?.textContent).toBe('Editable paragraph');
     });
 
     it('preserves PM positions for lineBreak runs', () => {

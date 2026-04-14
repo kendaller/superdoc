@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DocumentRuntime } from '@superdoc/v2-model';
 import { V2FastEditingSession } from './V2FastEditingSession.js';
 import type { V2EditableDocumentSnapshot, V2EditableParagraph } from './V2EditableDocumentSnapshot.js';
 import type { V2EditingController } from '../runtime/V2EditingController.js';
@@ -45,6 +44,64 @@ function createSnapshot(paragraph: V2EditableParagraph): V2EditableDocumentSnaps
   };
 }
 
+function createController(paragraph: V2EditableParagraph): V2EditingController {
+  const entities = new Map<string, unknown>([
+    [
+      paragraph.paragraphRef.id,
+      {
+        kind: 'paragraph',
+        ref: paragraph.paragraphRef,
+        sourceRefs: [paragraph.paragraphSourceRef],
+        storyId: paragraph.storyId,
+      },
+    ],
+  ]);
+
+  paragraph.segments.forEach((segment) => {
+    entities.set(segment.runRef.id, {
+      kind: 'run',
+      ref: segment.runRef,
+      sourceRefs: [segment.runSourceRef],
+    });
+  });
+
+  const paragraphEntity = entities.get(paragraph.paragraphRef.id) as { ref: { id: string } };
+  const runEntities = paragraph.segments.map((segment) => entities.get(segment.runRef.id));
+  const segmentsByRunId = new Map(
+    paragraph.segments.map((segment) => [
+      segment.runRef.id,
+      [
+        {
+          segmentKind: segment.segmentKind,
+          localId: segment.segmentId,
+          text: segment.segmentKind === 'text' ? segment.text : undefined,
+          char: segment.segmentKind === 'symbol' ? segment.text : undefined,
+          footnoteId: segment.segmentKind === 'footnoteRef' ? segment.text : undefined,
+          endnoteId: segment.segmentKind === 'endnoteRef' ? segment.text : undefined,
+        },
+      ],
+    ]),
+  );
+
+  return {
+    initialize: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    applyOperation: vi.fn().mockResolvedValue({ ok: true }),
+    semanticModel: {
+      entityBySourceRef: vi.fn((sourceRef: { nodeId: string }) => {
+        if (sourceRef.nodeId === paragraph.paragraphSourceRef.nodeId) {
+          return paragraphEntity;
+        }
+
+        return runEntities.find((entity) => entity?.sourceRefs?.[0]?.nodeId === sourceRef.nodeId) ?? null;
+      }),
+      entity: vi.fn((ref: { id: string }) => entities.get(ref.id) ?? null),
+      runs: vi.fn(() => runEntities),
+      segments: vi.fn((runRef: { id: string }) => segmentsByRunId.get(runRef.id) ?? []),
+    },
+  } as unknown as V2EditingController;
+}
+
 describe('V2FastEditingSession', () => {
   const cleanups: Array<() => void> = [];
 
@@ -78,13 +135,7 @@ describe('V2FastEditingSession', () => {
 
     const session = new V2FastEditingSession({
       container,
-      controller: {
-        initialize: vi.fn(),
-      } as unknown as V2EditingController,
-      runtime: {
-        applyOperation: vi.fn(),
-        save: vi.fn(),
-      } as unknown as DocumentRuntime,
+      controller: createController(paragraph),
       getSnapshot: () => createSnapshot(paragraph),
       patchParagraphText: vi.fn().mockReturnValue(true),
     });
@@ -111,16 +162,11 @@ describe('V2FastEditingSession', () => {
     session.destroy();
   });
 
-  it('flushes through the runtime first and resyncs the controller after idle', async () => {
+  it('flushes through the live controller and reconciles simple paragraph edits through repaint', async () => {
     const paragraph = createParagraph();
     const patchParagraphText = vi.fn().mockReturnValue(true);
-    const runtime = {
-      applyOperation: vi.fn().mockResolvedValue({ ok: true }),
-      save: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
-    } as unknown as DocumentRuntime;
-    const controller = {
-      initialize: vi.fn().mockResolvedValue(undefined),
-    } as unknown as V2EditingController;
+    const controller = createController(paragraph);
+    const refreshSnapshotFromController = vi.fn();
 
     const container = document.createElement('div');
     container.innerHTML = `
@@ -139,10 +185,9 @@ describe('V2FastEditingSession', () => {
     const session = new V2FastEditingSession({
       container,
       controller,
-      runtime,
       getSnapshot: () => createSnapshot(paragraph),
       patchParagraphText,
-      refreshSnapshotFromController: vi.fn(),
+      refreshSnapshotFromController,
     });
 
     cleanups.push(mockSegmentGeometry(container.querySelector('[data-sd-segment-id="segment-1"]') as HTMLElement));
@@ -167,12 +212,8 @@ describe('V2FastEditingSession', () => {
 
     await vi.advanceTimersByTimeAsync(200);
     expect(patchParagraphText).toHaveBeenCalledWith('block-1', 'Hello brave world');
-    expect((runtime.applyOperation as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
-    expect((controller.initialize as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
-
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(runtime.save).toHaveBeenCalledTimes(1);
-    expect(controller.initialize).toHaveBeenCalledTimes(1);
+    expect((controller.applyOperation as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+    expect(refreshSnapshotFromController).toHaveBeenCalledWith({ repaint: true });
 
     session.destroy();
   });
@@ -195,13 +236,7 @@ describe('V2FastEditingSession', () => {
 
     const session = new V2FastEditingSession({
       container,
-      controller: {
-        initialize: vi.fn(),
-      } as unknown as V2EditingController,
-      runtime: {
-        applyOperation: vi.fn(),
-        save: vi.fn(),
-      } as unknown as DocumentRuntime,
+      controller: createController(paragraph),
       getSnapshot: () => createSnapshot(paragraph),
       patchParagraphText: vi.fn().mockReturnValue(true),
     });
@@ -238,7 +273,7 @@ describe('V2FastEditingSession', () => {
     session.destroy();
   });
 
-  it('resyncs the controller immediately for protected inline paragraphs', async () => {
+  it('repaints immediately for protected inline paragraphs', async () => {
     const paragraph: V2EditableParagraph = {
       ...createParagraph(),
       text: 'Topic\t12',
@@ -288,13 +323,8 @@ describe('V2FastEditingSession', () => {
       ],
     };
 
-    const runtime = {
-      applyOperation: vi.fn().mockResolvedValue({ ok: true }),
-      save: vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
-    } as unknown as DocumentRuntime;
-    const controller = {
-      initialize: vi.fn().mockResolvedValue(undefined),
-    } as unknown as V2EditingController;
+    const controller = createController(paragraph);
+    const refreshSnapshotFromController = vi.fn();
 
     const container = document.createElement('div');
     container.innerHTML = `
@@ -311,10 +341,9 @@ describe('V2FastEditingSession', () => {
     const session = new V2FastEditingSession({
       container,
       controller,
-      runtime,
       getSnapshot: () => createSnapshot(paragraph),
       patchParagraphText: vi.fn().mockReturnValue(true),
-      refreshSnapshotFromController: vi.fn(),
+      refreshSnapshotFromController,
     });
 
     cleanups.push(mockSegmentGeometry(container.querySelector('[data-sd-segment-id="segment-1"]') as HTMLElement));
@@ -342,9 +371,62 @@ describe('V2FastEditingSession', () => {
     layer!.dispatchEvent(new Event('input', { bubbles: true }));
 
     await vi.advanceTimersByTimeAsync(200);
-    expect(runtime.applyOperation).toHaveBeenCalled();
-    expect(runtime.save).toHaveBeenCalledTimes(1);
-    expect(controller.initialize).toHaveBeenCalledTimes(1);
+    expect(controller.applyOperation).toHaveBeenCalled();
+    expect(refreshSnapshotFromController).toHaveBeenCalledWith({ repaint: true });
+
+    session.destroy();
+  });
+
+  it('tears down a clean overlay after blur once the committed repaint completes', async () => {
+    const paragraph = createParagraph();
+    const controller = createController(paragraph);
+    const refreshSnapshotFromController = vi.fn().mockResolvedValue(undefined);
+
+    const container = document.createElement('div');
+    container.innerHTML = `
+      <div data-block-id="block-1">
+        <div class="superdoc-line">
+          <span
+            data-sd-segment-id="segment-1"
+            data-sd-segment-start="0"
+            data-sd-segment-end="11"
+          >Hello world</span>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(container);
+
+    const session = new V2FastEditingSession({
+      container,
+      controller,
+      getSnapshot: () => createSnapshot(paragraph),
+      patchParagraphText: vi.fn().mockReturnValue(true),
+      refreshSnapshotFromController,
+    });
+
+    cleanups.push(mockSegmentGeometry(container.querySelector('[data-sd-segment-id="segment-1"]') as HTMLElement));
+    session.attach();
+    session.setReady(true);
+
+    container.querySelector<HTMLElement>('[data-block-id="block-1"]')?.dispatchEvent(
+      new PointerEvent('pointerdown', {
+        bubbles: true,
+        button: 0,
+        clientX: 5,
+        clientY: 5,
+      }),
+    );
+
+    const layer = container.querySelector<HTMLElement>('.v2-fast-editing-session__layer');
+    expect(layer).not.toBeNull();
+
+    layer!.textContent = 'Hello brave world';
+    layer!.dispatchEvent(new Event('input', { bubbles: true }));
+    layer!.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(container.querySelector('.v2-fast-editing-session__layer')).toBeNull();
 
     session.destroy();
   });

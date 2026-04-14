@@ -7,7 +7,7 @@
 // source document verbatim.
 // ---------------------------------------------------------------------------
 
-import type { SemanticOperation } from "./types.js";
+import type { SemanticOperation } from './types.js';
 import type {
   InsertTextOp,
   SplitParagraphOp,
@@ -15,30 +15,24 @@ import type {
   InsertParagraphOp,
   SetParagraphStyleOp,
   ToggleBoldOp,
-} from "./types.js";
-import type {
-  MutationStep,
-  PartRef,
-  NodeRef,
-  SerializedXmlElement,
-  SerializedXmlNode,
-} from "../mutations/types.js";
-import type { SemanticModel } from "../model.js";
-import type { Entity, EntityKind } from "../entities/types.js";
-import type { EntityRef, SourceRef } from "../identity/types.js";
-import type { InlineSegment } from "../entities/inline-segments.js";
-import type { XmlElementNode, XmlTextNode } from "../types/xml.js";
-import { createSourceRef } from "../identity/types.js";
+} from './types.js';
+import type { MutationStep, PartRef, NodeRef, SerializedXmlElement, SerializedXmlNode } from '../mutations/types.js';
+import type { SemanticModel } from '../model.js';
+import type { Entity, EntityKind } from '../entities/types.js';
+import type { EntityRef, SourceRef } from '../identity/types.js';
+import type { InlineSegment } from '../entities/inline-segments.js';
+import type { XmlElementNode, XmlTextNode } from '../types/xml.js';
+import { createSourceRef } from '../identity/types.js';
 import {
   cloneTextElementWithValue,
   findDirectChildElement,
   findDirectTextChild,
   requireSourceElement,
   serializeSourceElement,
-} from "./source-xml.js";
+} from './source-xml.js';
 
-const XML_SPACE_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
-const WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const XML_SPACE_NAMESPACE = 'http://www.w3.org/XML/1998/namespace';
+const WORDPROCESSINGML_NAMESPACE = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
 // ---- Public API -------------------------------------------------------------
 
@@ -48,44 +42,56 @@ const WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordproces
  * Resolves entity refs to source refs, builds targeted XML edits, and avoids
  * baking resolved properties back into the package.
  */
-export function compileOperation(
-  op: SemanticOperation,
-  model: SemanticModel,
-): MutationStep[] {
+export function compileOperation(op: SemanticOperation, model: SemanticModel): MutationStep[] {
   switch (op.kind) {
-    case "insertText":
+    case 'insertText':
       return compileInsertText(op, model);
-    case "splitParagraph":
+    case 'splitParagraph':
       return compileSplitParagraph(op, model);
-    case "mergeParagraphs":
+    case 'mergeParagraphs':
       return compileMergeParagraphs(op, model);
-    case "insertParagraph":
+    case 'insertParagraph':
       return compileInsertParagraph(op, model);
-    case "setParagraphStyle":
+    case 'setParagraphStyle':
       return compileSetParagraphStyle(op, model);
-    case "toggleBold":
+    case 'toggleBold':
       return compileToggleBold(op, model);
   }
 }
 
 // ---- insertText -------------------------------------------------------------
 
-function compileInsertText(
-  op: InsertTextOp,
-  model: SemanticModel,
-): MutationStep[] {
-  const run = resolveEntity(model, op.target, "run");
+function compileInsertText(op: InsertTextOp, model: SemanticModel): MutationStep[] {
+  const target = model.entity(op.target);
+  if (!target) {
+    throw new Error(`Entity not found: ${op.target.id}`);
+  }
+
+  if (target.kind === 'paragraph') {
+    return compileInsertTextIntoParagraph(op, model, target);
+  }
+
+  if (target.kind !== 'run') {
+    throw new Error(`Expected run or paragraph entity, got ${target.kind}: ${op.target.id}`);
+  }
+
+  return compileInsertTextIntoRun(op, model, target);
+}
+
+function compileInsertTextIntoRun(op: InsertTextOp, model: SemanticModel, run: Entity<'run'>): MutationStep[] {
   const runSource = primarySource(run);
   const part = partRef(runSource);
 
-  const textSegments = model.segments(op.target).filter(isTextSegment);
+  const textSegments = model.segments(run.ref).filter(isTextSegment);
   if (textSegments.length === 0) {
-    return [{
-      kind: "xml.insertNode",
-      part,
-      position: { kind: "append", parent: nodeRef(runSource) },
-      content: buildTextElement(op.text),
-    }];
+    return [
+      {
+        kind: 'xml.insertNode',
+        part,
+        position: { kind: 'append', parent: nodeRef(runSource) },
+        content: buildTextElement(op.text),
+      },
+    ];
   }
 
   const targetSegment = resolveTargetTextSegment(textSegments, op.position);
@@ -98,47 +104,43 @@ function compileInsertText(
   const deleteLength = op.deleteLength ?? 0;
   const insertionOffset = clampOffset(op.position?.charOffset ?? targetSegment.text.length, targetSegment.text.length);
   const replacementEnd = clampOffset(insertionOffset + deleteLength, targetSegment.text.length);
-  const newText =
-    targetSegment.text.slice(0, insertionOffset)
-    + op.text
-    + targetSegment.text.slice(replacementEnd);
+  const newText = targetSegment.text.slice(0, insertionOffset) + op.text + targetSegment.text.slice(replacementEnd);
 
-  const steps: MutationStep[] = [{
-    kind: "xml.setText",
-    part,
-    node: {
-      kind: "node",
-      partUri: runSource.partUri,
-      nodeId: textNode.id,
-      stability: "source-anchored",
+  const steps: MutationStep[] = [
+    {
+      kind: 'xml.setText',
+      part,
+      node: {
+        kind: 'node',
+        partUri: runSource.partUri,
+        nodeId: textNode.id,
+        stability: 'source-anchored',
+      },
+      value: newText,
     },
-    value: newText,
-  }];
+  ];
 
   const needsPreserve = needsPreserveWhitespace(newText);
   const hasPreserveAttr = textElement.attributes.some(
-    (attribute) =>
-      attribute.prefix === "xml"
-      && attribute.localName === "space"
-      && attribute.value === "preserve",
+    (attribute) => attribute.prefix === 'xml' && attribute.localName === 'space' && attribute.value === 'preserve',
   );
 
   if (needsPreserve && !hasPreserveAttr) {
     steps.push({
-      kind: "xml.setAttribute",
+      kind: 'xml.setAttribute',
       part,
       node: nodeRefForNodeId(runSource.partUri, textElement.id),
-      name: "space",
+      name: 'space',
       namespace: XML_SPACE_NAMESPACE,
-      prefix: "xml",
-      value: "preserve",
+      prefix: 'xml',
+      value: 'preserve',
     });
   } else if (!needsPreserve && hasPreserveAttr) {
     steps.push({
-      kind: "xml.removeAttribute",
+      kind: 'xml.removeAttribute',
       part,
       node: nodeRefForNodeId(runSource.partUri, textElement.id),
-      name: "space",
+      name: 'space',
       namespace: XML_SPACE_NAMESPACE,
     });
   }
@@ -146,13 +148,84 @@ function compileInsertText(
   return steps;
 }
 
+function compileInsertTextIntoParagraph(
+  op: InsertTextOp,
+  model: SemanticModel,
+  paragraph: Entity<'paragraph'>,
+): MutationStep[] {
+  const paragraphSource = primarySource(paragraph);
+  const part = partRef(paragraphSource);
+  const runs = model.runs(paragraph.ref);
+
+  if (runs.length === 0) {
+    const deleteLength = op.deleteLength ?? 0;
+    const charOffset = op.position?.charOffset ?? 0;
+    if (deleteLength > 0) {
+      throw new Error('Cannot delete text from a runless paragraph');
+    }
+    if (charOffset !== 0) {
+      throw new Error('Runless paragraph insertion must target offset 0');
+    }
+    if (op.text.length === 0) {
+      return [];
+    }
+
+    return [
+      {
+        kind: 'xml.insertNode',
+        part,
+        position: { kind: 'append', parent: nodeRef(paragraphSource) },
+        content: buildRunElement(op.text),
+      },
+    ];
+  }
+
+  if (shouldRemoveOnlyRunAfterParagraphDelete(op, model, runs)) {
+    return [
+      {
+        kind: 'xml.removeNode',
+        part,
+        node: nodeRef(primarySource(runs[0])),
+      },
+    ];
+  }
+
+  return compileInsertTextIntoRun(
+    {
+      ...op,
+      target: runs[0].ref,
+      position: {
+        segmentIndex: 0,
+        charOffset: op.position?.charOffset ?? 0,
+      },
+    },
+    model,
+    runs[0],
+  );
+}
+
+function shouldRemoveOnlyRunAfterParagraphDelete(
+  op: InsertTextOp,
+  model: SemanticModel,
+  runs: readonly Entity<'run'>[],
+): boolean {
+  if (runs.length !== 1) {
+    return false;
+  }
+
+  if (op.text.length > 0 || (op.deleteLength ?? 0) <= 0 || (op.position?.charOffset ?? 0) !== 0) {
+    return false;
+  }
+
+  const textSegments = model.segments(runs[0].ref).filter(isTextSegment);
+  const fullTextLength = textSegments.reduce((length, segment) => length + segment.text.length, 0);
+  return fullTextLength > 0 && (op.deleteLength ?? 0) >= fullTextLength;
+}
+
 // ---- splitParagraph ---------------------------------------------------------
 
-function compileSplitParagraph(
-  op: SplitParagraphOp,
-  model: SemanticModel,
-): MutationStep[] {
-  const paragraph = resolveEntity(model, op.target, "paragraph");
+function compileSplitParagraph(op: SplitParagraphOp, model: SemanticModel): MutationStep[] {
+  const paragraph = resolveEntity(model, op.target, 'paragraph');
   const paragraphSource = primarySource(paragraph);
   const part = partRef(paragraphSource);
   const runs = model.runs(op.target);
@@ -160,19 +233,21 @@ function compileSplitParagraph(
 
   const pendingParagraphId = `pending:splitParagraph:${op.id}`;
   const newParagraphRef: NodeRef = {
-    kind: "node",
+    kind: 'node',
     partUri: paragraphSource.partUri,
     nodeId: pendingParagraphId,
-    stability: "session-generated",
+    stability: 'session-generated',
   };
 
-  const steps: MutationStep[] = [{
-    kind: "xml.insertNode",
-    part,
-    position: { kind: "after", node: nodeRef(paragraphSource) },
-    content: buildParagraphElement(styleId),
-    assignId: pendingParagraphId,
-  }];
+  const steps: MutationStep[] = [
+    {
+      kind: 'xml.insertNode',
+      part,
+      position: { kind: 'after', node: nodeRef(paragraphSource) },
+      content: buildParagraphElement(styleId),
+      assignId: pendingParagraphId,
+    },
+  ];
 
   if (runs.length === 0 || op.at.runIndex >= runs.length) {
     return steps;
@@ -181,21 +256,21 @@ function compileSplitParagraph(
   for (let index = op.at.runIndex; index < runs.length; index += 1) {
     const run = runs[index];
     const runSource = primarySource(run);
-    const runElement = requireSourceElement(model, runSource, "run");
+    const runElement = requireSourceElement(model, runSource, 'run');
 
     if (index === op.at.runIndex) {
       const splitRun = splitRunElement(runElement, op.at.charOffset);
 
       if (splitRun.beforeRun) {
         steps.push({
-          kind: "xml.replaceNode",
+          kind: 'xml.replaceNode',
           part,
           node: nodeRef(runSource),
           content: splitRun.beforeRun,
         });
       } else {
         steps.push({
-          kind: "xml.removeNode",
+          kind: 'xml.removeNode',
           part,
           node: nodeRef(runSource),
         });
@@ -203,9 +278,9 @@ function compileSplitParagraph(
 
       if (splitRun.afterRun) {
         steps.push({
-          kind: "xml.insertNode",
+          kind: 'xml.insertNode',
           part,
-          position: { kind: "append", parent: newParagraphRef },
+          position: { kind: 'append', parent: newParagraphRef },
           content: splitRun.afterRun,
         });
       }
@@ -214,13 +289,13 @@ function compileSplitParagraph(
     }
 
     steps.push({
-      kind: "xml.insertNode",
+      kind: 'xml.insertNode',
       part,
-      position: { kind: "append", parent: newParagraphRef },
+      position: { kind: 'append', parent: newParagraphRef },
       content: serializeSourceElement(runElement),
     });
     steps.push({
-      kind: "xml.removeNode",
+      kind: 'xml.removeNode',
       part,
       node: nodeRef(runSource),
     });
@@ -231,12 +306,9 @@ function compileSplitParagraph(
 
 // ---- mergeParagraphs --------------------------------------------------------
 
-function compileMergeParagraphs(
-  op: MergeParagraphsOp,
-  model: SemanticModel,
-): MutationStep[] {
-  const first = resolveEntity(model, op.first, "paragraph");
-  const second = resolveEntity(model, op.second, "paragraph");
+function compileMergeParagraphs(op: MergeParagraphsOp, model: SemanticModel): MutationStep[] {
+  const first = resolveEntity(model, op.first, 'paragraph');
+  const second = resolveEntity(model, op.second, 'paragraph');
   const firstSource = primarySource(first);
   const secondSource = primarySource(second);
   const part = partRef(firstSource);
@@ -245,17 +317,17 @@ function compileMergeParagraphs(
 
   for (const run of model.runs(op.second)) {
     const runSource = primarySource(run);
-    const runElement = requireSourceElement(model, runSource, "run");
+    const runElement = requireSourceElement(model, runSource, 'run');
     steps.push({
-      kind: "xml.insertNode",
+      kind: 'xml.insertNode',
       part,
-      position: { kind: "append", parent: nodeRef(firstSource) },
+      position: { kind: 'append', parent: nodeRef(firstSource) },
       content: serializeSourceElement(runElement),
     });
   }
 
   steps.push({
-    kind: "xml.removeNode",
+    kind: 'xml.removeNode',
     part,
     node: nodeRef(secondSource),
   });
@@ -265,32 +337,28 @@ function compileMergeParagraphs(
 
 // ---- insertParagraph --------------------------------------------------------
 
-function compileInsertParagraph(
-  op: InsertParagraphOp,
-  model: SemanticModel,
-): MutationStep[] {
-  const anchor = resolveEntity(model, op.relativeTo, "paragraph");
+function compileInsertParagraph(op: InsertParagraphOp, model: SemanticModel): MutationStep[] {
+  const anchor = resolveEntity(model, op.relativeTo, 'paragraph');
   const source = primarySource(anchor);
   const part = partRef(source);
 
-  return [{
-    kind: "xml.insertNode",
-    part,
-    position: { kind: op.position, node: nodeRef(source) },
-    content: buildParagraphElement(op.styleId),
-  }];
+  return [
+    {
+      kind: 'xml.insertNode',
+      part,
+      position: { kind: op.position, node: nodeRef(source) },
+      content: buildParagraphElement(op.styleId),
+    },
+  ];
 }
 
 // ---- setParagraphStyle ------------------------------------------------------
 
-function compileSetParagraphStyle(
-  op: SetParagraphStyleOp,
-  model: SemanticModel,
-): MutationStep[] {
-  const paragraph = resolveEntity(model, op.target, "paragraph");
+function compileSetParagraphStyle(op: SetParagraphStyleOp, model: SemanticModel): MutationStep[] {
+  const paragraph = resolveEntity(model, op.target, 'paragraph');
   const source = primarySource(paragraph);
-  const paragraphElement = requireSourceElement(model, source, "paragraph");
-  const paragraphProperties = findDirectChildElement(paragraphElement, "pPr", "w");
+  const paragraphElement = requireSourceElement(model, source, 'paragraph');
+  const paragraphProperties = findDirectChildElement(paragraphElement, 'pPr', 'w');
   const part = partRef(source);
 
   if (!paragraphProperties) {
@@ -298,33 +366,37 @@ function compileSetParagraphStyle(
       return [];
     }
 
-    return [{
-      kind: "xml.insertNode",
-      part,
-      position: { kind: "prepend", parent: nodeRef(source) },
-      content: buildParagraphPropertiesElement(op.styleId),
-    }];
+    return [
+      {
+        kind: 'xml.insertNode',
+        part,
+        position: { kind: 'prepend', parent: nodeRef(source) },
+        content: buildParagraphPropertiesElement(op.styleId),
+      },
+    ];
   }
 
-  const styleElement = findDirectChildElement(paragraphProperties, "pStyle", "w");
+  const styleElement = findDirectChildElement(paragraphProperties, 'pStyle', 'w');
 
   if (!op.styleId) {
     if (!styleElement) {
       return [];
     }
 
-    const steps: MutationStep[] = [{
-      kind: "xml.removeNode",
-      part,
-      node: nodeRefForNodeId(source.partUri, styleElement.id),
-    }];
+    const steps: MutationStep[] = [
+      {
+        kind: 'xml.removeNode',
+        part,
+        node: nodeRefForNodeId(source.partUri, styleElement.id),
+      },
+    ];
 
     const remainingChildren = paragraphProperties.children.filter(
-      (child) => child.kind === "element" && child.id !== styleElement.id,
+      (child) => child.kind === 'element' && child.id !== styleElement.id,
     );
     if (remainingChildren.length === 0) {
       steps.push({
-        kind: "xml.removeNode",
+        kind: 'xml.removeNode',
         part,
         node: nodeRefForNodeId(source.partUri, paragraphProperties.id),
       });
@@ -334,88 +406,91 @@ function compileSetParagraphStyle(
   }
 
   if (styleElement) {
-    return [{
-      kind: "xml.setAttribute",
-      part,
-      node: nodeRefForNodeId(source.partUri, styleElement.id),
-      name: "val",
-      namespace: WORDPROCESSINGML_NAMESPACE,
-      prefix: "w",
-      value: op.styleId,
-    }];
+    return [
+      {
+        kind: 'xml.setAttribute',
+        part,
+        node: nodeRefForNodeId(source.partUri, styleElement.id),
+        name: 'val',
+        namespace: WORDPROCESSINGML_NAMESPACE,
+        prefix: 'w',
+        value: op.styleId,
+      },
+    ];
   }
 
-  return [{
-    kind: "xml.insertNode",
-    part,
-    position: { kind: "append", parent: nodeRefForNodeId(source.partUri, paragraphProperties.id) },
-    content: buildParagraphStyleElement(op.styleId),
-  }];
+  return [
+    {
+      kind: 'xml.insertNode',
+      part,
+      position: { kind: 'append', parent: nodeRefForNodeId(source.partUri, paragraphProperties.id) },
+      content: buildParagraphStyleElement(op.styleId),
+    },
+  ];
 }
 
 // ---- toggleBold -------------------------------------------------------------
 
-function compileToggleBold(
-  op: ToggleBoldOp,
-  model: SemanticModel,
-): MutationStep[] {
-  const run = resolveEntity(model, op.target, "run");
+function compileToggleBold(op: ToggleBoldOp, model: SemanticModel): MutationStep[] {
+  const run = resolveEntity(model, op.target, 'run');
   const source = primarySource(run);
-  const runElement = requireSourceElement(model, source, "run");
+  const runElement = requireSourceElement(model, source, 'run');
   const part = partRef(source);
-  const runProperties = findDirectChildElement(runElement, "rPr", "w");
-  const boldElement = runProperties
-    ? findDirectChildElement(runProperties, "b", "w")
-    : undefined;
+  const runProperties = findDirectChildElement(runElement, 'rPr', 'w');
+  const boldElement = runProperties ? findDirectChildElement(runProperties, 'b', 'w') : undefined;
 
   if (op.value) {
     if (!runProperties) {
-      return [{
-        kind: "xml.insertNode",
-        part,
-        position: { kind: "prepend", parent: nodeRef(source) },
-        content: buildRunPropertiesElement(true),
-      }];
+      return [
+        {
+          kind: 'xml.insertNode',
+          part,
+          position: { kind: 'prepend', parent: nodeRef(source) },
+          content: buildRunPropertiesElement(true),
+        },
+      ];
     }
 
     if (!boldElement) {
-      return [{
-        kind: "xml.insertNode",
-        part,
-        position: { kind: "append", parent: nodeRefForNodeId(source.partUri, runProperties.id) },
-        content: buildBoldElement(),
-      }];
+      return [
+        {
+          kind: 'xml.insertNode',
+          part,
+          position: { kind: 'append', parent: nodeRefForNodeId(source.partUri, runProperties.id) },
+          content: buildBoldElement(),
+        },
+      ];
     }
 
-    return [{
-      kind: "xml.setAttribute",
-      part,
-      node: nodeRefForNodeId(source.partUri, boldElement.id),
-      name: "val",
-      namespace: WORDPROCESSINGML_NAMESPACE,
-      prefix: "w",
-      value: "1",
-    }];
+    return [
+      {
+        kind: 'xml.setAttribute',
+        part,
+        node: nodeRefForNodeId(source.partUri, boldElement.id),
+        name: 'val',
+        namespace: WORDPROCESSINGML_NAMESPACE,
+        prefix: 'w',
+        value: '1',
+      },
+    ];
   }
 
   if (!boldElement) {
     return [];
   }
 
-  return [{
-    kind: "xml.removeNode",
-    part,
-    node: nodeRefForNodeId(source.partUri, boldElement.id),
-  }];
+  return [
+    {
+      kind: 'xml.removeNode',
+      part,
+      node: nodeRefForNodeId(source.partUri, boldElement.id),
+    },
+  ];
 }
 
 // ---- Shared helpers ---------------------------------------------------------
 
-function resolveEntity<K extends EntityKind>(
-  model: SemanticModel,
-  ref: EntityRef,
-  expectedKind: K,
-): Entity<K> {
+function resolveEntity<K extends EntityKind>(model: SemanticModel, ref: EntityRef, expectedKind: K): Entity<K> {
   const entity = model.entity(ref);
   if (!entity) {
     throw new Error(`Entity not found: ${ref.id}`);
@@ -434,7 +509,7 @@ function primarySource(entity: Entity): SourceRef {
 }
 
 function partRef(source: SourceRef): PartRef {
-  return { kind: "part", uri: source.partUri };
+  return { kind: 'part', uri: source.partUri };
 }
 
 function nodeRef(source: SourceRef): NodeRef {
@@ -443,38 +518,30 @@ function nodeRef(source: SourceRef): NodeRef {
 
 function nodeRefForNodeId(partUri: string, nodeId: string): NodeRef {
   return {
-    kind: "node",
+    kind: 'node',
     partUri,
     nodeId,
-    stability: "source-anchored",
+    stability: 'source-anchored',
   };
 }
 
 function isTextSegment(
   segment: InlineSegment,
-): segment is InlineSegment & { segmentKind: "text"; text: string; localId: string } {
-  return segment.segmentKind === "text";
+): segment is InlineSegment & { segmentKind: 'text'; text: string; localId: string } {
+  return segment.segmentKind === 'text';
 }
 
 function resolveTargetTextSegment(
-  textSegments: readonly (InlineSegment & { segmentKind: "text"; text: string; localId: string })[],
-  position: InsertTextOp["position"],
+  textSegments: readonly (InlineSegment & { segmentKind: 'text'; text: string; localId: string })[],
+  position: InsertTextOp['position'],
 ) {
-  const requestedIndex = position?.segmentIndex ?? (textSegments.length - 1);
+  const requestedIndex = position?.segmentIndex ?? textSegments.length - 1;
   const boundedIndex = Math.max(0, Math.min(requestedIndex, textSegments.length - 1));
   return textSegments[boundedIndex];
 }
 
-function resolveTextElement(
-  model: SemanticModel,
-  partUri: string,
-  elementNodeId: string,
-): XmlElementNode {
-  return requireSourceElement(
-    model,
-    createSourceRef(partUri, elementNodeId),
-    "text segment element",
-  );
+function resolveTextElement(model: SemanticModel, partUri: string, elementNodeId: string): XmlElementNode {
+  return requireSourceElement(model, createSourceRef(partUri, elementNodeId), 'text segment element');
 }
 
 function clampOffset(offset: number, maxLength: number): number {
@@ -485,7 +552,7 @@ function clampOffset(offset: number, maxLength: number): number {
 }
 
 function needsPreserveWhitespace(text: string): boolean {
-  return text.startsWith(" ") || text.endsWith(" ") || text.includes("  ");
+  return text.startsWith(' ') || text.endsWith(' ') || text.includes('  ');
 }
 
 function splitRunElement(
@@ -495,17 +562,17 @@ function splitRunElement(
   beforeRun?: SerializedXmlElement;
   afterRun?: SerializedXmlElement;
 } {
-  const runProperties = findDirectChildElement(runElement, "rPr", "w");
+  const runProperties = findDirectChildElement(runElement, 'rPr', 'w');
   const beforeChildren: SerializedXmlNode[] = [];
   const afterChildren: SerializedXmlNode[] = [];
   let remainingOffset = Math.max(0, Math.trunc(charOffset));
 
   for (const child of runElement.children) {
-    if (child.kind !== "element") {
+    if (child.kind !== 'element') {
       continue;
     }
 
-    if (child.localName === "rPr" && child.prefix === "w") {
+    if (child.localName === 'rPr' && child.prefix === 'w') {
       continue;
     }
 
@@ -568,7 +635,7 @@ function buildRunElementFromChildren(
   children.push(...contentChildren);
 
   return {
-    kind: "element",
+    kind: 'element',
     name: runElement.localName,
     ...(runElement.namespaceUri ? { namespace: runElement.namespaceUri } : {}),
     ...(runElement.prefix ? { prefix: runElement.prefix } : {}),
@@ -587,85 +654,96 @@ function buildRunElementFromChildren(
 }
 
 function isTextBearingRunChild(element: XmlElementNode): boolean {
-  return element.prefix === "w"
-    && (
-      element.localName === "t"
-      || element.localName === "delText"
-      || element.localName === "instrText"
-    );
+  return (
+    element.prefix === 'w' &&
+    (element.localName === 't' || element.localName === 'delText' || element.localName === 'instrText')
+  );
 }
 
 function getElementTextValue(element: XmlElementNode): string {
   return element.children
-    .filter((child): child is XmlTextNode => child.kind === "text")
+    .filter((child): child is XmlTextNode => child.kind === 'text')
     .map((child) => child.value)
-    .join("");
+    .join('');
 }
 
 function buildTextElement(text: string): SerializedXmlElement {
   return {
-    kind: "element",
-    name: "t",
-    prefix: "w",
+    kind: 'element',
+    name: 't',
+    prefix: 'w',
     ...(needsPreserveWhitespace(text)
       ? {
-          attributes: [{
-            name: "space",
-            value: "preserve",
-            namespace: XML_SPACE_NAMESPACE,
-            prefix: "xml",
-          }],
+          attributes: [
+            {
+              name: 'space',
+              value: 'preserve',
+              namespace: XML_SPACE_NAMESPACE,
+              prefix: 'xml',
+            },
+          ],
         }
       : {}),
-    children: [{ kind: "text", value: text }],
+    children: [{ kind: 'text', value: text }],
+  };
+}
+
+function buildRunElement(text: string): SerializedXmlElement {
+  return {
+    kind: 'element',
+    name: 'r',
+    prefix: 'w',
+    children: [buildTextElement(text)],
   };
 }
 
 function buildParagraphElement(styleId?: string): SerializedXmlElement {
   return {
-    kind: "element",
-    name: "p",
-    prefix: "w",
+    kind: 'element',
+    name: 'p',
+    prefix: 'w',
     ...(styleId ? { children: [buildParagraphPropertiesElement(styleId)] } : {}),
   };
 }
 
 function buildParagraphPropertiesElement(styleId: string): SerializedXmlElement {
   return {
-    kind: "element",
-    name: "pPr",
-    prefix: "w",
+    kind: 'element',
+    name: 'pPr',
+    prefix: 'w',
     children: [buildParagraphStyleElement(styleId)],
   };
 }
 
 function buildParagraphStyleElement(styleId: string): SerializedXmlElement {
   return {
-    kind: "element",
-    name: "pStyle",
-    prefix: "w",
-    attributes: [{
-      name: "val",
-      value: styleId,
-      namespace: WORDPROCESSINGML_NAMESPACE,
-      prefix: "w",
-    }],
+    kind: 'element',
+    name: 'pStyle',
+    prefix: 'w',
+    attributes: [
+      {
+        name: 'val',
+        value: styleId,
+        namespace: WORDPROCESSINGML_NAMESPACE,
+        prefix: 'w',
+      },
+    ],
   };
 }
 
 function buildRunPropertiesElement(includeBold: boolean): SerializedXmlElement {
   return {
-    kind: "element",
-    name: "rPr",
-    prefix: "w",
+    kind: 'element',
+    name: 'rPr',
+    prefix: 'w',
     ...(includeBold ? { children: [buildBoldElement()] } : {}),
   };
 }
 
 function buildBoldElement(): SerializedXmlElement {
   return {
-    kind: "element",
-    name: "b",
-    prefix: "w",
+    kind: 'element',
+    name: 'b',
+    prefix: 'w',
   };
 }

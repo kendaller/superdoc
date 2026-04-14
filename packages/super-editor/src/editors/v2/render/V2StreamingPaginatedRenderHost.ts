@@ -20,10 +20,14 @@ import {
   buildEditableDocumentSnapshotForBlockIds,
   buildEditableDocumentSnapshotFromSourceRefs,
   createOptimisticEditableParagraph,
+  isEmptyEditableParagraph,
   mergeEditableDocumentSnapshots,
   replaceSnapshotParagraph,
+  type V2EditableParagraph,
   type V2EditableDocumentSnapshot,
 } from '../editing/V2EditableDocumentSnapshot.js';
+import type { V2EditingMutationKind } from '../editing/V2EditingSession.js';
+import type { V2PendingSelection } from '../editing/V2EditingTypes.js';
 import {
   v2PerfTimeline,
   SPAN_RENDER,
@@ -44,6 +48,13 @@ import {
   createInitialStreamingBatchPolicy,
   type StreamingBatchPolicy,
 } from './streaming-batch-policy.js';
+import { reprojectStructuralStreamingWindows } from './streaming-structural-reprojection.js';
+import {
+  mergeProjectedWindowDependencyManifests,
+  normalizeProjectedWindow,
+  projectCanonicalWindowFromHandle,
+  type CanonicalProjectedWindow,
+} from './streaming-window-projection.js';
 import type {
   HostState,
   StateTransitionEntry,
@@ -73,6 +84,7 @@ const DEFAULT_LAYOUT_MODE = 'vertical';
 const DEFAULT_WINDOW_SIZE = 50;
 const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 2;
 const DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE = 2;
+const INITIAL_EDITING_BOOTSTRAP_WAIT_MS = 250;
 const BUFFER_AHEAD_PAGES = 10;
 const TWIPS_PER_INCH = 1440;
 const PX_PER_INCH = 96;
@@ -194,6 +206,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   #editingSurfaceStatus: V2EditingSurfaceStatus = createEmptyEditingSurfaceStatus();
   #editingBootstrapPhase: V2EditingBootstrapPhase = 'idle';
   #editingBootstrapIssue: string | null = null;
+  #streamingEditingSuspended = false;
+  #editingProjectionAligned = false;
+  #initialEditingControllerBootstrap: Promise<V2EditingController | null> | null = null;
 
   constructor(options: V2StreamingPaginatedRenderHostOptions) {
     super();
@@ -338,6 +353,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
       this.#setLoadingProgress(LOADING_PROGRESS_EXACT_FIRST_WINDOW_READY);
 
+      await this.#awaitInitialEditingControllerBootstrap(gen);
+      if (gen !== this.#generation) return;
+
       this.#accumulateWindow(firstWindowResult, 0, firstWindowMode);
       this.#recordProjectionStats(firstWindowResult);
       this.#transition('firstWindowProjected');
@@ -424,14 +442,57 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     return this.#editingSurfaceStatus;
   }
 
+  setInitialEditingControllerBootstrap(controllerPromise: Promise<V2EditingController>): void {
+    this.#initialEditingControllerBootstrap = controllerPromise
+      .then((controller) => controller)
+      .catch((error) => {
+        console.debug('[V2StreamingPaginatedRenderHost] Initial editing bootstrap unavailable', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
+  }
+
   refreshEditingSnapshot(): void {
+    void this.refreshEditingSnapshotView();
+  }
+
+  async refreshEditingSnapshotView(options?: {
+    repaint?: boolean;
+    pendingSelection?: V2PendingSelection | null;
+    anchorParagraphSourceRef?: { partUri: string; nodeId: string; sourceNodePath?: string } | null;
+    mutationKind?: V2EditingMutationKind;
+  }): Promise<void> {
     if (!this.#editingController) {
       this.#setEditingBootstrapState('awaiting-controller', 'Editing controller is not bound');
       return;
     }
 
+    const previousBlocks = structuredClone(this.#accumulated.blocks);
+    const previousLayout = this.#accumulated.layout;
+    const previousMeasures = [...this.#accumulated.measures];
+
+    if (this.#editingController.semanticModel && (await this.#tryApplyStructuralReprojection(options))) {
+      this.#refreshEditableInteractionData();
+      if (options?.repaint) {
+        await this.#refreshRenderedInteractionData({
+          previousBlocks,
+          previousLayout,
+          previousMeasures,
+        });
+        this.#scheduleStreamingWork();
+      } else {
+        this.#publishEditingSurfaceDiagnostics();
+      }
+      return;
+    }
+
     this.#refreshEditableInteractionData();
-    void this.#refreshRenderedInteractionData();
+    if (options?.repaint) {
+      await this.#refreshRenderedInteractionData();
+    } else {
+      this.#publishEditingSurfaceDiagnostics();
+    }
   }
 
   async prepareEditingSurface(): Promise<V2EditingSurfaceStatus> {
@@ -441,6 +502,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     }
 
     try {
+      await this.#alignLoadedWindowsToEditingProjection();
+
       this.#setEditingBootstrapState('preparing-snapshot');
       this.#refreshEditableInteractionData();
 
@@ -545,9 +608,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   bindEditingController(controller: V2EditingController): () => void {
     this.#unbindEditingController?.();
     this.#editingController = controller;
+    this.#editingProjectionAligned = false;
     this.#editingBootstrapPhase = 'idle';
     this.#editingBootstrapIssue = null;
-
     this.#unbindEditingController = () => {
       if (this.#editingController === controller) {
         this.#editingController = null;
@@ -580,6 +643,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         continue;
       }
 
+      reconcileEditableParagraphBlockText(block, optimisticParagraph);
       applyEditableInteractionDataToParagraphBlock(block, optimisticParagraph);
     }
 
@@ -606,6 +670,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     this.#editingSurfaceStatus = createEmptyEditingSurfaceStatus();
     this.#editingBootstrapPhase = 'idle';
     this.#editingBootstrapIssue = null;
+    this.#streamingEditingSuspended = false;
+    this.#editingProjectionAligned = false;
     this.#completeness.reset();
     this.#renderShell = null;
     this.#appendInFlight = false;
@@ -651,77 +717,169 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     startIndex: number,
     projectionMode: 'preview' | 'exact',
   ): void {
-    const { blocks, continuation, sectionMetadata, dependencyManifest } = windowResult;
-    const bodyChildCount = Math.max(0, continuation.nextBodyChildIndex - startIndex);
-    const contractBlocks = toContractFlowBlocks(blocks);
-    const blockIds = contractBlocks.map((block) => block.id);
-    const blockToSourceRef = new Map(this.#accumulated.blockToSourceRef);
-    for (const [blockId, sourceRef] of windowResult.blockToSourceRef) {
-      blockToSourceRef.set(blockId, {
-        partUri: sourceRef.partUri,
-        nodeId: sourceRef.nodeId,
-        ...(sourceRef.sourceNodePath ? { sourceNodePath: sourceRef.sourceNodePath } : {}),
-      });
-    }
-
-    const editingSnapshotSelection = this.#buildEditingSnapshotSelection(blockToSourceRef);
-    if (editingSnapshotSelection.snapshot) {
-      applyEditableInteractionData(contractBlocks, editingSnapshotSelection.snapshot);
-    }
-
-    const record: WindowRecord = {
-      index: this.#accumulated.windowRecords.length,
+    const projectedWindow = normalizeProjectedWindow({
+      windowResult,
       startBodyChildIndex: startIndex,
-      bodyChildCount,
-      blockCount: contractBlocks.length,
-      blockIds,
-      blocks: contractBlocks,
-      sectionMetadataDelta: sectionMetadata,
+      index: this.#accumulated.windowRecords.length,
       projectionMode,
-      ...(dependencyManifest ? { dependencyManifest } : {}),
-      status: 'projected',
-    };
-    this.#accumulated.windowRecords.push(record);
-    this.#accumulated.blocks = [...this.#accumulated.blocks, ...contractBlocks];
+    });
+    this.#appendProjectedWindow(projectedWindow);
+  }
+
+  #appendProjectedWindow(projectedWindow: CanonicalProjectedWindow): void {
+    const blockToSourceRef = new Map(this.#accumulated.blockToSourceRef);
+    for (const [blockId, sourceRef] of projectedWindow.blockToSourceRef) {
+      blockToSourceRef.set(blockId, sourceRef);
+    }
+
+    const editingSnapshotSelection = this.#extendEditingSnapshotSelectionForProjectedWindow(
+      projectedWindow,
+      blockToSourceRef,
+    );
+    this.#accumulated.windowRecords.push(projectedWindow.windowRecord);
+    this.#accumulated.blocks = [...this.#accumulated.blocks, ...projectedWindow.windowRecord.blocks];
     this.#accumulated.blockToSourceRef = blockToSourceRef;
     if (editingSnapshotSelection.snapshot) {
       this.#accumulated.editingSnapshot = editingSnapshotSelection.snapshot;
       this.#editingSnapshotSelection = editingSnapshotSelection;
+      reconcileSimpleEditableParagraphText(projectedWindow.windowRecord.blocks, editingSnapshotSelection.snapshot);
+      applyEditableInteractionData(projectedWindow.windowRecord.blocks, editingSnapshotSelection.snapshot);
     }
-    this.#accumulated.nextBodyChildIndex = continuation.nextBodyChildIndex;
-    this.#accumulated.totalBodyChildCount = continuation.totalBodyChildCount;
-    if (dependencyManifest) {
+
+    this.#accumulated.nextBodyChildIndex = projectedWindow.nextBodyChildIndex;
+    this.#accumulated.totalBodyChildCount = projectedWindow.totalBodyChildCount;
+    if (projectedWindow.dependencyManifest) {
       this.#accumulated.dependencyManifest = mergeDependencyManifests(
         this.#accumulated.dependencyManifest,
-        dependencyManifest,
+        projectedWindow.dependencyManifest,
       );
       this.#reportResourceViolations(validateDependencyManifest(this.#accumulated.dependencyManifest));
     }
   }
 
+  #extendEditingSnapshotSelectionForProjectedWindow(
+    projectedWindow: CanonicalProjectedWindow,
+    nextBlockToSourceRef: ReadonlyMap<string, { partUri: string; nodeId: string; sourceNodePath?: string }>,
+  ): EditingSnapshotSelection {
+    const model = this.#editingController?.semanticModel;
+    if (!model) {
+      return this.#editingSnapshotSelection;
+    }
+
+    if (!this.#editingSnapshotSelection.snapshot) {
+      return this.#buildEditingSnapshotSelection(nextBlockToSourceRef);
+    }
+
+    const windowBlockIds = projectedWindow.windowRecord.blockIds;
+    const windowSourceRefs = new Map<string, { partUri: string; nodeId: string; sourceNodePath?: string }>();
+    for (const blockId of windowBlockIds) {
+      const sourceRef = projectedWindow.blockToSourceRef.get(blockId);
+      if (sourceRef) {
+        windowSourceRefs.set(blockId, sourceRef);
+      }
+    }
+
+    const appendedBlockIdSnapshot = buildEditableDocumentSnapshotForBlockIds(model, windowBlockIds);
+    const appendedSourceRefSnapshot = buildEditableDocumentSnapshotFromSourceRefs(model, windowSourceRefs);
+    const mergedBlockIdSnapshot = mergeEditableDocumentSnapshots(
+      this.#editingSnapshotSelection.blockIdSnapshot ?? createEmptyEditingSnapshot(),
+      appendedBlockIdSnapshot,
+      nextBlockToSourceRef.keys(),
+    );
+    const mergedSourceRefSnapshot = mergeEditableDocumentSnapshots(
+      this.#editingSnapshotSelection.sourceRefSnapshot ?? createEmptyEditingSnapshot(),
+      appendedSourceRefSnapshot,
+      nextBlockToSourceRef.keys(),
+    );
+    const mergedSnapshot = mergeEditableDocumentSnapshots(
+      mergedBlockIdSnapshot,
+      mergedSourceRefSnapshot,
+      nextBlockToSourceRef.keys(),
+    );
+
+    return {
+      snapshot: mergedSnapshot,
+      snapshotSource: resolveEditingSnapshotSource(mergedBlockIdSnapshot, mergedSourceRefSnapshot, mergedSnapshot),
+      blockIdSnapshot: mergedBlockIdSnapshot,
+      sourceRefSnapshot: mergedSourceRefSnapshot,
+    };
+  }
+
+  async #alignLoadedWindowsToEditingProjection(): Promise<void> {
+    if (this.#editingProjectionAligned) {
+      return;
+    }
+
+    const documentHandle = this.#editingController?.documentHandle;
+    if (!documentHandle || this.#accumulated.windowRecords.length === 0) {
+      return;
+    }
+
+    await documentHandle.ready('first-paint-shell');
+
+    const alignedWindows: WindowRecord[] = [];
+    const alignedBlockToSourceRef = new Map<string, { partUri: string; nodeId: string; sourceNodePath?: string }>();
+    let nextBodyChildIndex = 0;
+    let totalBodyChildCount = this.#accumulated.totalBodyChildCount;
+
+    for (const existingRecord of this.#accumulated.windowRecords) {
+      const projectedWindow = projectCanonicalWindowFromHandle({
+        documentHandle,
+        startBodyChildIndex: nextBodyChildIndex,
+        maxBodyChildCount: Math.max(1, existingRecord.bodyChildCount),
+        includeDependencyManifest: Boolean(existingRecord.dependencyManifest),
+        index: alignedWindows.length,
+        projectionMode: existingRecord.projectionMode,
+      });
+      alignedWindows.push(projectedWindow.windowRecord);
+      for (const [blockId, sourceRef] of projectedWindow.blockToSourceRef) {
+        alignedBlockToSourceRef.set(blockId, sourceRef);
+      }
+      nextBodyChildIndex = projectedWindow.nextBodyChildIndex;
+      totalBodyChildCount = projectedWindow.totalBodyChildCount;
+    }
+
+    this.#accumulated.windowRecords = alignedWindows;
+    this.#accumulated.blocks = alignedWindows.flatMap((record) => record.blocks);
+    this.#accumulated.blockToSourceRef = alignedBlockToSourceRef;
+    this.#accumulated.nextBodyChildIndex = nextBodyChildIndex;
+    this.#accumulated.totalBodyChildCount = totalBodyChildCount;
+    this.#accumulated.dependencyManifest = mergeProjectedWindowDependencyManifests(alignedWindows);
+    this.#reportResourceViolations(validateDependencyManifest(this.#accumulated.dependencyManifest));
+    this.#editingProjectionAligned = true;
+
+    console.debug('[V2StreamingPaginatedRenderHost] Aligned loaded windows to editing projection', {
+      windowCount: alignedWindows.length,
+      blockCount: this.#accumulated.blocks.length,
+      nextBodyChildIndex,
+      totalBodyChildCount,
+    });
+  }
+
   // ---- Private: Measure + paginate + paint pipeline ----------------------------
 
-  async #measurePaginatePaint(): Promise<void> {
+  async #measurePaginatePaint(previousState?: {
+    previousBlocks: FlowBlock[];
+    previousLayout: Layout | null;
+    previousMeasures: Measure[];
+  }): Promise<void> {
     const layoutOptions = this.#resolveLayoutInput();
     const acc = this.#accumulated;
     const cooperativeMeasureBlock = createCooperativeMeasureBlock(
       (block: FlowBlock, constraints: { maxWidth: number; maxHeight: number }) => measureBlock(block, constraints),
     );
 
-    // Compute previousBlocks for incremental layout.
-    // On first paint: previousBlocks is empty, previousLayout is null.
-    // On append: previousBlocks is the blocks from all prior windows.
-    const lastWindowBlockCount =
-      acc.windowRecords.length > 0 ? acc.windowRecords[acc.windowRecords.length - 1].blockCount : 0;
-    const previousBlocks = acc.layout ? acc.blocks.slice(0, acc.blocks.length - lastWindowBlockCount) : [];
+    const previousBlocks = previousState?.previousBlocks ?? resolveAppendPreviousBlocks(acc);
+    const previousLayout = previousState?.previousLayout ?? acc.layout;
+    const previousMeasures = previousState?.previousMeasures ?? acc.measures;
 
     const { result } = await runInstrumentedIncrementalLayout({
       previousBlocks,
-      previousLayout: acc.layout,
+      previousLayout,
       nextBlocks: acc.blocks,
       layoutOptions,
       measureBlock: cooperativeMeasureBlock,
-      previousMeasures: acc.measures.length > 0 ? acc.measures : undefined,
+      previousMeasures: previousMeasures.length > 0 ? previousMeasures : undefined,
     });
 
     result.layout.pageGap = getEffectivePageGap(this.#layoutEngineOptions);
@@ -762,6 +920,10 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   // ---- Private: Append pipeline ------------------------------------------------
 
   #scheduleStreamingWork(): void {
+    if (this.#streamingEditingSuspended) {
+      return;
+    }
+
     if (this.#state !== 'streaming' && this.#state !== 'firstPaintComplete') {
       return;
     }
@@ -792,18 +954,23 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     const batchStartMs = perfNow();
 
     try {
-      const continuation = {
-        nextBodyChildIndex: startBodyChildIndex,
-        maxBodyChildCount: this.#appendBatchPolicy.bodyChildLimit,
-        stopAfterPageEstimate: this.#appendBatchPolicy.pageEstimate,
-      };
-
-      const windowResult = await this.#runtime.projectNextWindow(continuation);
+      const projectedWindow = await this.#projectAppendWindow(startBodyChildIndex);
       if (gen !== this.#generation) return;
 
       const windowIndex = this.#accumulated.windowRecords.length;
-      this.#accumulateWindow(windowResult, startBodyChildIndex, 'exact');
-      this.#recordProjectionStats(windowResult);
+      this.#appendProjectedWindow(projectedWindow);
+      this.#recordProjectionStats({
+        blocks: projectedWindow.windowRecord.blocks as WindowedProjectionResult['blocks'],
+        continuation: {
+          nextBodyChildIndex: projectedWindow.nextBodyChildIndex,
+          hasMore: projectedWindow.nextBodyChildIndex < projectedWindow.totalBodyChildCount,
+          totalBodyChildCount: projectedWindow.totalBodyChildCount,
+        },
+        blockToSourceRef: new Map(projectedWindow.blockToSourceRef),
+        sectionMetadata: projectedWindow.windowRecord.sectionMetadataDelta,
+        ...(projectedWindow.dependencyManifest ? { dependencyManifest: projectedWindow.dependencyManifest } : {}),
+        ...(projectedWindow.projectionStats ? { projectionStats: projectedWindow.projectionStats } : {}),
+      });
 
       await yieldToBrowser();
       await this.#measurePaginatePaint();
@@ -812,7 +979,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       const nextPageCount = this.#accumulated.layout?.pages.length ?? prevPageCount;
       const pagesAdded = Math.max(0, nextPageCount - prevPageCount);
       const bodyChildrenConsumed = Math.max(0, this.#accumulated.nextBodyChildIndex - startBodyChildIndex);
-      const fieldHeavyRatio = getFieldHeavyRatio(windowResult.projectionStats);
+      const fieldHeavyRatio = getFieldHeavyRatio(projectedWindow.projectionStats);
       this.#appendBatchPolicy = advanceStreamingBatchPolicy(this.#appendBatchPolicy, {
         durationMs: perfNow() - batchStartMs,
         bodyChildrenConsumed,
@@ -837,6 +1004,35 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         this.#scheduleStreamingWork();
       }
     }
+  }
+
+  async #projectAppendWindow(startBodyChildIndex: number): Promise<CanonicalProjectedWindow> {
+    const documentHandle = this.#editingController?.documentHandle;
+    if (documentHandle && this.#editingProjectionAligned) {
+      await documentHandle.ready('first-paint-shell');
+      return projectCanonicalWindowFromHandle({
+        documentHandle,
+        startBodyChildIndex,
+        maxBodyChildCount: this.#appendBatchPolicy.bodyChildLimit,
+        stopAfterPageEstimate: this.#appendBatchPolicy.pageEstimate,
+        includeDependencyManifest: true,
+        index: this.#accumulated.windowRecords.length,
+        projectionMode: 'exact',
+      });
+    }
+
+    const continuation = {
+      nextBodyChildIndex: startBodyChildIndex,
+      maxBodyChildCount: this.#appendBatchPolicy.bodyChildLimit,
+      stopAfterPageEstimate: this.#appendBatchPolicy.pageEstimate,
+    };
+    const windowResult = await this.#runtime.projectNextWindow(continuation);
+    return normalizeProjectedWindow({
+      windowResult,
+      startBodyChildIndex,
+      index: this.#accumulated.windowRecords.length,
+      projectionMode: 'exact',
+    });
   }
 
   async #advanceRenderShellInBackground(generation: number): Promise<void> {
@@ -1250,25 +1446,120 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       return;
     }
 
+    reconcileSimpleEditableParagraphText(this.#accumulated.blocks, selection.snapshot);
     applyEditableInteractionData(this.#accumulated.blocks, selection.snapshot);
+    console.debug('[V2StreamingPaginatedRenderHost] Applied editable interaction data', {
+      paragraphBlockCount: this.#accumulated.blocks.filter((block) => block.kind === 'paragraph').length,
+      blocksWithSegmentAttrs: this.#accumulated.blocks.filter(
+        (block) =>
+          block.kind === 'paragraph' &&
+          block.runs.some(
+            (run) =>
+              run != null &&
+              typeof run === 'object' &&
+              'dataAttrs' in run &&
+              run.dataAttrs != null &&
+              DATA_ATTRS.SD_SEGMENT_ID in run.dataAttrs,
+          ),
+      ).length,
+    });
     this.#accumulated.editingSnapshot = selection.snapshot;
     this.#publishEditingSurfaceDiagnostics();
   }
 
-  async #refreshRenderedInteractionData(): Promise<void> {
-    if (!this.#accumulated.layout) {
+  async #refreshRenderedInteractionData(previousState?: {
+    previousBlocks: FlowBlock[];
+    previousLayout: Layout | null;
+    previousMeasures: Measure[];
+  }): Promise<void> {
+    if (!this.#accumulated.layout && !previousState?.previousLayout) {
       this.#publishEditingSurfaceDiagnostics();
       return;
     }
 
-    this.#accumulated.layout = null;
     try {
-      await this.#measurePaginatePaint();
+      if (previousState) {
+        await this.#measurePaginatePaint(previousState);
+      } else {
+        this.#accumulated.layout = null;
+        await this.#measurePaginatePaint();
+      }
     } catch (error) {
       this.#emitLayoutError(error, 'render');
     } finally {
       this.#publishEditingSurfaceDiagnostics();
     }
+  }
+
+  async #tryApplyStructuralReprojection(options?: {
+    pendingSelection?: V2PendingSelection | null;
+    anchorParagraphSourceRef?: { partUri: string; nodeId: string; sourceNodePath?: string } | null;
+    mutationKind?: V2EditingMutationKind;
+  }): Promise<boolean> {
+    const documentHandle = this.#editingController?.documentHandle;
+    if (!documentHandle) {
+      console.debug('[V2StreamingPaginatedRenderHost] Structural reprojection skipped: no document handle');
+      return false;
+    }
+
+    await documentHandle.ready('first-paint-shell');
+
+    const reprojection = reprojectStructuralStreamingWindows({
+      documentHandle,
+      windowRecords: this.#accumulated.windowRecords,
+      blockToSourceRef: this.#accumulated.blockToSourceRef,
+      totalBodyChildCount: this.#accumulated.totalBodyChildCount,
+      pendingSelection: options?.pendingSelection,
+      anchorParagraphSourceRef: options?.anchorParagraphSourceRef ?? null,
+      mutationKind: options?.mutationKind,
+    });
+
+    if (!reprojection?.changed) {
+      console.debug('[V2StreamingPaginatedRenderHost] Structural reprojection skipped', {
+        mutationKind: options?.mutationKind ?? null,
+        hasRenderShell: Boolean(documentHandle.renderShell()),
+        windowRecordCount: this.#accumulated.windowRecords.length,
+      });
+      return false;
+    }
+
+    this.#accumulated.windowRecords = reprojection.windowRecords;
+    this.#accumulated.blocks = reprojection.blocks;
+    this.#accumulated.blockToSourceRef = reprojection.blockToSourceRef;
+    this.#accumulated.nextBodyChildIndex = reprojection.nextBodyChildIndex;
+    this.#accumulated.totalBodyChildCount = reprojection.totalBodyChildCount;
+    this.#accumulated.dependencyManifest = reprojection.dependencyManifest;
+    this.#streamingEditingSuspended = false;
+    this.#editingProjectionAligned = true;
+
+    console.debug('[V2StreamingPaginatedRenderHost] Reprojected structural edit windows', {
+      mutationKind: options?.mutationKind ?? null,
+      affectedWindowIndex: reprojection.affectedWindowIndex,
+      reprojectedWindowCount: reprojection.reprojectedWindowCount,
+      nextBodyChildIndex: reprojection.nextBodyChildIndex,
+      totalBodyChildCount: reprojection.totalBodyChildCount,
+      blockCount: reprojection.blocks.length,
+    });
+
+    return true;
+  }
+
+  async #awaitInitialEditingControllerBootstrap(generation: number): Promise<void> {
+    if (this.#editingController || !this.#initialEditingControllerBootstrap) {
+      return;
+    }
+
+    const controller = await waitForBootstrapController(
+      this.#initialEditingControllerBootstrap,
+      INITIAL_EDITING_BOOTSTRAP_WAIT_MS,
+    );
+
+    if (!controller || generation !== this.#generation || this.#editingController === controller) {
+      return;
+    }
+
+    this.bindEditingController(controller);
+    console.debug('[V2StreamingPaginatedRenderHost] Bound editing controller before first window paint');
   }
 
   #publishEditingSurfaceDiagnostics(): void {
@@ -1330,6 +1621,38 @@ function createEmptyAccumulated(): AccumulatedState {
   };
 }
 
+function resolveAppendPreviousBlocks(accumulated: AccumulatedState): FlowBlock[] {
+  if (!accumulated.layout) {
+    return [];
+  }
+
+  const lastWindowBlockCount =
+    accumulated.windowRecords.length > 0
+      ? accumulated.windowRecords[accumulated.windowRecords.length - 1].blockCount
+      : 0;
+  return accumulated.blocks.slice(0, accumulated.blocks.length - lastWindowBlockCount);
+}
+
+async function waitForBootstrapController(
+  controllerPromise: Promise<V2EditingController | null>,
+  timeoutMs: number,
+): Promise<V2EditingController | null> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race([
+      controllerPromise,
+      new Promise<V2EditingController | null>((resolve) => {
+        timeoutId = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId != null) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 function createEmptyEditingSnapshot(): V2EditableDocumentSnapshot {
   return {
     blockToEntityRef: new Map(),
@@ -1355,9 +1678,11 @@ function createEmptyEditingSurfaceStatus(): V2EditingSurfaceStatus {
     snapshotSource: 'none',
     renderedParagraphCount: 0,
     renderedEditableParagraphCount: 0,
+    renderedEmptyEditableParagraphCount: 0,
     domSegmentCount: 0,
     snapshotParagraphCount: 0,
     supportedParagraphCount: 0,
+    emptyEditableParagraphCount: 0,
     blockIdParagraphCount: 0,
     blockIdSupportedParagraphCount: 0,
     sourceRefParagraphCount: 0,
@@ -1511,6 +1836,7 @@ function buildEditingSurfaceStatus(
   const missingRenderedBlockIds: string[] = [];
   const paragraphsWithoutDomSegments: string[] = [];
   let renderedEditableParagraphCount = 0;
+  let renderedEmptyEditableParagraphCount = 0;
 
   renderedParagraphBlockIds.forEach((blockId) => {
     const paragraph = snapshot.paragraphsByBlockId.get(blockId);
@@ -1527,6 +1853,9 @@ function buildEditingSurfaceStatus(
     const segmentCount = countBlockSegments(blockElement);
     if (segmentCount > 0) {
       renderedEditableParagraphCount += 1;
+      if (isEmptyEditableParagraph(paragraph)) {
+        renderedEmptyEditableParagraphCount += 1;
+      }
       return;
     }
 
@@ -1543,9 +1872,11 @@ function buildEditingSurfaceStatus(
     snapshotSource: selection.snapshotSource,
     renderedParagraphCount: renderedParagraphBlockIds.length,
     renderedEditableParagraphCount,
+    renderedEmptyEditableParagraphCount,
     domSegmentCount,
     snapshotParagraphCount: snapshot.orderedParagraphs.length,
     supportedParagraphCount: countSupportedParagraphs(snapshot),
+    emptyEditableParagraphCount: countEmptyEditableParagraphs(snapshot),
     blockIdParagraphCount: blockIdSnapshot.orderedParagraphs.length,
     blockIdSupportedParagraphCount: countSupportedParagraphs(blockIdSnapshot),
     sourceRefParagraphCount: sourceRefSnapshot.orderedParagraphs.length,
@@ -1558,6 +1889,160 @@ function buildEditingSurfaceStatus(
     missingRenderedBlockIds,
     paragraphsWithoutDomSegments,
   };
+}
+
+function countEmptyEditableParagraphs(snapshot: V2EditableDocumentSnapshot): number {
+  return snapshot.orderedParagraphs.filter((paragraph) => isEmptyEditableParagraph(paragraph)).length;
+}
+
+function reconcileSimpleEditableParagraphText(
+  blocks: readonly FlowBlock[],
+  snapshot: V2EditableDocumentSnapshot,
+): void {
+  for (const block of blocks) {
+    if (block.kind !== 'paragraph') {
+      continue;
+    }
+
+    const paragraph = snapshot.paragraphsByBlockId.get(block.id);
+    if (!paragraph?.supported) {
+      continue;
+    }
+
+    reconcileEditableParagraphBlockText(block, paragraph);
+  }
+}
+
+function reconcileEditableParagraphBlockText(
+  block: Extract<FlowBlock, { kind: 'paragraph' }>,
+  paragraph: V2EditableParagraph,
+): boolean {
+  if (supportsSimpleParagraphTextReconciliation(paragraph)) {
+    return reconcileSimpleEditableParagraphBlockText(block, paragraph);
+  }
+
+  return rebuildEditableParagraphBlockRuns(block, paragraph);
+}
+
+function reconcileSimpleEditableParagraphBlockText(
+  block: Extract<FlowBlock, { kind: 'paragraph' }>,
+  paragraph: V2EditableParagraph,
+): boolean {
+  const textRuns = block.runs.filter(isParagraphTextCarrierRun);
+  if (textRuns.length === 0) {
+    return false;
+  }
+
+  textRuns.forEach((run, index) => {
+    run.text = index === 0 ? paragraph.text : '';
+    if (run.pmStart != null) {
+      run.pmEnd = run.pmStart + run.text.length;
+    }
+  });
+
+  return true;
+}
+
+function rebuildEditableParagraphBlockRuns(
+  block: Extract<FlowBlock, { kind: 'paragraph' }>,
+  paragraph: V2EditableParagraph,
+): boolean {
+  if (!supportsParagraphRunRebuild(block, paragraph)) {
+    return false;
+  }
+
+  const templates = collectParagraphRunTemplates(block);
+  if (templates.length === 0) {
+    return false;
+  }
+
+  block.runs = paragraph.segments.map((segment) =>
+    createRebuiltParagraphRun(selectParagraphRunTemplate(templates, segment), paragraph, segment),
+  );
+  return true;
+}
+
+function supportsSimpleParagraphTextReconciliation(paragraph: V2EditableParagraph): boolean {
+  const mutableSegments = paragraph.segments.filter((segment) => segment.isMutableText);
+  if (mutableSegments.length === 0 || mutableSegments.length !== paragraph.segments.length) {
+    return false;
+  }
+
+  return new Set(mutableSegments.map((segment) => segment.runRef.id)).size === 1;
+}
+
+function supportsParagraphRunRebuild(
+  block: Extract<FlowBlock, { kind: 'paragraph' }>,
+  paragraph: V2EditableParagraph,
+): boolean {
+  return (
+    paragraph.supported &&
+    paragraph.segments.length > 0 &&
+    block.runs.length > 0 &&
+    block.runs.every(isParagraphTextCarrierRun)
+  );
+}
+
+type ParagraphRunTemplate = {
+  readonly run: Extract<FlowBlock, { kind: 'paragraph' }>['runs'][number] & {
+    text: string;
+    pmStart?: number;
+    pmEnd?: number;
+  };
+  readonly runRefId: string | null;
+};
+
+function collectParagraphRunTemplates(
+  block: Extract<FlowBlock, { kind: 'paragraph' }>,
+): readonly ParagraphRunTemplate[] {
+  return block.runs.filter(isParagraphTextCarrierRun).map((run) => ({
+    run,
+    runRefId: run.dataAttrs?.[DATA_ATTRS.SD_RUN_REF] ?? null,
+  }));
+}
+
+function selectParagraphRunTemplate(
+  templates: readonly ParagraphRunTemplate[],
+  segment: V2EditableParagraph['segments'][number],
+): ParagraphRunTemplate {
+  return (
+    templates.find((template) => template.runRefId === segment.runRef.id) ??
+    templates[Math.min(segment.runIndex, templates.length - 1)] ??
+    templates[0]
+  );
+}
+
+function createRebuiltParagraphRun(
+  template: ParagraphRunTemplate,
+  paragraph: V2EditableParagraph,
+  segment: V2EditableParagraph['segments'][number],
+): ParagraphRunTemplate['run'] {
+  const { pmStart: _pmStart, pmEnd: _pmEnd, dataAttrs, ...baseRun } = template.run;
+  return {
+    ...baseRun,
+    text: segment.text,
+    dataAttrs: {
+      ...(dataAttrs ?? {}),
+      [DATA_ATTRS.SD_ENTITY_REF]: paragraph.paragraphRef.id,
+      [DATA_ATTRS.SD_STORY_ID]: paragraph.storyId,
+      [DATA_ATTRS.SD_RUN_REF]: segment.runRef.id,
+      [DATA_ATTRS.SD_SEGMENT_ID]: segment.segmentId,
+      [DATA_ATTRS.SD_SEGMENT_START]: String(segment.paragraphStart),
+      [DATA_ATTRS.SD_SEGMENT_END]: String(segment.paragraphEnd),
+      [DATA_ATTRS.SD_INTERACTION_KIND]: segment.isMutableText ? 'text' : 'protected-text',
+    },
+  };
+}
+
+function isParagraphTextCarrierRun(run: Extract<FlowBlock, { kind: 'paragraph' }>['runs'][number]): run is Extract<
+  FlowBlock,
+  { kind: 'paragraph' }
+>['runs'][number] & {
+  text: string;
+  pmStart?: number;
+  pmEnd?: number;
+} {
+  return (run.kind === undefined || run.kind === 'text' || run.kind === 'tab') && typeof run.text === 'string';
 }
 
 function collectRenderedParagraphBlockIds(accumulated: AccumulatedState, painterHost: HTMLElement): string[] {

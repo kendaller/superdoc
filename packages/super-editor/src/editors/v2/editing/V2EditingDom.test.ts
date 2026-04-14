@@ -6,6 +6,7 @@ import { DATA_ATTRS } from '@superdoc/dom-contract';
 import type { V2EditableDocumentSnapshot, V2EditableParagraph } from './V2EditableDocumentSnapshot.js';
 import { V2EditableIndex } from './V2EditableIndex.js';
 import {
+  V2EditingDomContext,
   computeCaretRect,
   resolveParagraphOffsetFromClientPoint,
   resolveTextPositionFromClientPoint,
@@ -25,6 +26,7 @@ describe('V2EditingDom', () => {
   const originalCaretRangeFromPoint = (document as MutableCaretDocument).caretRangeFromPoint;
 
   afterEach(() => {
+    measuredCharacterRectCount = 0;
     Range.prototype.getClientRects = originalGetClientRects;
     Range.prototype.getBoundingClientRect = originalGetBoundingClientRect;
 
@@ -159,7 +161,56 @@ describe('V2EditingDom', () => {
     expect(caretRect?.top).toBe(30);
     expect(caretRect?.left).toBe(10);
   });
+
+  it('reuses cached character geometry for repeated native hit tests until invalidated', () => {
+    const paragraph = createParagraph();
+    const index = new V2EditableIndex(createSnapshot(paragraph));
+    const container = document.createElement('div');
+    const block = document.createElement('div');
+    block.setAttribute(DATA_ATTRS.BLOCK_ID, paragraph.blockId);
+
+    const segment = document.createElement('span');
+    segment.setAttribute(DATA_ATTRS.SD_RUN_REF, 'run-1');
+    segment.setAttribute(DATA_ATTRS.SD_SEGMENT_ID, 'segment-1');
+    segment.setAttribute(DATA_ATTRS.SD_SEGMENT_START, '0');
+    segment.setAttribute(DATA_ATTRS.SD_SEGMENT_END, '6');
+    segment.textContent = 'abcdef';
+    block.appendChild(segment);
+    container.appendChild(block);
+    document.body.appendChild(container);
+
+    const textNode = segment.firstChild as Text;
+    const characterRects = new Map<number, DOMRect>([
+      [0, new DOMRect(10, 10, 10, 10)],
+      [1, new DOMRect(20, 10, 10, 10)],
+      [2, new DOMRect(30, 10, 10, 10)],
+      [3, new DOMRect(40, 10, 10, 10)],
+      [4, new DOMRect(50, 10, 10, 10)],
+      [5, new DOMRect(60, 10, 10, 10)],
+    ]);
+
+    installCharacterRectMock(textNode, characterRects);
+    block.getBoundingClientRect = () => new DOMRect(10, 10, 60, 10);
+    segment.getBoundingClientRect = () => new DOMRect(10, 10, 60, 10);
+
+    (document as MutableCaretDocument).caretPositionFromPoint = () => null;
+    (document as MutableCaretDocument).caretRangeFromPoint = () => null;
+    (document as MutableCaretDocument).elementFromPoint = () => segment;
+
+    const context = new V2EditingDomContext(container);
+
+    expect(context.resolveTextPositionFromClientPoint(index, 12, 12)?.paragraphOffset).toBe(0);
+    expect(context.resolveTextPositionFromClientPoint(index, 58, 12)?.paragraphOffset).toBe(5);
+    expect(readMeasuredCharacterRectCount()).toBe(6);
+
+    context.invalidate();
+
+    expect(context.resolveTextPositionFromClientPoint(index, 35, 12)?.paragraphOffset).toBe(2);
+    expect(readMeasuredCharacterRectCount()).toBe(12);
+  });
 });
+
+let measuredCharacterRectCount = 0;
 
 function installCharacterRectMock(textNode: Text, rectsByCharacterOffset: ReadonlyMap<number, DOMRect>): void {
   Range.prototype.getClientRects = function getClientRects(): DOMRectList {
@@ -172,6 +223,9 @@ function installCharacterRectMock(textNode: Text, rectsByCharacterOffset: Readon
     }
 
     const rect = rectsByCharacterOffset.get(this.startOffset);
+    if (rect) {
+      measuredCharacterRectCount += 1;
+    }
     return rect ? ([rect] as unknown as DOMRectList) : ([] as unknown as DOMRectList);
   };
 
@@ -179,6 +233,10 @@ function installCharacterRectMock(textNode: Text, rectsByCharacterOffset: Readon
     const rects = Array.from(this.getClientRects());
     return rects[0] ?? new DOMRect(0, 0, 0, 0);
   };
+}
+
+function readMeasuredCharacterRectCount(): number {
+  return measuredCharacterRectCount;
 }
 
 function createSnapshot(paragraph: V2EditableParagraph): V2EditableDocumentSnapshot {

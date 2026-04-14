@@ -7166,6 +7166,7 @@ const deriveBlockVersion = (block: FlowBlock): string => {
           textRun.trackedChange ? 1 : 0,
           // Comment annotations - force re-render when comments are enabled/disabled
           textRun.comments?.length ?? 0,
+          serializeRunDataAttrs(textRun.dataAttrs),
         ].join(',');
       })
       .join('|');
@@ -7443,6 +7444,17 @@ const deriveBlockVersion = (block: FlowBlock): string => {
 
   return block.id;
 };
+
+function serializeRunDataAttrs(dataAttrs: Record<string, string> | undefined): string {
+  if (!dataAttrs) {
+    return '';
+  }
+
+  return Object.keys(dataAttrs)
+    .sort()
+    .map((key) => `${key}=${dataAttrs[key]}`)
+    .join('&');
+}
 
 const DEFAULT_SUPERSCRIPT_RAISE_RATIO = 0.33;
 const DEFAULT_SUBSCRIPT_LOWER_RATIO = 0.14;
@@ -7789,6 +7801,7 @@ export const sliceRunsForLine = (block: ParagraphBlock, line: Line): Run[] => {
         pmStart: pmSliceStart,
         pmEnd: pmSliceEnd,
         comments: (run as TextRun).comments ? [...(run as TextRun).comments!] : undefined,
+        dataAttrs: sliceTextRunDataAttrs(run as TextRun, start, end),
       };
       result.push(sliced);
     } else {

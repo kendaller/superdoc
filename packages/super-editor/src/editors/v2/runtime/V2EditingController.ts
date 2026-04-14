@@ -116,8 +116,18 @@ export class V2EditingController {
    */
   async applyOperation(op: SemanticOperation): Promise<SemanticOperationResult> {
     const { model, session } = this.#requireActive();
+    console.debug('[V2EditingController] Applying operation', {
+      kind: op.kind,
+      target: 'target' in op ? op.target : undefined,
+    });
 
     const result = await applySemanticOperation(op, model, session, this.#history);
+    console.debug('[V2EditingController] Operation completed', {
+      kind: op.kind,
+      ok: result.ok,
+      error: result.ok ? null : result.error,
+      revision: this.revision,
+    });
 
     if (result.ok) {
       this.#emitChanged(op, result);
