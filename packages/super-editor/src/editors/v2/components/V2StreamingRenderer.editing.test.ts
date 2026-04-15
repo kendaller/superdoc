@@ -192,8 +192,16 @@ describe('V2StreamingRenderer editing mode', () => {
 
     expect(hostInstances).toHaveLength(1);
     expect(controllerInstances).toHaveLength(1);
-    expect(sessionInstances).toHaveLength(1);
+    expect(sessionInstances).toHaveLength(0);
     expect(hostInstances[0].setInitialEditingControllerBootstrap).not.toHaveBeenCalled();
+    expect(controllerInstances[0].initialize).not.toHaveBeenCalled();
+    expect(hostInstances[0].bindEditingController).not.toHaveBeenCalled();
+    expect(hostInstances[0].prepareEditingSurface).not.toHaveBeenCalled();
+
+    await wrapper.find('.v2-streaming-renderer__host').trigger('pointerdown');
+    await flushPromises();
+
+    expect(sessionInstances).toHaveLength(1);
     expect(hostInstances[0].load.mock.invocationCallOrder[0]).toBeLessThan(
       controllerInstances[0].initialize.mock.invocationCallOrder[0],
     );

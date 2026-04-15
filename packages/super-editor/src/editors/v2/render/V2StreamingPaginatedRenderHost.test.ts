@@ -383,6 +383,82 @@ describe('V2StreamingPaginatedRenderHost', () => {
     });
   });
 
+  describe('coarse page tail', () => {
+    it('adds placeholder pages after the first exact paint for large documents', async () => {
+      const runtime = createMockRuntime();
+      const firstWindowBlocks = [makeBlock('b1'), makeBlock('b2'), makeBlock('b3')];
+      const coarseBlocks = Array.from({ length: 30 }, (_unused, index) => makeBlock(`coarse-${index + 1}`));
+
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(200));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(makeWindowResult(firstWindowBlocks, 3, 200))
+        .mockResolvedValueOnce(makeWindowResult(coarseBlocks, 30, 200));
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
+        makeWindowResult(firstWindowBlocks, 3, 200),
+      );
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(() => {
+        const layout = host.getLayoutSnapshot().layout;
+        expect(layout).not.toBeNull();
+        expect(layout!.pages.length).toBeGreaterThan(2);
+      });
+
+      const snapshot = host.getLayoutSnapshot();
+      expect(runtime.projectPreviewWindow).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          startBodyChildIndex: 0,
+          maxBodyChildCount: 200,
+          stopAfterPageEstimate: 1000,
+        }),
+      );
+      expect(snapshot.layout!.pages[0].fragments).toEqual([]);
+      expect(snapshot.layout!.pages[2].fragments).toEqual([]);
+
+      host.destroy();
+    });
+
+    it('keeps exact refinement running after coarse pages are added', async () => {
+      const runtime = createMockRuntime();
+      const firstWindowBlocks = [makeBlock('b1'), makeBlock('b2'), makeBlock('b3')];
+      const coarseBlocks = Array.from({ length: 30 }, (_unused, index) => makeBlock(`coarse-${index + 1}`));
+      const appendBlocks = [makeBlock('b4'), makeBlock('b5'), makeBlock('b6')];
+
+      (runtime.getRenderShell as ReturnType<typeof vi.fn>).mockResolvedValue(makeShell(200));
+      (runtime.projectPreviewWindow as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(makeWindowResult(firstWindowBlocks, 3, 200))
+        .mockResolvedValueOnce(makeWindowResult(coarseBlocks, 30, 200));
+      (runtime.projectWindow as ReturnType<typeof vi.fn>).mockResolvedValue(
+        makeWindowResult(firstWindowBlocks, 3, 200),
+      );
+      (runtime.projectNextWindow as ReturnType<typeof vi.fn>).mockResolvedValue(makeWindowResult(appendBlocks, 6, 200));
+
+      const host = new V2StreamingPaginatedRenderHost({
+        element: document.createElement('div'),
+        runtime,
+        windowSize: 3,
+      });
+
+      await host.load(new Uint8Array([1, 2, 3]));
+
+      await vi.waitFor(() => {
+        expect(runtime.projectNextWindow).toHaveBeenCalled();
+      });
+
+      expect(incrementalLayoutMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      host.destroy();
+    });
+  });
+
   describe('editing surface preparation', () => {
     it('waits for the repainted streamed DOM and exposes real editing-surface diagnostics', async () => {
       const runtime = createMockRuntime();

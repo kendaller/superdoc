@@ -71,6 +71,7 @@ const customLoadingComponent = computed(() => resolvedLoadingRendering.value.com
 const customLoadingRender = computed(() => resolvedLoadingRendering.value.render ?? null);
 const customLoadingProps = computed(() => resolvedLoadingRendering.value.props ?? {});
 const editableMode = computed(() => props.options?.documentMode !== 'viewing');
+const EAGER_EDITING_BOOTSTRAP_MAX_BYTES = 2 * 1024 * 1024;
 
 const loadingOverlayHandle: DocumentLoadingHandle = {
   get visible() {
@@ -108,6 +109,65 @@ const loadingOverlayHandle: DocumentLoadingHandle = {
 
 let stopLayoutUpdated: (() => void) | null = null;
 let initializeGeneration = 0;
+let stopDeferredEditingActivation: (() => void) | null = null;
+let deferredEditingBootstrap: Promise<void> | null = null;
+
+function getFileSourceSizeBytes(source: Blob | Uint8Array | null | undefined): number | null {
+  if (!source) {
+    return null;
+  }
+
+  if (source instanceof Uint8Array) {
+    return source.byteLength;
+  }
+
+  if (typeof source.size === 'number') {
+    return source.size;
+  }
+
+  return null;
+}
+
+function shouldEagerlyBootstrapEditing(source: Blob | Uint8Array | null | undefined): boolean {
+  const sourceSizeBytes = getFileSourceSizeBytes(source);
+  return sourceSizeBytes == null || sourceSizeBytes <= EAGER_EDITING_BOOTSTRAP_MAX_BYTES;
+}
+
+function clearDeferredEditingActivation(): void {
+  stopDeferredEditingActivation?.();
+  stopDeferredEditingActivation = null;
+  deferredEditingBootstrap = null;
+}
+
+function installDeferredEditingActivation(element: HTMLElement, activate: () => void): () => void {
+  let active = true;
+  const trigger = () => {
+    if (!active) {
+      return;
+    }
+
+    active = false;
+    cleanup();
+    activate();
+  };
+
+  const cleanup = () => {
+    element.removeEventListener('pointerdown', trigger);
+    element.removeEventListener('beforeinput', trigger as EventListener);
+    element.removeEventListener('paste', trigger);
+    element.removeEventListener('drop', trigger);
+  };
+
+  element.addEventListener('pointerdown', trigger, { passive: true });
+  element.addEventListener('beforeinput', trigger as EventListener);
+  element.addEventListener('paste', trigger);
+  element.addEventListener('drop', trigger);
+
+  return () => {
+    active = false;
+    cleanup();
+  };
+}
 
 async function initializeRenderer(): Promise<void> {
   if (!rootElement.value) {
@@ -162,6 +222,7 @@ async function initializeRenderer(): Promise<void> {
     }
 
     renderer.value = nextRenderer;
+    editingController.value = nextEditingController;
     stopLayoutUpdated = nextRenderer.onLayoutUpdated(() => {
       editingSession.value?.refresh();
       editingSession.value?.setReady(nextRenderer.getEditingSurfaceStatus().ready);
@@ -174,16 +235,39 @@ async function initializeRenderer(): Promise<void> {
     });
 
     if (nextEditingController) {
-      void initializeEditingInfrastructure({
-        generation,
-        controllerReady: initializeEditingController(nextEditingController, props.fileSource),
-        container: rootElement.value,
-        renderer: nextRenderer,
-      });
+      const startEditingBootstrap = (): Promise<void> => {
+        if (deferredEditingBootstrap) {
+          return deferredEditingBootstrap;
+        }
+
+        const bootstrapPromise = initializeEditingInfrastructure({
+          generation,
+          controllerReady: initializeEditingController(nextEditingController, props.fileSource),
+          container: rootElement.value,
+          renderer: nextRenderer,
+        });
+
+        deferredEditingBootstrap = bootstrapPromise.finally(() => {
+          if (deferredEditingBootstrap === bootstrapPromise) {
+            deferredEditingBootstrap = null;
+          }
+        });
+
+        return deferredEditingBootstrap;
+      };
+
+      if (shouldEagerlyBootstrapEditing(props.fileSource)) {
+        void startEditingBootstrap();
+      } else if (rootElement.value) {
+        stopDeferredEditingActivation = installDeferredEditingActivation(rootElement.value, () => {
+          void startEditingBootstrap();
+        });
+      }
     }
   } catch (error) {
     stopLayoutUpdated?.();
     stopLayoutUpdated = null;
+    clearDeferredEditingActivation();
     nextRenderer.destroy();
     await nextEditingController?.close().catch(() => {});
 
@@ -204,9 +288,11 @@ type EditingInfrastructureOptions = {
 
 async function initializeEditingInfrastructure(options: EditingInfrastructureOptions): Promise<void> {
   const { generation, controllerReady, container, renderer: host } = options;
+  let controller: V2EditingController | null = null;
 
   try {
-    const controller = await controllerReady;
+    clearDeferredEditingActivation();
+    controller = await controllerReady;
     if (generation !== initializeGeneration || renderer.value !== host) {
       await controller.close().catch(() => {});
       return;
@@ -253,12 +339,16 @@ async function initializeEditingInfrastructure(options: EditingInfrastructureOpt
       ready: editingSurfaceStatus.ready,
     });
   } catch (error) {
+    clearDeferredEditingActivation();
     if (generation !== initializeGeneration || renderer.value !== host) {
-      await controller.close().catch(() => {});
+      await controller?.close().catch(() => {});
       return;
     }
 
-    await controller.close().catch(() => {});
+    await controller?.close().catch(() => {});
+    if (controller && editingController.value === controller) {
+      editingController.value = null;
+    }
     emit('renderer-error', {
       error: error instanceof Error ? error : new Error(String(error)),
       documentId: props.documentId,
@@ -284,6 +374,7 @@ async function teardownRenderer(): Promise<void> {
   initializeGeneration += 1;
   stopLayoutUpdated?.();
   stopLayoutUpdated = null;
+  clearDeferredEditingActivation();
 
   const currentRenderer = renderer.value;
   const currentEditingController = editingController.value;

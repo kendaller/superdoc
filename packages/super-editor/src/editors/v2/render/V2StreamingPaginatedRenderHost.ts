@@ -57,6 +57,7 @@ import {
   projectCanonicalWindowFromHandle,
   type CanonicalProjectedWindow,
 } from './streaming-window-projection.js';
+import { buildCoarsePages } from './V2CoarsePagePlanner.js';
 import type {
   HostState,
   StateTransitionEntry,
@@ -86,6 +87,7 @@ const DEFAULT_LAYOUT_MODE = 'vertical';
 const DEFAULT_WINDOW_SIZE = 50;
 const DEFAULT_FIRST_WINDOW_PAGE_ESTIMATE = 2;
 const DEFAULT_APPEND_WINDOW_PAGE_ESTIMATE = 2;
+const DEFAULT_COARSE_PAGE_TARGET = 1000;
 const INITIAL_EDITING_BOOTSTRAP_WAIT_MS = 250;
 const BUFFER_AHEAD_PAGES = 10;
 const TWIPS_PER_INCH = 1440;
@@ -389,6 +391,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
         void this.#advanceRenderShellInBackground(gen);
       }
 
+      void this.#buildCoarsePageTail(gen);
+
       // Phase 4: Schedule background streaming or go straight to enriching
       if (this.#accumulated.nextBodyChildIndex < this.#accumulated.totalBodyChildCount) {
         this.#transition('streaming');
@@ -473,7 +477,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     const previousRenderState = options?.repaint
       ? {
           previousBlocks: structuredClone(this.#accumulated.blocks),
-          previousLayout: this.#accumulated.layout,
+          previousLayout: this.#accumulated.exactLayout,
           previousMeasures: [...this.#accumulated.measures],
         }
       : null;
@@ -560,7 +564,9 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
     // If layout options changed and we have a layout, trigger a full re-render
     if (this.#accumulated.layout) {
+      this.#accumulated.exactLayout = null;
       this.#accumulated.layout = null; // Force full re-layout
+      this.#accumulated.coarseTailPages = [];
       void this.#measurePaginatePaint().catch((error) => this.#emitLayoutError(error, 'render'));
     }
   }
@@ -898,7 +904,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     );
 
     const previousBlocks = previousState?.previousBlocks ?? resolveAppendPreviousBlocks(acc);
-    const previousLayout = previousState?.previousLayout ?? acc.layout;
+    const previousLayout = previousState?.previousLayout ?? acc.exactLayout;
     const previousMeasures = previousState?.previousMeasures ?? acc.measures;
 
     const { result } = await runInstrumentedIncrementalLayout({
@@ -913,7 +919,8 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     result.layout.pageGap = getEffectivePageGap(this.#layoutEngineOptions);
 
     acc.measures = result.measures;
-    acc.layout = result.layout;
+    acc.exactLayout = result.layout;
+    acc.layout = mergeDisplayLayout(result.layout, acc.coarseTailPages);
 
     // Mark the last window as laid-out
     const lastRecord = acc.windowRecords[acc.windowRecords.length - 1];
@@ -927,25 +934,86 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
     try {
       const painter = this.#ensurePainter(acc.blocks, result.measures);
       painter.setData?.(acc.blocks, result.measures);
-      painter.paint(result.layout, this.#painterHost);
+      painter.paint(acc.layout, this.#painterHost);
     } finally {
       endPaint();
     }
 
     this.#applyZoom();
-    this.#completeness.syncWithLayout(result.layout);
+    this.#completeness.syncWithLayout(acc.layout);
     this.#publishEditingSurfaceDiagnostics();
 
     const payload: V2StreamingLayoutPayload = {
       blocks: acc.blocks,
       measures: result.measures,
-      layout: result.layout,
+      layout: acc.layout,
     };
     this.emit('layoutUpdated', payload);
     this.emit('paginationUpdate', payload);
   }
 
   // ---- Private: Append pipeline ------------------------------------------------
+
+  async #buildCoarsePageTail(generation: number): Promise<void> {
+    if (this.#accumulated.totalBodyChildCount <= this.#accumulated.nextBodyChildIndex) {
+      return;
+    }
+
+    const targetPageCount = Math.max(DEFAULT_COARSE_PAGE_TARGET, this.#accumulated.exactLayout?.pages.length ?? 0);
+
+    try {
+      const coarseWindow = await this.#projectCoarseWindow(targetPageCount);
+      if (generation !== this.#generation) {
+        return;
+      }
+
+      const layoutInput = this.#resolveLayoutInput();
+      const coarsePages = buildCoarsePages({
+        blocks: toContractFlowBlocks(coarseWindow.blocks),
+        defaultPageSize: layoutInput.pageSize,
+        defaultMargins: layoutInput.margins,
+        maxPageCount: targetPageCount,
+      });
+      const exactLayout = this.#accumulated.exactLayout;
+
+      if (!exactLayout || coarsePages.length <= exactLayout.pages.length) {
+        return;
+      }
+
+      this.#accumulated.coarseTailPages = coarsePages;
+      this.#accumulated.layout = mergeDisplayLayout(exactLayout, coarsePages);
+
+      await this.#repaintCurrentLayout();
+    } catch (error) {
+      if (generation !== this.#generation) {
+        return;
+      }
+
+      this.#emitLayoutError(error, 'coarse-pagination');
+    }
+  }
+
+  async #projectCoarseWindow(targetPageCount: number): Promise<WindowedProjectionResult> {
+    const maxBodyChildCount = this.#accumulated.totalBodyChildCount;
+
+    try {
+      return await this.#runtime.projectPreviewWindow({
+        startBodyChildIndex: 0,
+        maxBodyChildCount,
+        stopAfterPageEstimate: targetPageCount,
+      });
+    } catch (error) {
+      if (!isPreviewUnsupportedError(error)) {
+        throw error;
+      }
+
+      return this.#runtime.projectWindow({
+        startBodyChildIndex: 0,
+        maxBodyChildCount,
+        stopAfterPageEstimate: targetPageCount,
+      });
+    }
+  }
 
   #scheduleStreamingWork(): void {
     if (this.#streamingEditingSuspended) {
@@ -977,7 +1045,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
 
   async #appendNextWindow(): Promise<void> {
     const gen = this.#generation;
-    const prevPageCount = this.#accumulated.layout?.pages.length ?? 0;
+    const prevPageCount = this.#accumulated.exactLayout?.pages.length ?? 0;
     const startBodyChildIndex = this.#accumulated.nextBodyChildIndex;
     const batchStartMs = perfNow();
 
@@ -1004,7 +1072,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
       await this.#measurePaginatePaint();
       if (gen !== this.#generation) return;
 
-      const nextPageCount = this.#accumulated.layout?.pages.length ?? prevPageCount;
+      const nextPageCount = this.#accumulated.exactLayout?.pages.length ?? prevPageCount;
       const pagesAdded = Math.max(0, nextPageCount - prevPageCount);
       const bodyChildrenConsumed = Math.max(0, this.#accumulated.nextBodyChildIndex - startBodyChildIndex);
       const fieldHeavyRatio = getFieldHeavyRatio(projectedWindow.projectionStats);
@@ -1134,7 +1202,7 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   }
 
   #needsMoreBufferedPages(): boolean {
-    const layout = this.#accumulated.layout;
+    const layout = this.#accumulated.exactLayout;
     if (!layout) {
       return true;
     }
@@ -1227,6 +1295,35 @@ export class V2StreamingPaginatedRenderHost extends EventEmitter {
   }
 
   // ---- Private: DomPainter integration -----------------------------------------
+
+  async #repaintCurrentLayout(): Promise<void> {
+    const layout = this.#accumulated.layout;
+    if (!layout) {
+      return;
+    }
+
+    await yieldToBrowser();
+    const endPaint = v2PerfTimeline.startSpan(SPAN_PAINT);
+    try {
+      const painter = this.#ensurePainter(this.#accumulated.blocks, this.#accumulated.measures);
+      painter.setData?.(this.#accumulated.blocks, this.#accumulated.measures);
+      painter.paint(layout, this.#painterHost);
+    } finally {
+      endPaint();
+    }
+
+    this.#applyZoom();
+    this.#completeness.syncWithLayout(layout);
+    this.#publishEditingSurfaceDiagnostics();
+
+    const payload: V2StreamingLayoutPayload = {
+      blocks: this.#accumulated.blocks,
+      measures: this.#accumulated.measures,
+      layout,
+    };
+    this.emit('layoutUpdated', payload);
+    this.emit('paginationUpdate', payload);
+  }
 
   #ensurePainter(blocks: FlowBlock[], measures: Measure[]): ReturnType<typeof createDomPainter> {
     const effectivePageGap = getEffectivePageGap(this.#layoutEngineOptions);
@@ -1638,7 +1735,9 @@ function createEmptyAccumulated(): AccumulatedState {
   return {
     blocks: [],
     measures: [],
+    exactLayout: null,
     layout: null,
+    coarseTailPages: [],
     windowRecords: [],
     blockToSourceRef: new Map(),
     editingSnapshot: createEmptyEditingSnapshot(),
@@ -1650,7 +1749,7 @@ function createEmptyAccumulated(): AccumulatedState {
 }
 
 function resolveAppendPreviousBlocks(accumulated: AccumulatedState): FlowBlock[] {
-  if (!accumulated.layout) {
+  if (!accumulated.exactLayout) {
     return [];
   }
 
@@ -2423,6 +2522,29 @@ function getFieldHeavyRatio(stats: WindowedProjectionResult['projectionStats']):
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function mergeDisplayLayout(exactLayout: Layout, coarsePages: readonly Layout['pages'][number][]): Layout {
+  if (coarsePages.length <= exactLayout.pages.length) {
+    return exactLayout;
+  }
+
+  const exactPages = exactLayout.pages.map((page, index) => ({
+    ...page,
+    number: index + 1,
+    ...(page.numberText ? { numberText: page.numberText } : { numberText: String(index + 1) }),
+  }));
+  const coarseTail = coarsePages.slice(exactPages.length).map((page, offset) => ({
+    ...page,
+    fragments: [],
+    number: exactPages.length + offset + 1,
+    numberText: String(exactPages.length + offset + 1),
+  }));
+
+  return {
+    ...exactLayout,
+    pages: [...exactPages, ...coarseTail],
+  };
 }
 
 function createCooperativeMeasureBlock(

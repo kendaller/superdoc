@@ -1,4 +1,4 @@
-import type { FlowBlock, Layout, Measure, SectionMetadata } from '@superdoc/contracts';
+import type { FlowBlock, Layout, Measure, Page, SectionMetadata } from '@superdoc/contracts';
 import type { DependencyManifest, SectionMetadataDelta } from '@superdoc/v2-model';
 import type { V2EditableDocumentSnapshot } from '../editing/V2EditableDocumentSnapshot.js';
 
@@ -101,7 +101,9 @@ export type WindowRecord = {
 export type AccumulatedState = {
   blocks: FlowBlock[];
   measures: Measure[];
+  exactLayout: Layout | null;
   layout: Layout | null;
+  coarseTailPages: Page[];
   windowRecords: WindowRecord[];
   blockToSourceRef: ReadonlyMap<string, { partUri: string; nodeId: string; sourceNodePath?: string }>;
   editingSnapshot: V2EditableDocumentSnapshot;
