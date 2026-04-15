@@ -108,33 +108,6 @@ function makeEditor(text = 'Hello'): {
   };
   dispatch: ReturnType<typeof vi.fn>;
 } {
-  const sliceTextBetween = (from: number, to: number) => {
-    const start = Math.max(0, from - 1);
-    const end = Math.max(start, to - 1);
-    return text.slice(start, end);
-  };
-
-  // Mutations run against `tr.doc` (same as PM); keep it aligned with `state.doc` so
-  // executeTextRewrite / charOffsetToDocPos / assert helpers see consistent text APIs.
-  const sharedDoc = {
-    textContent: text,
-    textBetween: vi.fn((from: number, to: number) => sliceTextBetween(from, to)),
-    resolve: () => ({ marks: () => [] }),
-    nodesBetween: (
-      rangeFrom: number,
-      rangeTo: number,
-      f: (node: { isText: boolean; text: string; nodeSize: number }, pos: number) => boolean | void,
-    ) => {
-      const textPos = 1;
-      if (rangeTo <= textPos || rangeFrom >= textPos + text.length) return;
-      const node = { isText: true, text, nodeSize: text.length };
-      f(node, textPos);
-    },
-    descendants: (_f: (node: unknown, pos: number) => boolean | void) => {
-      // Default tests resolve text asserts via textBetween / textContent; node walks can override per test.
-    },
-  };
-
   const tr = {
     replace: vi.fn(),
     replaceWith: vi.fn(),
@@ -145,7 +118,10 @@ function makeEditor(text = 'Hello'): {
     setMeta: vi.fn(),
     mapping: { map: (pos: number) => pos },
     docChanged: true,
-    doc: sharedDoc,
+    doc: {
+      resolve: () => ({ marks: () => [] }),
+      textContent: text,
+    },
   };
   tr.replace.mockReturnValue(tr);
   tr.replaceWith.mockReturnValue(tr);
@@ -162,7 +138,15 @@ function makeEditor(text = 'Hello'): {
 
   const editor = {
     state: {
-      doc: sharedDoc,
+      doc: {
+        textContent: text,
+        textBetween: vi.fn((from: number, to: number) => {
+          const start = Math.max(0, from - 1);
+          const end = Math.max(start, to - 1);
+          return text.slice(start, end);
+        }),
+        nodesBetween: vi.fn(),
+      },
       tr,
       schema: {
         marks: {
@@ -2774,6 +2758,11 @@ describe('executeCompiledPlan: atomic rollback on failure', () => {
     setupResolveTextRange(1, 6);
     mockedDeps.resolveInlineStyle.mockReturnValue([]);
     mockedDeps.getRevision.mockReturnValue('0');
+
+    // Patch tr.doc with descendants so buildAssertIndex can run
+    const tr = editor.state.tr as any;
+    tr.doc.descendants = vi.fn();
+    tr.doc.textBetween = vi.fn(() => '');
 
     const mutationStep: TextRewriteStep = {
       id: 'step-1',
