@@ -2916,5 +2916,5 @@ export { resolvePageNumberTokens } from './resolvePageTokens.js';
 export type { NumberingContext, ResolvePageTokensResult } from './resolvePageTokens.js';
 
 // Table utilities consumed by layout-bridge and cross-package sync tests
-export { getCellLines, getEmbeddedRowLines } from './layout-table.js';
+export { getCellLines, getEmbeddedRowLines, resolveTableFrame, resolveRenderedTableWidth } from './layout-table.js';
 export { describeCellRenderBlocks, computeCellSliceContentHeight } from './table-cell-slice.js';
