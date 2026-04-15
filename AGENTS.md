@@ -116,6 +116,21 @@ Many packages use `.js` files with JSDoc `@typedef` for type definitions (e.g., 
 - `pnpm dev` - Start dev server (from examples/)
 - `pnpm run generate:all` - Generate all derived artifacts (schemas, SDK clients, tool catalogs, reference docs)
 
+## Performance Guardrails
+
+Speed is a product requirement, not a follow-up optimization. Keep these rules top of mind when changing the v2 load/edit pipeline:
+
+- **Protect TTFR first.** Do not add work to the critical path for first visible render unless it is required for the first painted window to exist.
+- **Huge documents are the normal case.** Evaluate changes against large table-heavy DOCX files, not only small fixtures.
+- **Avoid duplicate opens/parses.** Reopening the same document in parallel for render and edit is a red flag. Prefer one live session and background hydration over redundant full-document work.
+- **Prioritize visible work.** First-window render, visible-window interaction metadata, and active-edit reconciliation outrank global indexes, enrichment, and whole-document readiness.
+- **Keep invalidation local.** Plain typing must stay paragraph-local; structural edits must stay window-local whenever possible.
+- **Measure user-facing milestones.** Every major pipeline change should consider at least:
+  - TTFR: time to first rendered window
+  - TTFE: time to first editable interaction
+  - typing latency under normal speed on a huge doc
+- **Do not trade TTFR for eager completeness lightly.** If a feature can load after first paint without breaking the visible surface, prefer deferring it.
+
 ## AI Eval Suite
 
 The `evals/` directory contains a Promptfoo-based evaluation suite for validating AI tool call quality.

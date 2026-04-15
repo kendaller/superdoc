@@ -124,15 +124,6 @@ async function initializeRenderer(): Promise<void> {
 
   const runtime = resolveRuntime();
   const nextEditingController = editableMode.value ? new V2EditingController() : null;
-  const nextEditingControllerReady = nextEditingController
-    ? nextEditingController.initialize(props.fileSource).then(
-        () => nextEditingController,
-        async (error) => {
-          await nextEditingController.close().catch(() => {});
-          throw error;
-        },
-      )
-    : null;
 
   const nextRenderer = new V2StreamingPaginatedRenderHost({
     element: rootElement.value,
@@ -146,10 +137,6 @@ async function initializeRenderer(): Promise<void> {
     windowSize: props.windowSize,
     firstWindowPageEstimate: props.firstWindowPageEstimate,
   });
-
-  if (nextEditingControllerReady) {
-    nextRenderer.setInitialEditingControllerBootstrap(nextEditingControllerReady);
-  }
 
   nextRenderer.onFirstPaintComplete((payload) => {
     emit('first-paint-complete', payload);
@@ -189,7 +176,7 @@ async function initializeRenderer(): Promise<void> {
     if (nextEditingController) {
       void initializeEditingInfrastructure({
         generation,
-        controllerReady: nextEditingControllerReady!,
+        controllerReady: initializeEditingController(nextEditingController, props.fileSource),
         container: rootElement.value,
         renderer: nextRenderer,
       });
@@ -278,6 +265,19 @@ async function initializeEditingInfrastructure(options: EditingInfrastructureOpt
       fileSource: props.fileSource,
     });
   }
+}
+
+function initializeEditingController(
+  controller: V2EditingController,
+  fileSource: Blob | Uint8Array,
+): Promise<V2EditingController> {
+  return controller.initialize(fileSource).then(
+    () => controller,
+    async (error) => {
+      await controller.close().catch(() => {});
+      throw error;
+    },
+  );
 }
 
 async function teardownRenderer(): Promise<void> {

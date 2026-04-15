@@ -139,6 +139,10 @@ describe('V2StreamingRenderer editing mode', () => {
     expect(hostInstances).toHaveLength(1);
     expect(controllerInstances).toHaveLength(1);
     expect(sessionInstances).toHaveLength(1);
+    expect(hostInstances[0].setInitialEditingControllerBootstrap).not.toHaveBeenCalled();
+    expect(hostInstances[0].load.mock.invocationCallOrder[0]).toBeLessThan(
+      controllerInstances[0].initialize.mock.invocationCallOrder[0],
+    );
     expect(hostInstances[0].bindEditingController).toHaveBeenCalledWith(controllerInstances[0]);
     expect(hostInstances[0].prepareEditingSurface).toHaveBeenCalledTimes(1);
     expect(sessionInstances[0].attach).toHaveBeenCalledTimes(1);
@@ -170,5 +174,32 @@ describe('V2StreamingRenderer editing mode', () => {
     expect(controllerInstances).toHaveLength(0);
     expect(sessionInstances).toHaveLength(0);
     expect(wrapper.emitted('renderer-ready')).toHaveLength(1);
+  });
+
+  it('defers editing controller bootstrap until after load completes for large sources too', async () => {
+    const largeSource = new Uint8Array(4 * 1024 * 1024);
+    const wrapper = mount(V2StreamingRenderer, {
+      props: {
+        documentId: 'doc-large',
+        fileSource: largeSource,
+        options: {
+          documentMode: 'editing',
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect(hostInstances).toHaveLength(1);
+    expect(controllerInstances).toHaveLength(1);
+    expect(sessionInstances).toHaveLength(1);
+    expect(hostInstances[0].setInitialEditingControllerBootstrap).not.toHaveBeenCalled();
+    expect(hostInstances[0].load.mock.invocationCallOrder[0]).toBeLessThan(
+      controllerInstances[0].initialize.mock.invocationCallOrder[0],
+    );
+    expect(hostInstances[0].bindEditingController).toHaveBeenCalledWith(controllerInstances[0]);
+    expect(hostInstances[0].prepareEditingSurface).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
   });
 });
