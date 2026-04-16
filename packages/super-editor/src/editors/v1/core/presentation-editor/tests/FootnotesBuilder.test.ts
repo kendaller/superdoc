@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { EditorState } from 'prosemirror-state';
 import { buildFootnotesInput, type ConverterLike } from '../layout/FootnotesBuilder.js';
+import { toFlowBlocks } from '@superdoc/pm-adapter';
 import type { ConverterContext } from '@superdoc/pm-adapter';
 import { SUBSCRIPT_SUPERSCRIPT_SCALE } from '@superdoc/pm-adapter/constants.js';
 
@@ -132,6 +133,20 @@ describe('buildFootnotesInput', () => {
       expect(result?.blocksById.size).toBe(2);
       expect(result?.blocksById.has('1')).toBe(true);
       expect(result?.blocksById.has('2')).toBe(true);
+    });
+
+    it('passes a footnote story key into toFlowBlocks', () => {
+      const editorState = createMockEditorState([{ id: '12', pos: 10 }]);
+      const converter = createMockConverter([
+        { id: '12', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Note 12' }] }] },
+      ]);
+
+      buildFootnotesInput(editorState, converter, undefined, undefined);
+
+      expect(toFlowBlocks).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ storyKey: 'fn:12' }),
+      );
     });
 
     it('returns correct default spacing values', () => {

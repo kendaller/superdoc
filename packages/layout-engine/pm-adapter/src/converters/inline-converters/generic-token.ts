@@ -27,6 +27,7 @@ export function tokenNodeToRun({
   sdtMetadata,
   runProperties,
   converterContext,
+  storyKey,
 }: InlineConverterParams): TextRun | null {
   const token = TOKEN_INLINE_TYPES.get(node.type);
   if (!token) {
@@ -58,7 +59,7 @@ export function tokenNodeToRun({
   const effectiveMarks = nodeMarks.length > 0 ? nodeMarks : marksAsAttrs;
 
   const marks = [...effectiveMarks, ...(inheritedMarks ?? [])];
-  applyMarksToRun(run, marks, hyperlinkConfig, themeColors);
+  applyMarksToRun(run, marks, hyperlinkConfig, themeColors, undefined, true, storyKey);
 
   applyInlineRunProperties(run, runProperties, converterContext);
 

@@ -3871,6 +3871,41 @@ describe('DomPainter', () => {
     expect(span.classList.contains('highlighted')).toBe(false);
   });
 
+  it('stamps data-story-key for tracked changes so non-body anchors can be distinguished', () => {
+    const trackedBlock: FlowBlock = {
+      kind: 'paragraph',
+      id: 'story-key-block',
+      runs: [
+        {
+          text: 'Header change',
+          fontFamily: 'Arial',
+          fontSize: 16,
+          trackedChange: {
+            kind: 'insert',
+            id: 'change-header',
+            storyKey: 'hf:part:rId7',
+          },
+        },
+      ],
+      attrs: {
+        trackedChangesMode: 'review',
+        trackedChangesEnabled: true,
+      },
+    };
+
+    const { paragraphMeasure, paragraphLayout } = buildSingleParagraphData(
+      trackedBlock.id,
+      trackedBlock.runs[0].text.length,
+    );
+
+    const painter = createTestPainter({ blocks: [trackedBlock], measures: [paragraphMeasure] });
+    painter.paint(paragraphLayout, mount);
+
+    const span = mount.querySelector('[data-track-change-id="change-header"]') as HTMLElement;
+    expect(span).toBeTruthy();
+    expect(span.dataset.storyKey).toBe('hf:part:rId7');
+  });
+
   it('omits track-change styling when disabled', () => {
     const disabledBlock: FlowBlock = {
       kind: 'paragraph',

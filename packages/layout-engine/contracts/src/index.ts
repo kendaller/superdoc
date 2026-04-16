@@ -160,6 +160,19 @@ export type RunMark = {
 export type TrackedChangeMeta = {
   kind: TrackedChangeKind;
   id: string;
+  /**
+   * Internal story key identifying which content story owns this tracked
+   * change (`'body'`, `'hf:part:…'`, `'fn:…'`, `'en:…'`).
+   *
+   * Set by the PM adapter during conversion and stamped on the rendered
+   * DOM as `data-story-key` so downstream code can distinguish anchors
+   * across stories without re-resolving the story runtime.
+   *
+   * Optional for backward compatibility — when omitted the rendered DOM
+   * has no `data-story-key` attribute and the shared position map falls
+   * back to the legacy body-only keying.
+   */
+  storyKey?: string;
   author?: string;
   authorEmail?: string;
   authorImage?: string;

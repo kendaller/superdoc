@@ -45,6 +45,7 @@ export type {
   ListDefinitionsPayload,
   ProtectionChangeSource,
   EditorEventMap,
+  TrackedChangesChangedPayload,
 } from './editors/v1/core/types/EditorEvents.js';
 
 // Parts system types (used by partChanged event handler)

@@ -19,7 +19,7 @@ import { documentStatFieldHandlerEntity } from './documentStatFieldImporter.js';
 import { pageReferenceEntity } from './pageReferenceImporter.js';
 import { pictNodeHandlerEntity } from './pictNodeImporter.js';
 import { importCommentData } from './documentCommentsImporter.js';
-import { buildTrackedChangeIdMap } from './trackedChangeIdMapper.js';
+import { buildTrackedChangeIdMap, buildTrackedChangeIdMapsByPart } from './trackedChangeIdMapper.js';
 import { importFootnoteData, importEndnoteData } from './documentFootnotesImporter.js';
 import { getDefaultStyleDefinition } from '@converter/docx-helpers/index.js';
 import { pruneIgnoredNodes } from './ignoredNodes.js';
@@ -152,7 +152,12 @@ export const createDocumentJson = (docx, converter, editor) => {
 
     patchNumberingDefinitions(docx);
     const numbering = getNumberingDefinitions(docx);
+    // Body map stays on `trackedChangeIdMap` for body-only call sites (back-compat).
+    // The full per-part map is also stored so header/footer/footnote/endnote
+    // translators can preserve their own Word revision id pairings without
+    // colliding against the body id-space.
     converter.trackedChangeIdMap = buildTrackedChangeIdMap(docx);
+    converter.trackedChangeIdMapsByPart = buildTrackedChangeIdMapsByPart(docx);
     const comments = importCommentData({ docx, nodeListHandler, converter, editor });
     const footnotes = importFootnoteData({ docx, nodeListHandler, converter, editor, numbering });
     const endnotes = importEndnoteData({ docx, nodeListHandler, converter, editor, numbering });

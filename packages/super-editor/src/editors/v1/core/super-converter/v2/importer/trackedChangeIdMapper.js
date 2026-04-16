@@ -125,6 +125,24 @@ function walkElements(elements, idMap, context, insideTrackedChange = false) {
 }
 
 /**
+ * Scan a single OOXML part and return a fresh `w:id → internal UUID` map.
+ *
+ * The scan assumes the top-level element is a document / hdr / ftr / footnotes
+ * / endnotes root. Returns an empty map when the part is absent or malformed.
+ *
+ * @param {object | undefined} part Parsed OOXML part (from SuperConverter).
+ * @returns {Map<string, string>}
+ */
+function buildTrackedChangeIdMapForPart(part) {
+  const root = part?.elements?.[0];
+  if (!root?.elements) return new Map();
+
+  const idMap = new Map();
+  walkElements(root.elements, idMap, { lastTrackedChange: null });
+  return idMap;
+}
+
+/**
  * Builds a map from OOXML `w:id` values to stable internal UUIDs by scanning
  * `word/document.xml`.
  *
@@ -140,11 +158,51 @@ function walkElements(elements, idMap, context, insideTrackedChange = false) {
  * @returns {Map<string, string>}  Word `w:id` → internal UUID
  */
 export function buildTrackedChangeIdMap(docx) {
-  const body = docx?.['word/document.xml']?.elements?.[0];
-  if (!body?.elements) return new Map();
+  return buildTrackedChangeIdMapForPart(docx?.['word/document.xml']);
+}
 
-  const idMap = new Map();
-  walkElements(body.elements, idMap, { lastTrackedChange: null });
+/**
+ * Builds per-part `w:id → internal UUID` maps for every revision-capable
+ * content part in the DOCX package.
+ *
+ * Word revision IDs are **not** globally unique across parts — two different
+ * headers can legally reuse the same `w:id`. Storing a single global map
+ * would collapse those distinct revisions onto the same internal UUID,
+ * losing the pairing metadata that `buildTrackedChangeIdMap` works so hard
+ * to preserve. A per-part map keeps each part's id-space isolated.
+ *
+ * The body map (keyed by `word/document.xml`) matches the legacy behavior
+ * of {@link buildTrackedChangeIdMap}, so body-only call sites can switch
+ * by reading `result.get('word/document.xml')` without any change in
+ * observed behavior.
+ *
+ * @param {Record<string, object | undefined> | null | undefined} docx  Parsed DOCX package.
+ * @returns {Map<string, Map<string, string>>}  Part path → `w:id → UUID` map.
+ */
+export function buildTrackedChangeIdMapsByPart(docx) {
+  /** @type {Map<string, Map<string, string>>} */
+  const mapsByPart = new Map();
+  if (!docx || typeof docx !== 'object') return mapsByPart;
 
-  return idMap;
+  /** @type {Record<string, object | undefined>} */
+  const parts = /** @type {Record<string, object | undefined>} */ (docx);
+
+  // Body (always present for valid docx documents).
+  mapsByPart.set('word/document.xml', buildTrackedChangeIdMapForPart(parts['word/document.xml']));
+
+  // Every header / footer part discovered in the package.
+  for (const partPath of Object.keys(parts)) {
+    if (!/^word\/(?:header|footer)\d+\.xml$/.test(partPath)) continue;
+    mapsByPart.set(partPath, buildTrackedChangeIdMapForPart(parts[partPath]));
+  }
+
+  // Footnotes and endnotes share the same paired-replacement structure.
+  if (parts['word/footnotes.xml']) {
+    mapsByPart.set('word/footnotes.xml', buildTrackedChangeIdMapForPart(parts['word/footnotes.xml']));
+  }
+  if (parts['word/endnotes.xml']) {
+    mapsByPart.set('word/endnotes.xml', buildTrackedChangeIdMapForPart(parts['word/endnotes.xml']));
+  }
+
+  return mapsByPart;
 }

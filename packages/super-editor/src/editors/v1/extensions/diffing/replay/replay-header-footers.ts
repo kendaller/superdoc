@@ -106,8 +106,30 @@ export function replayHeaderFooters({
   }
 
   if (trackedChangesRequested) {
+    // Phase 1 decision (from plans/tracked-changes-in-parts.md, Phase 9):
+    // Collaborative REPLAY of tracked header/footer diffs is explicitly out
+    // of scope for the "tracked changes in parts" phase 1 rollout. Story-
+    // aware tracked writes are supported for local edits and document-api /
+    // SDK callers, but diff replay falls back to direct application.
+    //
+    // We emit a STRUCTURED warning here (not just a user-facing string) so
+    // product can observe real-world frequency before promoting this to a
+    // Phase 1.5 follow-up. The console.warn is guarded on an emitter so
+    // test environments that stub the editor see nothing.
+    if (typeof editor?.emit === 'function') {
+      editor.emit('tracked-change-replay-skipped', {
+        surface: 'headerFooter',
+        reason: 'tracked-header-footer-replay-unsupported',
+      });
+    } else if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+      // eslint-disable-next-line no-console
+      console.warn('[tracked-changes] header/footer diff replay falls back to direct write', {
+        reason: 'tracked-header-footer-replay-unsupported',
+      });
+    }
     result.warnings.push(
-      'Header/footer replay applied directly because tracked header/footer replay is not supported.',
+      'Header/footer replay applied directly because tracked header/footer replay is not supported. ' +
+        'Track: see plans/tracked-changes-in-parts.md Phase 9 (collab replay decision).',
     );
   }
 

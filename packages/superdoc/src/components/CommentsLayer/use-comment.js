@@ -59,6 +59,23 @@ export default function useComment(params) {
   const trackedChangeText = ref(params.trackedChangeText || null);
   const trackedChangeDisplayType = ref(params.trackedChangeDisplayType || null);
   const deletedText = ref(params.deletedText || null);
+  /**
+   * Story awareness for tracked-change sidebar items.
+   *
+   * When present, these fields describe which content story (body, header,
+   * footer, footnote, endnote) owns this tracked change. Body-scoped items
+   * carry `trackedChangeStory = { kind: 'story', storyType: 'body' }` or may
+   * omit the field entirely for backward compatibility.
+   *
+   * The fields are populated by comments-store when it synchronizes against
+   * the super-editor TrackedChangeIndex, so the sidebar can render location
+   * labels, route accept/reject to the correct story runtime, and disambiguate
+   * otherwise-identical tracked-change IDs that live in different stories.
+   */
+  const trackedChangeStory = ref(params.trackedChangeStory || null);
+  const trackedChangeStoryKind = ref(params.trackedChangeStoryKind || null);
+  const trackedChangeStoryLabel = ref(params.trackedChangeStoryLabel || '');
+  const trackedChangeAnchorKey = ref(params.trackedChangeAnchorKey || null);
 
   const resolvedTime = ref(params.resolvedTime || null);
   const resolvedByEmail = ref(params.resolvedByEmail || null);
@@ -253,6 +270,10 @@ export default function useComment(params) {
       trackedChangeText: trackedChangeText.value,
       trackedChangeType: trackedChangeType.value,
       trackedChangeDisplayType: trackedChangeDisplayType.value,
+      trackedChangeStory: trackedChangeStory.value,
+      trackedChangeStoryKind: trackedChangeStoryKind.value,
+      trackedChangeStoryLabel: trackedChangeStoryLabel.value,
+      trackedChangeAnchorKey: trackedChangeAnchorKey.value,
       deletedText: deletedText.value,
       resolvedTime: resolvedTime.value,
       resolvedByEmail: resolvedByEmail.value,
@@ -289,6 +310,10 @@ export default function useComment(params) {
     trackedChangeType,
     trackedChangeText,
     trackedChangeDisplayType,
+    trackedChangeStory,
+    trackedChangeStoryKind,
+    trackedChangeStoryLabel,
+    trackedChangeAnchorKey,
     resolvedTime,
     resolvedByEmail,
     resolvedByName,

@@ -138,6 +138,20 @@ const isImported = computed(() => {
   return props.comment.origin != null || !!props.comment.importedAuthor?.name;
 });
 
+/**
+ * Human-readable location badge for tracked-change sidebar cards.
+ *
+ * Body-scoped tracked changes render no badge (`''`). Non-body tracked
+ * changes render the label produced by the TrackedChangeIndex
+ * (`'Footnote 12'`, `'Header · Section 3'`, etc.).
+ */
+const storyLocationLabel = computed(() => {
+  if (!props.comment?.trackedChange) return '';
+  const label = props.comment.trackedChangeStoryLabel;
+  if (typeof label !== 'string') return '';
+  return label;
+});
+
 const getCurrentUser = computed(() => {
   if (props.isPendingInput) return proxy.$superdoc.config.user;
   const user = props.comment.getCommentUser();
@@ -157,6 +171,9 @@ const getCurrentUser = computed(() => {
       <div class="user-info">
         <div class="user-name">
           {{ getCurrentUser.name }}<span v-if="isImported" class="imported-tag">IMPORTED</span>
+          <span v-if="storyLocationLabel" class="story-location-tag" :title="storyLocationLabel">
+            {{ storyLocationLabel }}
+          </span>
         </div>
         <div class="user-timestamp" v-if="props.comment.createdTime">{{ formatDate(props.comment.createdTime) }}</div>
       </div>
@@ -227,6 +244,22 @@ const getCurrentUser = computed(() => {
   margin-left: 6px;
   vertical-align: middle;
   line-height: 1.4;
+}
+.story-location-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--sd-ui-comments-story-tag-text, #4a5568);
+  background: var(--sd-ui-comments-story-tag-bg, #e2e8f0);
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+  line-height: 1.4;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .user-timestamp {
   line-height: 1.2em;

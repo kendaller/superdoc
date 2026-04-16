@@ -19,6 +19,7 @@ export function tabNodeToRun({
   paragraphAttrs,
   inheritedMarks,
   sdtMetadata,
+  storyKey,
 }: InlineConverterParams): Run | null {
   const pos = positions.get(node);
   if (!pos) return null;
@@ -42,7 +43,7 @@ export function tabNodeToRun({
   // Apply marks (e.g., underline) to the tab run
   const marks = [...(node.marks ?? []), ...(inheritedMarks ?? [])];
   if (marks.length > 0) {
-    applyMarksToRun(run, marks);
+    applyMarksToRun(run, marks, undefined, undefined, undefined, true, storyKey);
   }
 
   return run;

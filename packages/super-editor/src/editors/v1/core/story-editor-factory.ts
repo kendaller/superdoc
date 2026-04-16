@@ -153,10 +153,20 @@ export function createStoryEditor(
     editable: false,
     documentMode: 'viewing',
 
+    // Propagate the parent editor's `user` so that tracked-capable writes
+    // against this story editor pass the author-metadata check in
+    // `ensureTrackedCapability`. Without this, document-api / SDK tracked
+    // writes into headers, footers, footnotes, and endnotes fail with
+    // `missing_user` even when the host editor has a configured user.
+    user: parentEditor.options.user,
+
     // Only set element when not headless
     ...(isHeadless ? {} : { element }),
 
-    // Disable collaboration, comments, and tracked changes for story editors
+    // Disable collaboration and comments for story editors. Tracked changes
+    // are NOT disabled here — the `track-changes` extension is pulled in via
+    // the inherited extension set so that `insertTrackedChange` and the
+    // tracking marks are available for story-scoped tracked mutations.
     ydoc: null,
     collaborationProvider: null,
     isCommentsEnabled: false,

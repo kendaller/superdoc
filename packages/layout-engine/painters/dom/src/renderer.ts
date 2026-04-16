@@ -6391,6 +6391,12 @@ export class DomPainter {
 
     elem.dataset.trackChangeId = meta.id;
     elem.dataset.trackChangeKind = meta.kind;
+    // Stamp the owning story key so downstream code (sidebar routing,
+    // click handlers, anchor collection) can distinguish body / header /
+    // footer / footnote / endnote changes without re-resolving runtimes.
+    // Body stories default to 'body' when no explicit key is provided so
+    // existing body-only selectors continue to match legacy documents.
+    elem.dataset.storyKey = meta.storyKey ?? 'body';
     if (meta.author) {
       elem.dataset.trackChangeAuthor = meta.author;
     }

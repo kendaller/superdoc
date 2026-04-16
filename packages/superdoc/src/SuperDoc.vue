@@ -382,6 +382,15 @@ const onEditorReady = ({ editor, presentationEditor }) => {
     }
   });
 
+  editor.on?.('tracked-changes-changed', ({ editor: sourceEditor, source }) => {
+    if (source === 'body-edit') return;
+    if (!shouldRenderCommentsInViewing.value) {
+      commentsStore.clearEditorCommentPositions?.();
+      return;
+    }
+    syncTrackedChangeComments({ superdoc: proxy.$superdoc, editor: sourceEditor ?? editor });
+  });
+
   presentationEditor.on('paginationUpdate', ({ layout }) => {
     const totalPages = layout.pages.length;
     proxy.$superdoc.emit('pagination-update', { totalPages, superdoc: proxy.$superdoc });

@@ -148,6 +148,17 @@ export interface AdapterOptions {
   enableTrackedChanges?: boolean;
 
   /**
+   * Story key for the document being converted. Used to stamp
+   * tracked-change metadata so the rendered DOM can distinguish anchors
+   * across stories (body, headers, footers, footnotes, endnotes).
+   *
+   * When omitted, tracked-change metadata carries no story key and the
+   * rendered DOM falls back to body-only semantics. This default preserves
+   * legacy behavior for consumers that convert a single body document.
+   */
+  storyKey?: string;
+
+  /**
    * Feature flag for emitting rich hyperlink metadata (FlowRunLink v2 schema).
    * When false, the adapter outputs the legacy `{ href, title }` shape.
    * Defaults to `false`.
@@ -289,6 +300,7 @@ export interface NodeHandlerContext {
   // Tracked changes & hyperlinks
   trackedChangesConfig: TrackedChangesConfig;
   hyperlinkConfig: HyperlinkConfig;
+  storyKey?: string;
 
   // Comments
   enableComments: boolean;
@@ -341,6 +353,7 @@ export type ParagraphToFlowBlocksParams = {
   enableComments: boolean;
   converterContext: ConverterContext;
   stableBlockId?: string;
+  storyKey?: string;
   /** When set, used as default/marker font for list paragraphs that have no explicit run properties (e.g. new list item after Enter). */
   previousParagraphFont?: ParagraphFont;
 };
@@ -355,6 +368,7 @@ export type TableNodeToBlockParams = {
   converterContext: ConverterContext;
   converters: NestedConverters;
   enableComments: boolean;
+  storyKey?: string;
 };
 
 export type ParagraphToFlowBlocksConverter = (

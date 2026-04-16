@@ -24,6 +24,7 @@ import { SUBSCRIPT_SUPERSCRIPT_SCALE } from '@superdoc/pm-adapter/constants.js';
 
 import type { FootnoteReference, FootnotesLayoutInput } from '../types.js';
 import { findNoteEntryById } from '../../../document-api-adapters/helpers/note-entry-lookup.js';
+import { buildStoryKey } from '../../../document-api-adapters/story-runtime/story-key.js';
 
 // Re-export types for consumers
 export type { FootnoteReference, FootnotesLayoutInput };
@@ -128,6 +129,7 @@ export function buildFootnotesInput(
       const footnoteDoc = { type: 'doc', content: clonedContent };
       const result = toFlowBlocks(footnoteDoc, {
         blockIdPrefix: `footnote-${id}-`,
+        storyKey: buildStoryKey({ kind: 'story', storyType: 'footnote', noteId: id }),
         enableRichHyperlinks: true,
         themeColors: themeColors as never,
         converterContext: converterContext as never,

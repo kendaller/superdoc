@@ -96,6 +96,18 @@ vi.mock('@superdoc/super-editor', () => ({
   TrackChangesBasePluginKey: 'TrackChangesBasePluginKey',
   CommentsPluginKey: 'CommentsPluginKey',
   getRichTextExtensions: vi.fn(() => []),
+  makeTrackedChangeAnchorKey: vi.fn(({ storyKey, rawId }) => `tc::${storyKey}::${rawId}`),
+  // Story-aware tracked-change index (Phase 2.5 / Phase 4). The body-only
+  // comment-sync tests never exercise non-body story sources, so a no-op
+  // index is sufficient — it must simply satisfy the call shape.
+  getTrackedChangeIndex: vi.fn(() => ({
+    get: () => [],
+    getAll: () => [],
+    invalidate: () => {},
+    invalidateAll: () => {},
+    subscribe: () => () => {},
+    dispose: () => {},
+  })),
 }));
 
 import { useCommentsStore } from './comments-store.js';
@@ -103,9 +115,12 @@ import { __mockSuperdoc } from './superdoc-store.js';
 import { comments_module_events } from '@superdoc/common';
 import useComment from '@superdoc/components/CommentsLayer/use-comment';
 import { syncCommentsToClients } from '../core/collaboration/helpers.js';
-import { trackChangesHelpers } from '@superdoc/super-editor';
 import { groupChanges } from '../helpers/group-changes.js';
-import { trackChangesHelpers, createOrUpdateTrackedChangeComment } from '@superdoc/super-editor';
+import {
+  trackChangesHelpers,
+  createOrUpdateTrackedChangeComment,
+  getTrackedChangeIndex,
+} from '@superdoc/super-editor';
 
 const useCommentMock = useComment;
 const syncCommentsToClientsMock = syncCommentsToClients;
@@ -113,6 +128,7 @@ const getTrackChangesMock = trackChangesHelpers.getTrackChanges;
 const groupChangesMock = groupChanges;
 const trackChangesHelpersMock = trackChangesHelpers;
 const createOrUpdateTrackedChangeCommentMock = createOrUpdateTrackedChangeComment;
+const getTrackedChangeIndexMock = getTrackedChangeIndex;
 
 describe('comments-store', () => {
   let store;
@@ -125,6 +141,14 @@ describe('comments-store', () => {
     __mockSuperdoc.documents.value = [{ id: 'doc-1', type: 'docx' }];
     groupChangesMock.mockReturnValue([]);
     trackChangesHelpersMock.getTrackChanges.mockReturnValue([]);
+    getTrackedChangeIndexMock.mockReturnValue({
+      get: () => [],
+      getAll: () => [],
+      invalidate: () => {},
+      invalidateAll: () => {},
+      subscribe: () => () => {},
+      dispose: () => {},
+    });
   });
 
   afterEach(() => {
@@ -941,6 +965,70 @@ describe('comments-store', () => {
     expect(editorDispatch).toHaveBeenCalledWith(tr);
   });
 
+  it('keeps body and non-body tracked changes separate when raw ids collide', () => {
+    const superdoc = {
+      emit: vi.fn(),
+      config: { isInternal: false },
+    };
+    const editorDispatch = vi.fn();
+    const tr = { setMeta: vi.fn() };
+    const editor = {
+      state: {},
+      view: { state: { tr }, dispatch: editorDispatch },
+      options: { documentId: 'doc-1' },
+    };
+
+    trackChangesHelpersMock.getTrackChanges.mockReturnValue([{ mark: { attrs: { id: 'shared-id' } } }]);
+    groupChangesMock.mockReturnValue([{ insertedMark: { mark: { attrs: { id: 'shared-id' } } } }]);
+    getTrackedChangeIndexMock.mockReturnValue({
+      get: () => [],
+      getAll: () => [
+        {
+          runtimeRef: { rawId: 'shared-id', storyKey: 'body' },
+          anchorKey: 'tc::body::shared-id',
+          story: { kind: 'story', storyType: 'body' },
+          storyKind: 'body',
+          storyLabel: '',
+          type: 'insert',
+          excerpt: 'Body revision',
+        },
+        {
+          runtimeRef: { rawId: 'shared-id', storyKey: 'fn:7' },
+          anchorKey: 'tc::fn:7::shared-id',
+          story: { kind: 'story', storyType: 'footnote', noteId: '7' },
+          storyKind: 'footnote',
+          storyLabel: 'Footnote 7',
+          type: 'insert',
+          excerpt: 'Footnote revision',
+        },
+      ],
+      invalidate: () => {},
+      invalidateAll: () => {},
+      subscribe: () => () => {},
+      dispose: () => {},
+    });
+
+    store.syncTrackedChangeComments({ superdoc, editor });
+
+    const trackedComments = store.commentsList.filter((comment) => comment.trackedChange);
+    expect(trackedComments).toHaveLength(2);
+    expect(trackedComments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commentId: 'shared-id',
+          trackedChangeAnchorKey: 'tc::body::shared-id',
+          trackedChangeStoryKind: 'body',
+        }),
+        expect.objectContaining({
+          commentId: 'shared-id',
+          trackedChangeAnchorKey: 'tc::fn:7::shared-id',
+          trackedChangeStoryKind: 'footnote',
+          trackedChangeStoryLabel: 'Footnote 7',
+        }),
+      ]),
+    );
+  });
+
   it('keeps imported resolved tracked-change comments resolved during initial tracked-change rebuild', async () => {
     const editorDispatch = vi.fn();
     const tr = { setMeta: vi.fn() };
@@ -1603,6 +1691,20 @@ describe('comments-store', () => {
       expect(store.editorCommentPositions).toEqual({
         'tc-1': { from: 1, to: 5 },
       });
+    });
+
+    it('adds canonical anchor-key aliases alongside incoming raw entries', () => {
+      store.handleEditorLocationsUpdate({
+        'tc-1': {
+          threadId: 'tc-1',
+          key: 'tc::body::tc-1',
+          kind: 'trackedChange',
+          start: 1,
+          end: 5,
+        },
+      });
+
+      expect(store.editorCommentPositions['tc-1']).toEqual(store.editorCommentPositions['tc::body::tc-1']);
     });
   });
 

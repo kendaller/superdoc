@@ -174,6 +174,19 @@ describe('mark application', () => {
       expect(result?.author).toBe('Jane Smith');
     });
 
+    it('attaches storyKey when provided', () => {
+      const mark: PMMark = {
+        type: TRACK_INSERT_MARK,
+        attrs: {
+          id: 'insert-1',
+        },
+      };
+
+      const result = buildTrackedChangeMetaFromMark(mark, 'fn:12');
+
+      expect(result?.storyKey).toBe('fn:12');
+    });
+
     it('builds format metadata with before/after marks', () => {
       const beforeMarks = [{ type: 'bold' }];
       const afterMarks = [{ type: 'italic' }];
@@ -435,6 +448,19 @@ describe('mark application', () => {
 
       expect(result?.kind).toBe('insert');
       expect(result?.author).toBe('John');
+    });
+
+    it('propagates storyKey onto collected tracked metadata', () => {
+      const marks: PMMark[] = [
+        {
+          type: TRACK_INSERT_MARK,
+          attrs: { id: 'insert-1' },
+        },
+      ];
+
+      const result = collectTrackedChangeFromMarks(marks, 'hf:part:rId4');
+
+      expect(result?.storyKey).toBe('hf:part:rId4');
     });
 
     it('ignores non-tracked change marks', () => {

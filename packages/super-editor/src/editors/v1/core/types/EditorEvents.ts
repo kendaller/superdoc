@@ -2,7 +2,7 @@ import type { Transaction } from 'prosemirror-state';
 import type { Editor } from '../Editor.js';
 import type { DefaultEventMap } from '../EventEmitter.js';
 import type { PartChangedEvent } from '../parts/types.js';
-import type { DocumentProtectionState } from '@superdoc/document-api';
+import type { DocumentProtectionState, StoryLocator } from '@superdoc/document-api';
 
 /** Source of a protection state change. */
 export type ProtectionChangeSource = 'init' | 'local-mutation' | 'remote-part-sync';
@@ -204,4 +204,25 @@ export interface EditorEventMap extends DefaultEventMap {
 
   /** Called when document protection state changes (init, local mutation, or remote sync). */
   protectionChanged: [{ editor: Editor; state: DocumentProtectionState; source: ProtectionChangeSource }];
+
+  /**
+   * Story-aware tracked-change invalidation signal.
+   *
+   * Emitted by the `TrackedChangeIndex` host-level service whenever one or
+   * more story caches are invalidated. Consumers (e.g. comments-store) use
+   * this to re-synchronize sidebar tracked-change threads.
+   *
+   * - `stories` is `undefined` for a full rebuild (import / undo / reload).
+   * - Otherwise it is the list of stories whose snapshots may have changed.
+   */
+  'tracked-changes-changed': [TrackedChangesChangedPayload];
+}
+
+/** Payload emitted with the `tracked-changes-changed` event. */
+export interface TrackedChangesChangedPayload {
+  editor: Editor;
+  /** Stories whose tracked-change snapshot has changed. `undefined` → full rebuild. */
+  stories?: StoryLocator[];
+  /** Optional origin hint for telemetry/debugging. */
+  source?: string;
 }

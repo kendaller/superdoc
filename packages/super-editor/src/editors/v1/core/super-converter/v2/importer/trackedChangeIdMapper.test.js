@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildTrackedChangeIdMap } from './trackedChangeIdMapper.js';
+import { buildTrackedChangeIdMap, buildTrackedChangeIdMapsByPart } from './trackedChangeIdMapper.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -254,5 +254,92 @@ describe('buildTrackedChangeIdMap', () => {
     const idMap = buildTrackedChangeIdMap(docx);
 
     expect(idMap.get('0')).toBe(idMap.get('1'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-part map tests (Phase 8 of "tracked changes in parts")
+// ---------------------------------------------------------------------------
+
+function createDocxWithParts(partMap) {
+  const docx = {};
+  for (const [path, bodyChildren] of Object.entries(partMap)) {
+    // Pick a sensible root name for each standard part so the walker finds
+    // the tracked changes inside.
+    const rootName = path.includes('/footnotes.xml')
+      ? 'w:footnotes'
+      : path.includes('/endnotes.xml')
+        ? 'w:endnotes'
+        : path.includes('/header')
+          ? 'w:hdr'
+          : path.includes('/footer')
+            ? 'w:ftr'
+            : 'w:document';
+    docx[path] = {
+      elements: [{ name: rootName, elements: bodyChildren }],
+    };
+  }
+  return docx;
+}
+
+describe('buildTrackedChangeIdMapsByPart', () => {
+  it('returns an empty Map when docx is missing or empty', () => {
+    expect(buildTrackedChangeIdMapsByPart(null).size).toBe(0);
+    expect(buildTrackedChangeIdMapsByPart(undefined).size).toBe(0);
+  });
+
+  it('always includes a body map at `word/document.xml`', () => {
+    const docx = createDocxWithParts({ 'word/document.xml': [paragraph(trackedChange('w:ins', '1'))] });
+    const maps = buildTrackedChangeIdMapsByPart(docx);
+    expect(maps.has('word/document.xml')).toBe(true);
+    expect(maps.get('word/document.xml').get('1')).toBeTruthy();
+  });
+
+  it('scans every header and footer part present in the package', () => {
+    const docx = createDocxWithParts({
+      'word/document.xml': [],
+      'word/header1.xml': [paragraph(wordDelete('100', 'gone'), wordInsert('101', 'new'))],
+      'word/footer2.xml': [paragraph(trackedChange('w:ins', '200'))],
+    });
+    const maps = buildTrackedChangeIdMapsByPart(docx);
+
+    const headerMap = maps.get('word/header1.xml');
+    expect(headerMap).toBeDefined();
+    expect(headerMap.get('100')).toBeTruthy();
+    // Paired replacement halves share a UUID within their own part.
+    expect(headerMap.get('100')).toBe(headerMap.get('101'));
+
+    const footerMap = maps.get('word/footer2.xml');
+    expect(footerMap).toBeDefined();
+    expect(footerMap.get('200')).toBeTruthy();
+  });
+
+  it('keeps per-part id spaces isolated (same w:id across parts → different UUIDs)', () => {
+    const docx = createDocxWithParts({
+      'word/document.xml': [paragraph(trackedChange('w:ins', 'shared'))],
+      'word/header1.xml': [paragraph(trackedChange('w:ins', 'shared'))],
+    });
+    const maps = buildTrackedChangeIdMapsByPart(docx);
+    expect(maps.get('word/document.xml').get('shared')).not.toBe(maps.get('word/header1.xml').get('shared'));
+  });
+
+  it('includes footnotes and endnotes parts when present', () => {
+    const docx = createDocxWithParts({
+      'word/document.xml': [],
+      'word/footnotes.xml': [paragraph(wordDelete('300', 'x'), wordInsert('301', 'y'))],
+      'word/endnotes.xml': [paragraph(trackedChange('w:ins', '400'))],
+    });
+    const maps = buildTrackedChangeIdMapsByPart(docx);
+    expect(maps.get('word/footnotes.xml').get('300')).toBe(maps.get('word/footnotes.xml').get('301'));
+    expect(maps.get('word/endnotes.xml').get('400')).toBeTruthy();
+  });
+
+  it('does not introduce unrelated parts into the map', () => {
+    const docx = createDocxWithParts({
+      'word/document.xml': [],
+      'word/styles.xml': [], // Not revision-capable — must be skipped.
+    });
+    const maps = buildTrackedChangeIdMapsByPart(docx);
+    expect(maps.has('word/styles.xml')).toBe(false);
   });
 });

@@ -58,7 +58,10 @@ import { debugLog, updateSelectionDebugHud, type SelectionDebugHudState } from '
 import { renderCellSelectionOverlay } from './selection/CellSelectionOverlay.js';
 import { renderCaretOverlay, renderSelectionRects } from './selection/LocalSelectionOverlayRendering.js';
 import { computeCaretLayoutRectGeometry as computeCaretLayoutRectGeometryFromHelper } from './selection/CaretGeometry.js';
-import { collectCommentPositions as collectCommentPositionsFromHelper } from './utils/CommentPositionCollection.js';
+import {
+  collectCommentPositions as collectCommentPositionsFromHelper,
+  makeTrackedChangeKey,
+} from './utils/CommentPositionCollection.js';
 import { getCurrentSectionPageStyles as getCurrentSectionPageStylesFromHelper } from './layout/SectionPageStyles.js';
 import {
   computeAnchorMap as computeAnchorMapFromHelper,
@@ -134,6 +137,8 @@ import type { ResolveRangeOutput, DocumentApi, NavigableAddress, BlockNavigation
 import { getBlockIndex } from '../../document-api-adapters/helpers/index-cache.js';
 import { findBlockByNodeIdOnly, findBlockById } from '../../document-api-adapters/helpers/node-address-resolver.js';
 import { resolveTrackedChange } from '../../document-api-adapters/helpers/tracked-change-resolver.js';
+import { buildStoryKey as buildStoryKeyFromLocator } from '../../document-api-adapters/story-runtime/story-key.js';
+import { isStoryLocator as isValidStoryLocator } from '@superdoc/document-api';
 import type { SelectionHandle } from '../selection-state.js';
 
 const DOCUMENT_RELS_PART_ID = 'word/_rels/document.xml.rels';
@@ -1755,7 +1760,19 @@ export class PresentationEditor extends EventEmitter {
       const start = data.start ?? data.pos;
       const end = data.end ?? start;
       if (!Number.isFinite(start) || !Number.isFinite(end)) {
-        remapped[threadId] = data;
+        const renderedTrackedBounds = this.#getRenderedTrackedChangeBounds(data, relativeTo);
+        if (!renderedTrackedBounds) {
+          remapped[threadId] = data;
+          return;
+        }
+
+        hasUpdates = true;
+        remapped[threadId] = {
+          ...data,
+          bounds: renderedTrackedBounds.bounds,
+          rects: renderedTrackedBounds.rects,
+          pageIndex: renderedTrackedBounds.pageIndex,
+        };
         return;
       }
 
@@ -1788,11 +1805,100 @@ export class PresentationEditor extends EventEmitter {
    *
    * @returns Map of threadId -> { threadId, start, end }
    */
-  #collectCommentPositions(): Record<string, { threadId: string; start: number; end: number }> {
-    return collectCommentPositionsFromHelper(this.#editor?.state?.doc ?? null, {
-      commentMarkName: CommentMarkName,
-      trackChangeMarkNames: [TrackInsertMarkName, TrackDeleteMarkName, TrackFormatMarkName],
+  #collectCommentPositions(): Record<
+    string,
+    { threadId: string; start?: number; end?: number; key?: string; storyKey?: string; kind?: string }
+  > {
+    // Hidden body editor: namespace the collected keys with `storyKey: 'body'`
+    // so consumers that want the canonical `tc::body::<id>` / `comment::<id>`
+    // form can read `entry.key` while existing raw-id lookups remain intact.
+    return {
+      ...collectCommentPositionsFromHelper(this.#editor?.state?.doc ?? null, {
+        commentMarkName: CommentMarkName,
+        trackChangeMarkNames: [TrackInsertMarkName, TrackDeleteMarkName, TrackFormatMarkName],
+        storyKey: 'body',
+      }),
+      ...this.#collectRenderedTrackedChangePositions(),
+    };
+  }
+
+  #collectRenderedTrackedChangePositions(): Record<
+    string,
+    { threadId: string; key: string; storyKey: string; kind: 'trackedChange' }
+  > {
+    const host = this.#visibleHost;
+    if (!host) return {};
+
+    const positions: Record<string, { threadId: string; key: string; storyKey: string; kind: 'trackedChange' }> = {};
+    const elements = host.querySelectorAll<HTMLElement>('[data-track-change-id][data-story-key]');
+    elements.forEach((element) => {
+      const storyKey = element.dataset.storyKey;
+      const rawId = element.dataset.trackChangeId;
+      if (!storyKey || !rawId || storyKey === 'body') return;
+      const key = makeTrackedChangeKey(storyKey, rawId);
+      if (positions[key]) return;
+      positions[key] = {
+        threadId: rawId,
+        key,
+        storyKey,
+        kind: 'trackedChange',
+      };
     });
+
+    return positions;
+  }
+
+  #getRenderedTrackedChangeBounds(
+    data: { threadId?: unknown; storyKey?: unknown; kind?: unknown },
+    relativeTo?: HTMLElement,
+  ): {
+    bounds: { top: number; left: number; bottom: number; right: number; width: number; height: number };
+    rects: RangeRect[];
+    pageIndex: number;
+  } | null {
+    if (data?.kind !== 'trackedChange') return null;
+    const storyKey = typeof data.storyKey === 'string' ? data.storyKey : null;
+    const rawId = typeof data.threadId === 'string' ? data.threadId : null;
+    if (!storyKey || !rawId || storyKey === 'body') return null;
+
+    const host = this.#visibleHost;
+    if (!host) return null;
+
+    const selector = `[data-track-change-id="${escapeAttrValue(rawId)}"][data-story-key="${escapeAttrValue(storyKey)}"]`;
+    const elements = Array.from(host.querySelectorAll<HTMLElement>(selector));
+    if (elements.length === 0) return null;
+
+    const relativeRect = relativeTo?.getBoundingClientRect?.();
+    const rects = elements
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        if (![rect.top, rect.left, rect.right, rect.bottom, rect.width, rect.height].every(Number.isFinite)) {
+          return null;
+        }
+
+        const pageIndex = Number(element.closest<HTMLElement>('.superdoc-page')?.dataset?.pageIndex ?? 0);
+        return {
+          top: rect.top - (relativeRect?.top ?? 0),
+          left: rect.left - (relativeRect?.left ?? 0),
+          right: rect.right - (relativeRect?.left ?? 0),
+          bottom: rect.bottom - (relativeRect?.top ?? 0),
+          width: rect.width,
+          height: rect.height,
+          pageIndex: Number.isFinite(pageIndex) ? pageIndex : 0,
+        } satisfies RangeRect;
+      })
+      .filter((rect): rect is RangeRect => Boolean(rect));
+
+    if (rects.length === 0) return null;
+
+    const bounds = this.#aggregateLayoutBounds(rects);
+    if (!bounds) return null;
+
+    return {
+      bounds,
+      rects,
+      pageIndex: rects[0]?.pageIndex ?? 0,
+    };
   }
 
   /**
@@ -4189,6 +4295,7 @@ export class PresentationEditor extends EventEmitter {
           sectionMetadata,
           trackedChangesMode: this.#trackedChangesMode,
           enableTrackedChanges: this.#trackedChangesEnabled,
+          storyKey: 'body',
           enableComments: commentsEnabled,
           enableRichHyperlinks: true,
           themeColors: this.#editor?.converter?.themeColors ?? undefined,
@@ -5893,7 +6000,11 @@ export class PresentationEditor extends EventEmitter {
           return await this.#navigateToComment(target.entityId);
         }
         if (target.entityType === 'trackedChange') {
-          return await this.#navigateToTrackedChange(target.entityId);
+          // Pass the story's internal storyKey so the navigator can scope
+          // its DOM lookup to the owning story (avoids accidentally scrolling
+          // to a coincidentally-matching body element).
+          const storyKey = resolveStoryKeyFromAddress(target.story);
+          return await this.#navigateToTrackedChange(target.entityId, storyKey);
         }
       }
 
@@ -5975,9 +6086,16 @@ export class PresentationEditor extends EventEmitter {
     return true;
   }
 
-  async #navigateToTrackedChange(entityId: string): Promise<boolean> {
+  async #navigateToTrackedChange(entityId: string, storyKey?: string): Promise<boolean> {
     const editor = this.#editor;
     if (!editor) return false;
+
+    // Non-body stories (header/footer/footnote/endnote): the tracked change
+    // is not in the hidden body editor's PM doc, so setCursorById would fail.
+    // Locate the rendered DOM element via the painter stamps and scroll to it.
+    if (storyKey && storyKey !== 'body') {
+      return this.#scrollToRenderedTrackedChange(entityId, storyKey);
+    }
 
     const setCursorById = editor.commands?.setCursorById;
 
@@ -5989,7 +6107,12 @@ export class PresentationEditor extends EventEmitter {
 
     // Fall back to resolving the tracked change position and scrolling.
     const resolved = resolveTrackedChange(editor, entityId);
-    if (!resolved) return false;
+    if (!resolved) {
+      // No body match — attempt DOM-based rendered-element lookup so callers
+      // who only have the raw id (no story info) can still navigate to a
+      // non-body rendered tracked change when the painter has stamped it.
+      return this.#scrollToRenderedTrackedChange(entityId, undefined);
+    }
 
     // Try with the raw ID (tracked changes may use a different internal ID).
     if (typeof setCursorById === 'function' && resolved.rawId !== entityId) {
@@ -6009,6 +6132,41 @@ export class PresentationEditor extends EventEmitter {
     editor.commands?.setTextSelection?.({ from: resolved.from, to: resolved.from });
     editor.view?.focus?.();
     return true;
+  }
+
+  /**
+   * Locate a rendered tracked-change element by its painter data attributes
+   * and scroll it into view.
+   *
+   * The DomPainter stamps `data-track-change-id` and `data-story-key` on
+   * every rendered tracked-change span. This lookup lets us navigate to
+   * tracked changes in non-body stories (headers/footers/footnotes/endnotes)
+   * without running them through the body editor's PM state.
+   *
+   * @param entityId  - Canonical or raw tracked-change id.
+   * @param storyKey  - Optional filter; when provided, only matches DOM
+   *                    elements stamped with the same `data-story-key`.
+   * @returns `true` when the element was found and scrolled into view.
+   */
+  async #scrollToRenderedTrackedChange(entityId: string, storyKey: string | undefined): Promise<boolean> {
+    const host = this.#visibleHost;
+    if (!host) return false;
+
+    const selectorParts = [`[data-track-change-id="${escapeAttrValue(entityId)}"]`];
+    if (storyKey) {
+      selectorParts.push(`[data-story-key="${escapeAttrValue(storyKey)}"]`);
+    }
+    const selector = selectorParts.join('');
+    const candidates = host.querySelectorAll<HTMLElement>(selector);
+    if (candidates.length === 0) return false;
+
+    const firstCandidate = candidates[0];
+    try {
+      firstCandidate.scrollIntoView({ behavior: 'auto', block: 'center' });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -6913,5 +7071,39 @@ export class PresentationEditor extends EventEmitter {
       ?.permissionRanges?.hasAllowedRanges;
     if (hasPermissionOverride) return false;
     return this.#documentMode === 'viewing';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Story-aware navigation helpers (module-local)
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape a string so it is safe to embed inside a CSS attribute selector's
+ * quoted value. Prefers {@link CSS.escape} when available and falls back to
+ * a conservative backslash-escape for older hosts.
+ */
+function escapeAttrValue(value: string): string {
+  const g: { CSS?: { escape?: (input: string) => string } } =
+    typeof globalThis === 'object' && globalThis ? (globalThis as any) : {};
+  if (typeof g.CSS?.escape === 'function') {
+    return g.CSS.escape(value);
+  }
+  return value.replace(/["\\]/g, (ch) => `\\${ch}`);
+}
+
+/**
+ * Convert a public {@link StoryLocator} carried on a navigation address into
+ * the internal story key used by painter DOM stamps.
+ *
+ * Safely handles malformed or partial locators: returns `undefined` when no
+ * valid story is supplied, so the caller falls back to body-only behavior.
+ */
+function resolveStoryKeyFromAddress(story: unknown): string | undefined {
+  if (!isValidStoryLocator(story)) return undefined;
+  try {
+    return buildStoryKeyFromLocator(story);
+  } catch {
+    return undefined;
   }
 }

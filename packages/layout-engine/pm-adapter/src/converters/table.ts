@@ -115,6 +115,7 @@ type TableParserDependencies = {
   converterContext: ConverterContext;
   converters: NestedConverters;
   enableComments: boolean;
+  storyKey?: string;
 };
 
 type ParseTableCellArgs = {
@@ -347,6 +348,7 @@ const parseTableCell = (args: ParseTableCellArgs): TableCell | null => {
         converterContext: cellConverterContext,
         converters: context.converters,
         enableComments: context.enableComments,
+        storyKey: context.storyKey,
       });
       appendParagraphBlocks(paragraphBlocks);
       continue;
@@ -368,6 +370,7 @@ const parseTableCell = (args: ParseTableCellArgs): TableCell | null => {
             converterContext: cellConverterContext,
             converters: context.converters,
             enableComments: context.enableComments,
+            storyKey: context.storyKey,
           });
           appendParagraphBlocks(paragraphBlocks, structuredContentMetadata);
           continue;
@@ -383,6 +386,7 @@ const parseTableCell = (args: ParseTableCellArgs): TableCell | null => {
             converterContext: context.converterContext,
             converters: context.converters,
             enableComments: context.enableComments,
+            storyKey: context.storyKey,
           });
           if (tableBlock && tableBlock.kind === 'table') {
             applySdtMetadataToTableBlock(tableBlock, structuredContentMetadata);
@@ -405,6 +409,7 @@ const parseTableCell = (args: ParseTableCellArgs): TableCell | null => {
         converterContext: context.converterContext,
         converters: context.converters,
         enableComments: context.enableComments,
+        storyKey: context.storyKey,
       });
       if (tableBlock && tableBlock.kind === 'table') {
         blocks.push(tableBlock);
@@ -414,7 +419,9 @@ const parseTableCell = (args: ParseTableCellArgs): TableCell | null => {
 
     if (childNode.type === 'image' && context.converters?.imageNodeToBlock) {
       const mergedMarks = [...(childNode.marks ?? [])];
-      const trackedMeta = context.trackedChangesConfig ? collectTrackedChangeFromMarks(mergedMarks) : undefined;
+      const trackedMeta = context.trackedChangesConfig
+        ? collectTrackedChangeFromMarks(mergedMarks, context.storyKey)
+        : undefined;
       if (shouldHideTrackedNode(trackedMeta, context.trackedChangesConfig)) {
         continue;
       }

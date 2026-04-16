@@ -53,6 +53,7 @@ export type InlineConverterParams = {
   tabOrdinal: number;
   paragraphAttrs: ParagraphAttrs;
   nextBlockId: BlockIdGenerator;
+  storyKey?: string;
 };
 
 export type BlockConverterOptions = {
@@ -69,6 +70,7 @@ export type BlockConverterOptions = {
   bookmarks: Map<string, number>;
   converters: NodeHandlerContext['converters'];
   paragraphAttrs: ParagraphAttrs;
+  storyKey?: string;
 };
 
 export const applyInlineRunProperties = (

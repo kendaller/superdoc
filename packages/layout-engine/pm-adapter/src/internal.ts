@@ -195,6 +195,7 @@ export function toFlowBlocks(pmDoc: PMNode | object, options?: AdapterOptions): 
     converterContext,
     trackedChangesConfig,
     hyperlinkConfig,
+    storyKey: options?.storyKey,
     enableComments,
     bookmarks,
     sectionState: {

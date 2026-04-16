@@ -9,11 +9,27 @@ import {
   CommentsPluginKey,
   getRichTextExtensions,
   createOrUpdateTrackedChangeComment,
+  getTrackedChangeIndex,
+  makeTrackedChangeAnchorKey,
 } from '@superdoc/super-editor';
 import useComment from '@superdoc/components/CommentsLayer/use-comment';
 import { groupChanges } from '../helpers/group-changes.js';
 
 export const useCommentsStore = defineStore('comments', () => {
+  const BODY_TRACKED_CHANGE_STORY = { kind: 'story', storyType: 'body' };
+
+  const isBodyTrackedChangeComment = (comment) => {
+    if (!comment?.trackedChange) return false;
+    const storyType = comment?.trackedChangeStory?.storyType;
+    if (storyType == null || storyType === 'body') return true;
+    return comment?.trackedChangeAnchorKey?.startsWith?.('tc::body::') === true;
+  };
+
+  const buildBodyTrackedChangeAnchorKey = (rawId) => {
+    if (rawId === undefined || rawId === null) return null;
+    return makeTrackedChangeAnchorKey({ storyKey: 'body', rawId: String(rawId) });
+  };
+
   const superdocStore = useSuperdocStore();
   const commentsConfig = reactive({
     name: 'comments',
@@ -136,16 +152,20 @@ export const useCommentsStore = defineStore('comments', () => {
 
       const commentId = resolvedComment.commentId ?? null;
       const importedId = resolvedComment.importedId ?? null;
+      const trackedChangeAnchorKey = resolvedComment.trackedChangeAnchorKey ?? null;
+      if (trackedChangeAnchorKey && positions[trackedChangeAnchorKey]) return trackedChangeAnchorKey;
       if (commentId && positions[commentId]) return commentId;
       if (importedId && positions[importedId]) return importedId;
-      return commentId ?? importedId ?? null;
+      return trackedChangeAnchorKey ?? commentId ?? importedId ?? null;
     }
 
     const commentId = commentOrId.commentId ?? null;
     const importedId = commentOrId.importedId ?? null;
+    const trackedChangeAnchorKey = commentOrId.trackedChangeAnchorKey ?? null;
+    if (trackedChangeAnchorKey && positions[trackedChangeAnchorKey]) return trackedChangeAnchorKey;
     if (commentId && positions[commentId]) return commentId;
     if (importedId && positions[importedId]) return importedId;
-    return commentId ?? importedId ?? null;
+    return trackedChangeAnchorKey ?? commentId ?? importedId ?? null;
   };
 
   const normalizeCommentId = (id) => (id === undefined || id === null ? null : String(id));
@@ -160,7 +180,7 @@ export const useCommentsStore = defineStore('comments', () => {
     const comment = typeof commentOrId === 'object' ? commentOrId : getComment(commentOrId);
     const seen = new Set();
 
-    return [rawId, getCommentPositionKey(comment), comment?.commentId, comment?.importedId]
+    return [rawId, getCommentPositionKey(comment), comment?.trackedChangeAnchorKey, comment?.commentId, comment?.importedId]
       .map((id) => normalizeCommentId(id))
       .filter((id) => {
         if (!id || seen.has(id)) return false;
@@ -266,10 +286,22 @@ export const useCommentsStore = defineStore('comments', () => {
         .filter((id) => id !== undefined && id !== null)
         .map((id) => String(id)),
     );
+    const trackedChangeIndex = typeof getTrackedChangeIndex === 'function' ? getTrackedChangeIndex(editor) : null;
+    let liveAnchorKeySource = [];
+    try {
+      liveAnchorKeySource = trackedChangeIndex?.getAll?.() ?? [];
+    } catch {}
+    const liveAnchorKeys = new Set(
+      liveAnchorKeySource
+        .map((snapshot) => snapshot?.anchorKey)
+        .filter((anchorKey) => typeof anchorKey === 'string' && anchorKey.length > 0),
+    );
     // Any tracked-change roots whose aliases are missing from document marks are considered stale
     const staleRootPositionKeys = new Set(
       Array.from(candidateRootPositionKeys).filter((positionKey) => {
         const aliases = rootAliasesByPositionKey.get(positionKey) ?? new Set([positionKey]);
+        const hasLiveAnchorKey = Array.from(aliases).some((alias) => liveAnchorKeys.has(alias));
+        if (hasLiveAnchorKey) return false;
         // Keep stale detection aligned with editorCommentPositions by matching against whichever
         // alias key (commentId/importedId) is currently present in the live position map.
         return !Array.from(aliases).some((alias) => trackedIds.has(alias));
@@ -484,6 +516,13 @@ export const useCommentsStore = defineStore('comments', () => {
       importedAuthor,
       documentId,
       coords,
+      // Story-aware metadata (Phase 4). Undefined for body tracked changes
+      // from the legacy body-only sync path; populated for non-body stories
+      // sourced from the TrackedChangeIndex.
+      trackedChangeStory,
+      trackedChangeStoryKind,
+      trackedChangeStoryLabel,
+      trackedChangeAnchorKey,
     } = params;
     const normalizedDocumentId = documentId != null ? String(documentId) : null;
 
@@ -501,6 +540,10 @@ export const useCommentsStore = defineStore('comments', () => {
       creatorImage: authorImage,
       isInternal: false,
       importedAuthor,
+      trackedChangeStory: trackedChangeStory ?? null,
+      trackedChangeStoryKind: trackedChangeStoryKind ?? null,
+      trackedChangeStoryLabel: trackedChangeStoryLabel ?? '',
+      trackedChangeAnchorKey: trackedChangeAnchorKey ?? null,
       selection: {
         source: 'super-editor',
         selectionBounds: coords,
@@ -509,10 +552,16 @@ export const useCommentsStore = defineStore('comments', () => {
 
     const findTrackedChangeById = () => {
       const normalizedChangeId = changeId != null ? String(changeId) : null;
+      const normalizedAnchorKey = trackedChangeAnchorKey != null ? String(trackedChangeAnchorKey) : null;
       if (!normalizedChangeId) return null;
 
       const matchesId = (trackedComment) => {
         if (!trackedComment) return false;
+        const commentAnchorKey =
+          trackedComment.trackedChangeAnchorKey != null ? String(trackedComment.trackedChangeAnchorKey) : null;
+        if (normalizedAnchorKey && commentAnchorKey) {
+          return commentAnchorKey === normalizedAnchorKey;
+        }
         const commentId = trackedComment.commentId != null ? String(trackedComment.commentId) : null;
         const importedId = trackedComment.importedId != null ? String(trackedComment.importedId) : null;
         return commentId === normalizedChangeId || importedId === normalizedChangeId;
@@ -534,6 +583,25 @@ export const useCommentsStore = defineStore('comments', () => {
       debounceEmit(changeId, event, superdoc);
     };
 
+    // Only overwrite story metadata when the incoming params carry a non-null
+    // value; a legacy body-only update must not clear story info that was
+    // previously attached by the index-backed sync path.
+    const applyStoryMetadata = (target) => {
+      if (!target) return;
+      if (trackedChangeStory !== undefined && trackedChangeStory !== null) {
+        target.trackedChangeStory = trackedChangeStory;
+      }
+      if (trackedChangeStoryKind !== undefined && trackedChangeStoryKind !== null) {
+        target.trackedChangeStoryKind = trackedChangeStoryKind;
+      }
+      if (trackedChangeStoryLabel !== undefined && trackedChangeStoryLabel !== '') {
+        target.trackedChangeStoryLabel = trackedChangeStoryLabel;
+      }
+      if (trackedChangeAnchorKey !== undefined && trackedChangeAnchorKey !== null) {
+        target.trackedChangeAnchorKey = trackedChangeAnchorKey;
+      }
+    };
+
     if (event === 'add') {
       const existing = findTrackedChangeById();
       if (existing) {
@@ -548,6 +616,7 @@ export const useCommentsStore = defineStore('comments', () => {
         existing.trackedChangeType = trackedChangeType ?? null;
         existing.trackedChangeDisplayType = trackedChangeDisplayType ?? null;
         existing.deletedText = deletedText ?? null;
+        applyStoryMetadata(existing);
 
         const emitData = {
           type: COMMENT_EVENTS.UPDATE,
@@ -570,6 +639,7 @@ export const useCommentsStore = defineStore('comments', () => {
       existingTrackedChange.trackedChangeType = trackedChangeType ?? null;
       existingTrackedChange.trackedChangeDisplayType = trackedChangeDisplayType ?? null;
       existingTrackedChange.deletedText = deletedText ?? null;
+      applyStoryMetadata(existingTrackedChange);
 
       const emitData = {
         type: COMMENT_EVENTS.UPDATE,
@@ -666,6 +736,9 @@ export const useCommentsStore = defineStore('comments', () => {
     if (Number.isFinite(position.pos)) return position.pos;
     if (Number.isFinite(position.from)) return position.from;
     if (Number.isFinite(position.to)) return position.to;
+    if (Number.isFinite(position.pageIndex) && Number.isFinite(position?.bounds?.top)) {
+      return position.pageIndex * 1_000_000 + position.bounds.top;
+    }
     return null;
   };
 
@@ -1013,6 +1086,7 @@ export const useCommentsStore = defineStore('comments', () => {
     commentsList.value.forEach((comment) => {
       if (!comment?.trackedChange) return;
       if (!belongsToTrackedChangeSyncDocument(comment, activeDocumentId)) return;
+      if (!isBodyTrackedChangeComment(comment)) return;
       const commentIds = [comment.commentId, comment.importedId]
         .map((id) => (id != null ? String(id) : null))
         .filter(Boolean);
@@ -1073,6 +1147,11 @@ export const useCommentsStore = defineStore('comments', () => {
       });
 
       if (params) {
+        const anchorKey = buildBodyTrackedChangeAnchorKey(params.changeId ?? id);
+        params.trackedChangeStory = BODY_TRACKED_CHANGE_STORY;
+        params.trackedChangeStoryKind = 'body';
+        params.trackedChangeStoryLabel = '';
+        params.trackedChangeAnchorKey = anchorKey;
         handleTrackedChangeUpdate({ superdoc, params, broadcastChanges });
         if (!existingTrackedChange) {
           skipIds.add(normalizedId);
@@ -1144,6 +1223,7 @@ export const useCommentsStore = defineStore('comments', () => {
    */
   const pruneStaleTrackedChangeComments = (
     liveTrackedChangeIds,
+    liveTrackedChangeAnchorKeys,
     activeDocumentId,
     superdoc = null,
     { broadcastChanges = true } = {},
@@ -1160,10 +1240,14 @@ export const useCommentsStore = defineStore('comments', () => {
 
       const commentId = comment.commentId != null ? String(comment.commentId) : null;
       const importedId = comment.importedId != null ? String(comment.importedId) : null;
+      const anchorKey = comment.trackedChangeAnchorKey != null ? String(comment.trackedChangeAnchorKey) : null;
       const hasLiveCommentId = Boolean(commentId && liveTrackedChangeIds.has(commentId));
       const hasLiveImportedId = Boolean(importedId && liveTrackedChangeIds.has(importedId));
+      const hasLiveAnchorKey = Boolean(anchorKey && liveTrackedChangeAnchorKeys?.has(anchorKey));
 
-      if ((!commentId && !importedId) || hasLiveCommentId || hasLiveImportedId) return true;
+      if ((!commentId && !importedId && !anchorKey) || hasLiveCommentId || hasLiveImportedId || hasLiveAnchorKey) {
+        return true;
+      }
       if (comment.resolvedTime) return true;
 
       const resolutionSnapshot = trackedChangeResolutionSnapshots.get(comment);
@@ -1263,6 +1347,63 @@ export const useCommentsStore = defineStore('comments', () => {
    * @param {Object} param0.editor The active Super Editor instance.
    * @returns {void}
    */
+  /**
+   * Host-level story-aware tracked-change decision (accept/reject).
+   *
+   * Centralizes the decision logic so sidebar UI, keyboard shortcuts, and
+   * future global review panels take the same code path. Routes through the
+   * story-aware document-api (`editor.doc.trackChanges.decide`) so non-body
+   * tracked changes (headers, footers, footnotes, endnotes) are persisted
+   * through `mutatePart` and not incorrectly dispatched against the body
+   * ProseMirror editor.
+   *
+   * The function is tolerant of partial rollout state: if the document-api
+   * surface is unavailable (older Editor build, test stubs), it falls back
+   * to the legacy `acceptTrackedChangeById` command on the active editor.
+   *
+   * @param {Object} param0
+   * @param {Object} param0.superdoc The SuperDoc host instance.
+   * @param {Object} param0.comment The sidebar comment model (tracked change).
+   * @param {'accept' | 'reject'} param0.decision Review decision.
+   * @returns {{ ok: boolean; success?: boolean; error?: unknown }} Decision outcome.
+   */
+  const decideTrackedChangeFromSidebar = ({ superdoc, comment, decision }) => {
+    if (!comment?.trackedChange) return { ok: false };
+    const activeEditor = superdoc?.activeEditor;
+    if (!activeEditor) return { ok: false };
+
+    const id = comment.commentId ?? comment.importedId;
+    if (!id) return { ok: false };
+
+    const story = comment.trackedChangeStory ?? undefined;
+
+    const documentApi = typeof activeEditor.doc === 'object' ? activeEditor.doc : null;
+    if (documentApi?.trackChanges?.decide) {
+      try {
+        const target = story ? { id, story } : { id };
+        const receipt = documentApi.trackChanges.decide({ decision, target });
+        return { ok: true, success: Boolean(receipt?.success) };
+      } catch (err) {
+        // If the story-aware path fails (e.g., target not found yet), fall
+        // through to the legacy body-only command so the sidebar still
+        // resolves visually. Non-body decides are still safer this way
+        // because the resolver throws TARGET_NOT_FOUND rather than silently
+        // mutating the wrong editor.
+        if (!story) {
+          // Body — safe to fall back.
+        } else {
+          return { ok: false, error: err };
+        }
+      }
+    }
+
+    const commandName = decision === 'accept' ? 'acceptTrackedChangeById' : 'rejectTrackedChangeById';
+    const command = activeEditor.commands?.[commandName];
+    if (typeof command !== 'function') return { ok: false };
+    const applied = Boolean(command(id));
+    return { ok: true, success: applied };
+  };
+
   const syncTrackedChangeComments = ({ superdoc, editor, broadcastChanges = true }) => {
     if (!superdoc || !editor) return;
     const activeDocumentId = editor?.options?.documentId != null ? String(editor.options.documentId) : null;
@@ -1276,12 +1417,118 @@ export const useCommentsStore = defineStore('comments', () => {
       liveTrackedChangeIds.add(String(id));
     });
 
-    pruneStaleTrackedChangeComments(liveTrackedChangeIds, activeDocumentId, superdoc, { broadcastChanges });
+    const trackedChangeIndex = typeof getTrackedChangeIndex === 'function' ? getTrackedChangeIndex(editor) : null;
+    let storySnapshots = [];
+    try {
+      storySnapshots = trackedChangeIndex?.getAll?.() ?? [];
+    } catch (err) {
+      console.warn('[comments-store] TrackedChangeIndex getAll failed during sync:', err);
+    }
+    const liveTrackedChangeAnchorKeys = new Set(
+      storySnapshots
+        .map((snapshot) => snapshot?.anchorKey)
+        .filter((anchorKey) => typeof anchorKey === 'string' && anchorKey.length > 0),
+    );
+
+    pruneStaleTrackedChangeComments(liveTrackedChangeIds, liveTrackedChangeAnchorKeys, activeDocumentId, superdoc, {
+      broadcastChanges,
+    });
     createCommentForTrackChanges(editor, superdoc, trackedChanges, {
       reopenResolved: true,
       refreshExisting: true,
       broadcastChanges,
     });
+
+    // Fold in non-body tracked changes (headers, footers, footnotes, endnotes)
+    // via the host-level TrackedChangeIndex. Body changes are already handled
+    // above; the index gives us a single place to discover the rest without
+    // walking sub-editor PM state ourselves.
+    syncStoryTrackedChangeComments({ superdoc, editor, broadcastChanges, snapshots: storySnapshots });
+  };
+
+  /**
+   * Walk every non-body revision-capable story through the TrackedChangeIndex
+   * and ensure a matching sidebar comment exists for each tracked change.
+   *
+   * Story metadata (`trackedChangeStory`, `trackedChangeStoryKind`,
+   * `trackedChangeStoryLabel`, `trackedChangeAnchorKey`) is attached to the
+   * synthesized comment so the sidebar can render location badges and route
+   * accept/reject through the correct story runtime.
+   */
+  const syncStoryTrackedChangeComments = ({ superdoc, editor, broadcastChanges = true, snapshots = null }) => {
+    const activeDocumentId = editor?.options?.documentId != null ? String(editor.options.documentId) : null;
+    if (!activeDocumentId) return;
+
+    let resolvedSnapshots = snapshots;
+    if (!Array.isArray(resolvedSnapshots)) {
+      if (typeof getTrackedChangeIndex !== 'function') return;
+      const index = getTrackedChangeIndex(editor);
+      if (!index) return;
+      try {
+        resolvedSnapshots = index.getAll();
+      } catch (err) {
+        console.warn('[comments-store] TrackedChangeIndex getAll failed:', err);
+        return;
+      }
+    }
+
+    for (const snapshot of resolvedSnapshots) {
+      if (snapshot.storyKind === 'body') continue;
+      upsertStoryTrackedChangeComment({ superdoc, snapshot, documentId: activeDocumentId, broadcastChanges });
+    }
+  };
+
+  /**
+   * Convert a TrackedChangeSnapshot into the tracked-change sidebar params
+   * shape and feed it through {@link handleTrackedChangeUpdate}. Idempotent:
+   * subsequent calls for the same snapshot update the existing comment.
+   */
+  const upsertStoryTrackedChangeComment = ({ superdoc, snapshot, documentId, broadcastChanges }) => {
+    if (!snapshot?.runtimeRef?.rawId) return;
+
+    const existingComment = commentsList.value.find((c) => {
+      if (!c?.trackedChange) return false;
+      const commentAnchorKey = c.trackedChangeAnchorKey != null ? String(c.trackedChangeAnchorKey) : null;
+      if (commentAnchorKey && snapshot.anchorKey) {
+        return commentAnchorKey === snapshot.anchorKey;
+      }
+
+      // Body-only legacy tracked-change comments may not have story metadata
+      // yet. Only fall back to raw-id matching when neither side has an
+      // anchor key; otherwise same raw ids across stories would collapse.
+      if (commentAnchorKey || snapshot.anchorKey) return false;
+
+      return c.commentId === snapshot.runtimeRef.rawId || c.importedId === snapshot.runtimeRef.rawId;
+    });
+
+    const params = {
+      event: existingComment ? 'update' : 'add',
+      changeId: snapshot.runtimeRef.rawId,
+      trackedChangeText: snapshot.type === 'insert' || snapshot.type === 'format' ? snapshot.excerpt ?? '' : '',
+      trackedChangeType: snapshot.type,
+      trackedChangeDisplayType: snapshot.type,
+      deletedText: snapshot.type === 'delete' ? snapshot.excerpt ?? '' : null,
+      authorEmail: snapshot.authorEmail,
+      authorImage: snapshot.authorImage,
+      date: snapshot.date,
+      author: snapshot.author,
+      documentId,
+      coords: null,
+      trackedChangeStory: snapshot.story,
+      trackedChangeStoryKind: snapshot.storyKind,
+      trackedChangeStoryLabel: snapshot.storyLabel,
+      trackedChangeAnchorKey: snapshot.anchorKey,
+    };
+
+    handleTrackedChangeUpdate({ superdoc, params, broadcastChanges });
+
+    // If the comment already existed but lacked story metadata, attach it now.
+    if (existingComment) {
+      existingComment.trackedChangeStory = snapshot.story;
+      existingComment.trackedChangeStoryKind = snapshot.storyKind;
+      existingComment.trackedChangeStoryLabel = snapshot.storyLabel;
+      existingComment.trackedChangeAnchorKey = snapshot.anchorKey;
+    }
   };
 
   const normalizeDocxSchemaForExport = (value) => {
@@ -1330,9 +1577,17 @@ export const useCommentsStore = defineStore('comments', () => {
     if (allCommentPositions == null) {
       return;
     }
+    const normalizedPositions = {};
+    Object.entries(allCommentPositions).forEach(([key, entry]) => {
+      normalizedPositions[key] = entry;
+      const canonicalKey = typeof entry?.key === 'string' ? entry.key : null;
+      if (canonicalKey && normalizedPositions[canonicalKey] === undefined) {
+        normalizedPositions[canonicalKey] = entry;
+      }
+    });
     // `{}` is authoritative: when marks are removed, positions can become empty
     // and we must clear stale anchors instead of preserving previous ones.
-    editorCommentPositions.value = allCommentPositions;
+    editorCommentPositions.value = normalizedPositions;
   };
 
   /**
@@ -1536,5 +1791,6 @@ export const useCommentsStore = defineStore('comments', () => {
     peekInstantSidebarAlignment,
     clearInstantSidebarAlignment,
     syncTrackedChangeComments,
+    decideTrackedChangeFromSidebar,
   };
 });
