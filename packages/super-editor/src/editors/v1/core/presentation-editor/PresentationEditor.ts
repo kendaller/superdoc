@@ -4431,6 +4431,13 @@ export class PresentationEditor extends EventEmitter {
         });
       },
       onSurfaceTransaction: ({ sourceEditor, surface, headerId, sectionType, transaction, duration }) => {
+        if (transaction?.docChanged && headerId) {
+          this.#invalidateTrackedChangesForStory({
+            kind: 'story',
+            storyType: 'headerFooterPart',
+            refId: headerId,
+          });
+        }
         this.emit('headerFooterTransaction', {
           editor: this.#editor,
           sourceEditor,
@@ -4477,6 +4484,7 @@ export class PresentationEditor extends EventEmitter {
       if (!transaction?.docChanged) {
         return;
       }
+      this.#invalidateTrackedChangesForStory(session.locator);
       this.#flowBlockCache.setHasExternalChanges(true);
       this.#pendingDocChange = true;
       this.#selectionSync.onLayoutStart();
@@ -4508,6 +4516,14 @@ export class PresentationEditor extends EventEmitter {
 
     session.editor.setEditable?.(this.#documentMode !== 'viewing');
     session.editor.setOptions?.({ documentMode: this.#documentMode });
+  }
+
+  #invalidateTrackedChangesForStory(locator: StoryLocator): void {
+    try {
+      getTrackedChangeIndex(this.#editor).invalidate(locator);
+    } catch {
+      // Tracked-change sync is best-effort while a live story session is typing.
+    }
   }
 
   #ensureStorySessionManager(): StoryPresentationSessionManager {
