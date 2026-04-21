@@ -56,6 +56,7 @@ const AUTO_SCROLL_MAX_SPEED_PX = 24;
 const SCROLL_DETECTION_TOLERANCE_PX = 1;
 const COMMENT_HIGHLIGHT_SELECTOR = '.superdoc-comment-highlight';
 const TRACK_CHANGE_SELECTOR = '[data-track-change-id]';
+const PM_TRACK_CHANGE_SELECTOR = '.track-insert[data-id], .track-delete[data-id], .track-format[data-id]';
 const COMMENT_THREAD_HIT_TOLERANCE_PX = 3;
 const COMMENT_THREAD_HIT_SAMPLE_OFFSETS: ReadonlyArray<readonly [number, number]> = [
   [0, 0],
@@ -141,8 +142,10 @@ function resolveTrackChangeThreadId(target: EventTarget | null): string | null {
     return null;
   }
 
-  const trackedChangeElement = target.closest(TRACK_CHANGE_SELECTOR);
-  const threadId = trackedChangeElement?.getAttribute('data-track-change-id')?.trim();
+  const trackedChangeElement = target.closest(`${TRACK_CHANGE_SELECTOR}, ${PM_TRACK_CHANGE_SELECTOR}`);
+  const threadId =
+    trackedChangeElement?.getAttribute('data-track-change-id')?.trim() ??
+    trackedChangeElement?.getAttribute('data-id')?.trim();
 
   return threadId ? threadId : null;
 }
@@ -1210,6 +1213,7 @@ export class EditorInputManager {
           clientY: event.clientY,
         });
         if (activated) {
+          this.#syncNonBodyCommentActivation(event, target, bodyEditor);
           return;
         }
         this.#focusEditor();
@@ -1229,6 +1233,8 @@ export class EditorInputManager {
         if (this.#handleRepeatClickOnActiveComment(event, target, bodyEditor)) {
           return;
         }
+      } else {
+        this.#syncNonBodyCommentActivation(event, target, bodyEditor);
       }
 
       this.#handleClickWithoutLayout(event, isDraggableAnnotation);
@@ -1251,6 +1257,7 @@ export class EditorInputManager {
           pageIndex: normalizedPoint.pageIndex,
         });
         if (activated) {
+          this.#syncNonBodyCommentActivation(event, target, bodyEditor);
           return;
         }
         this.#focusEditor();
@@ -1271,6 +1278,8 @@ export class EditorInputManager {
       if (this.#handleRepeatClickOnActiveComment(event, target, bodyEditor)) {
         return;
       }
+    } else {
+      this.#syncNonBodyCommentActivation(event, target, bodyEditor);
     }
 
     const isNoteEditing = activeNoteSession != null;
@@ -2026,6 +2035,9 @@ export class EditorInputManager {
       activeEditorHost && (activeEditorHost.contains(event.target as Node) || activeEditorHost === event.target);
 
     if (clickedInsideEditorHost) {
+      this.#syncNonBodyCommentSelection(event, event.target as HTMLElement | null, this.#deps.getEditor(), {
+        clearOnMiss: true,
+      });
       return true; // Let editor handle it
     }
 
@@ -2554,6 +2566,41 @@ export class EditorInputManager {
     });
 
     return true;
+  }
+
+  #syncNonBodyCommentActivation(event: PointerEvent, target: HTMLElement | null, editor: Editor): void {
+    this.#syncNonBodyCommentSelection(event, target, editor);
+  }
+
+  #syncNonBodyCommentSelection(
+    event: PointerEvent,
+    target: HTMLElement | null,
+    editor: Editor,
+    { clearOnMiss = false }: { clearOnMiss?: boolean } = {},
+  ): void {
+    const clickedThreadId = resolveCommentThreadIdNearPointer(target, event.clientX, event.clientY);
+    const activeThreadId = getActiveCommentThreadId(editor);
+
+    if (!clickedThreadId) {
+      if (!clearOnMiss || !activeThreadId) {
+        return;
+      }
+
+      editor.emit?.('commentsUpdate', {
+        type: comments_module_events.SELECTED,
+        activeCommentId: null,
+      });
+      return;
+    }
+
+    if (clickedThreadId === activeThreadId) {
+      return;
+    }
+
+    editor.emit?.('commentsUpdate', {
+      type: comments_module_events.SELECTED,
+      activeCommentId: clickedThreadId,
+    });
   }
 
   #handleSingleCommentHighlightClick(event: PointerEvent, target: HTMLElement | null, editor: Editor): boolean {
