@@ -1692,17 +1692,12 @@ export class PresentationEditor extends EventEmitter {
     return this.getRangeRects(selection.from, selection.to, relativeTo);
   }
 
-  /**
-   * Convert an arbitrary document range into layout-based bounding rects.
-   *
-   * @param from - Start position in the ProseMirror document
-   * @param to - End position in the ProseMirror document
-   * @param relativeTo - Optional HTMLElement for coordinate reference. If provided, returns coordinates
-   *                     relative to this element's bounding rect. If omitted, returns absolute viewport
-   *                     coordinates relative to the selection overlay.
-   * @returns Array of rects, each containing pageIndex and position data (left, top, right, bottom, width, height)
-   */
-  getRangeRects(from: number, to: number, relativeTo?: HTMLElement): RangeRect[] {
+  #computeRangeRects(
+    from: number,
+    to: number,
+    relativeTo?: HTMLElement,
+    options: { forceBodySurface?: boolean } = {},
+  ): RangeRect[] {
     if (!this.#selectionOverlay) return [];
     if (!Number.isFinite(from) || !Number.isFinite(to)) return [];
 
@@ -1720,11 +1715,13 @@ export class PresentationEditor extends EventEmitter {
     let usedDomRects = false;
     const sessionMode = this.#headerFooterSession?.session?.mode ?? 'body';
     const activeNoteSession = this.#getActiveNoteStorySession();
+    const useHeaderFooterSurface = !options.forceBodySurface && sessionMode !== 'body';
+    const useNoteSurface = !options.forceBodySurface && activeNoteSession != null;
     const layoutRectSource = () => {
-      if (sessionMode !== 'body') {
+      if (useHeaderFooterSurface) {
         return this.#computeHeaderFooterSelectionRects(start, end);
       }
-      if (activeNoteSession) {
+      if (useNoteSurface) {
         return this.#computeNoteSelectionRects(start, end);
       }
       const domRects = this.#computeSelectionRectsFromDom(start, end);
@@ -1751,7 +1748,7 @@ export class PresentationEditor extends EventEmitter {
     let domCaretStart: { pageIndex: number; x: number; y: number } | null = null;
     let domCaretEnd: { pageIndex: number; x: number; y: number } | null = null;
     const pageDelta: Record<number, { dx: number; dy: number }> = {};
-    if (!usedDomRects && !activeNoteSession) {
+    if (!usedDomRects && !useNoteSurface) {
       // Geometry fallback path: apply a small DOM-based delta to reduce drift.
       try {
         domCaretStart = this.#computeDomCaretPageLocal(start);
@@ -1772,8 +1769,8 @@ export class PresentationEditor extends EventEmitter {
     }
 
     const pageHeight = this.#getBodyPageHeight();
-    const pageGap = sessionMode === 'body' ? (this.#layoutState.layout?.pageGap ?? 0) : 0;
-    const finalRects = rawRects
+    const pageGap = useHeaderFooterSurface || !this.#layoutState.layout ? 0 : (this.#layoutState.layout.pageGap ?? 0);
+    return rawRects
       .map((rect: LayoutRect, idx: number, allRects: LayoutRect[]) => {
         let adjustedX = rect.x;
         let adjustedY = rect.y;
@@ -1817,8 +1814,20 @@ export class PresentationEditor extends EventEmitter {
         };
       })
       .filter((rect: RangeRect | null): rect is RangeRect => Boolean(rect));
+  }
 
-    return finalRects;
+  /**
+   * Convert an arbitrary document range into layout-based bounding rects.
+   *
+   * @param from - Start position in the ProseMirror document
+   * @param to - End position in the ProseMirror document
+   * @param relativeTo - Optional HTMLElement for coordinate reference. If provided, returns coordinates
+   *                     relative to this element's bounding rect. If omitted, returns absolute viewport
+   *                     coordinates relative to the selection overlay.
+   * @returns Array of rects, each containing pageIndex and position data (left, top, right, bottom, width, height)
+   */
+  getRangeRects(from: number, to: number, relativeTo?: HTMLElement): RangeRect[] {
+    return this.#computeRangeRects(from, to, relativeTo);
   }
 
   /**
@@ -1846,6 +1855,42 @@ export class PresentationEditor extends EventEmitter {
     if (!rects.length) return null;
     const bounds = this.#aggregateLayoutBounds(rects);
     if (!bounds) return null;
+    return {
+      rects,
+      bounds,
+      pageIndex: rects[0]?.pageIndex ?? 0,
+    };
+  }
+
+  #getThreadSelectionBounds(
+    data: { storyKey?: unknown; start?: unknown; end?: unknown; pos?: unknown },
+    relativeTo: HTMLElement | undefined,
+  ): {
+    bounds: { top: number; left: number; bottom: number; right: number; width: number; height: number };
+    rects: RangeRect[];
+    pageIndex: number;
+  } | null {
+    const start = Number.isFinite(data.start ?? data.pos) ? Number(data.start ?? data.pos) : undefined;
+    const end = Number.isFinite(data.end) ? Number(data.end) : start;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return null;
+    }
+
+    const storyKey = typeof data.storyKey === 'string' ? data.storyKey : null;
+    const rects =
+      storyKey === BODY_STORY_KEY
+        ? this.#computeRangeRects(start!, end!, relativeTo, { forceBodySurface: true })
+        : this.getRangeRects(start!, end!, relativeTo);
+
+    if (!rects.length) {
+      return null;
+    }
+
+    const bounds = this.#aggregateLayoutBounds(rects);
+    if (!bounds) {
+      return null;
+    }
+
     return {
       rects,
       bounds,
@@ -1925,7 +1970,7 @@ export class PresentationEditor extends EventEmitter {
         return;
       }
 
-      const layoutRange = this.getSelectionBounds(start!, end!, relativeTo);
+      const layoutRange = this.#getThreadSelectionBounds(data, relativeTo);
       if (!layoutRange) {
         remapped[threadId] = data;
         return;
