@@ -44,6 +44,12 @@ describe('SuperComments', () => {
     expect(instance.app.config.globalProperties.$superdoc).toBe(superdocStub);
   });
 
+  it('reuses the parent SuperDoc pinia instance when available', () => {
+    const pinia = { id: 'shared-pinia' };
+    const instance = new SuperComments({ element }, { ...superdocStub, pinia });
+    expect(instance.app._context.plugins).toContain(pinia);
+  });
+
   it('resolves element via selector when no element is provided', () => {
     const el = document.createElement('div');
     el.id = 'my-comments-host';

@@ -1,16 +1,9 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { Locator, Page } from '@playwright/test';
 import { expect, test } from '../../fixtures/superdoc.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DOC_PATH = path.resolve(__dirname, '../../test-data/pagination/longer-header.docx');
+import { H_F_NORMAL_DOC_PATH as DOC_PATH } from '../../helpers/story-fixtures.js';
 const MOD_KEY = process.platform === 'darwin' ? 'Meta' : 'Control';
 
 test.use({ config: { showSelection: true } });
-
-test.skip(!fs.existsSync(DOC_PATH), 'Test document not available — run pnpm corpus:pull');
 
 async function enterHeaderFooterEditMode(
   page: Page,
@@ -62,7 +55,7 @@ test('layout engine renders selection rectangles while editing a header', async 
     '.superdoc-header-editor-host',
   );
 
-  await assertSelectionOverlayRenders(superdoc.page, editor, 'Generic content header');
+  await assertSelectionOverlayRenders(superdoc.page, editor, 'Normal header, page numbers at the right');
 });
 
 test('layout engine renders selection rectangles while editing a footer', async ({ superdoc }) => {
@@ -75,5 +68,5 @@ test('layout engine renders selection rectangles while editing a footer', async 
     '.superdoc-footer-editor-host',
   );
 
-  await assertSelectionOverlayRenders(superdoc.page, editor, 'Footer');
+  await assertSelectionOverlayRenders(superdoc.page, editor, 'Normal footer, page numbers at the left');
 });

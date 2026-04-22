@@ -29,6 +29,9 @@ export class SuperComments extends EventEmitter {
 
   createVueApp() {
     this.app = createApp(CommentsList);
+    if (this.superdoc?.pinia) {
+      this.app.use(this.superdoc.pinia);
+    }
     this.app.directive('click-outside', vClickOutside);
     this.app.config.globalProperties.$superdoc = this.superdoc;
 
